@@ -1,0 +1,46 @@
+# Guard hooks only. Ruff runs as a `local` hook against the version pinned in
+# uv.lock, so there is exactly one ruff version across your machine and CI.
+#
+#   uv run pre-commit install
+#
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-yaml
+      - id: check-toml
+
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --force-exclude --fix
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      - id: mypy
+        name: mypy
+        entry: uv run mypy
+        language: system
+        types_or: [python, pyi]
+        # mypy is a whole-program checker: handing it only the staged files
+        # makes it miss breakage in their dependents and invent errors about
+        # the context it cannot see. Check the whole project (the paths in
+        # [tool.mypy] files) and ignore the filename list pre-commit offers.
+        pass_filenames: false
+        require_serial: true
+
+      - id: uv-lock
+        name: uv lock is in sync with pyproject.toml
+        entry: uv lock --check
+        language: system
+        files: ^(pyproject\.toml|uv\.lock)$
+        pass_filenames: false

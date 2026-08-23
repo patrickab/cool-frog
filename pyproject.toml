@@ -1,0 +1,66 @@
+[project]
+name = "template"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  # Runtime dependencies go here.
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=9.1.1",
+  "mypy>=2.3.1",
+  "ruff>=0.16.4",
+  "pre-commit>=4.6.2",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.5"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = [
+  "-ra",
+  "--import-mode=importlib",
+]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src", "tests"]
+strict = false
+disallow_any_generics = false
+warn_unreachable = true
+
+[tool.ruff]
+target-version = "py312"
+line-length = 135
+
+[tool.ruff.lint]
+select = [
+  "E",   # pycodestyle errors
+  "F",   # pyflakes
+  "I",   # isort
+  "B",   # bugbear
+  "C4",  # comprehensions
+  "TC",  # type-checking hygiene
+  "UP",  # modern python standards
+  "PERF", # Performance suggestions
+  "PL",  # Pylint
+  "PT",  # Pytest style
+  "PTH", # Pathlib
+  "SIM", # simplify
+  "ANN", # type hints
+  "ARG", # unused arguments
+  "RUF"  # Ruff-native rules
+]
+
+[tool.ruff.lint.isort]
+force-sort-within-sections = true
+section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ANN401"]
+
+# Enables Ruff formatter with default options (Black-compatible)
+[tool.ruff.format]
