@@ -3,7 +3,8 @@ name = "coolfrog"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-  # Runtime dependencies go here.
+  "cooldata",
+  "tadpole",
 ]
 
 [dependency-groups]
@@ -64,3 +65,7 @@ section-order = ["future", "standard-library", "third-party", "first-party", "lo
 
 # Enables Ruff formatter with default options (Black-compatible)
 [tool.ruff.format]
+
+[tool.uv.sources]
+tadpole = { git = "https://github.com/tum-pbs/Tadpole" }
+cooldata = { git = "https://github.com/peteole/flow_field_dataset" }
