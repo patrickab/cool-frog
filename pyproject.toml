@@ -11,6 +11,7 @@ dependencies = [
 dev = [
   "ipykernel>=7.4.0",
   "jupyterlab>=4",
+  "jupytext>=1.19.6",
   "mypy>=2.3.1",
   "pre-commit>=4.6.2",
   "pytest>=9.1.1",
