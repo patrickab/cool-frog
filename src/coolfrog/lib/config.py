@@ -19,7 +19,7 @@ class DataConfig:
     grid : Grid
         Voxel grid every design is sampled onto.
     source : Path | None
-        Path -> Local CoolData root with `metadata.parquet`
+        Path -> Local CoolData root with `volume/volume_design_<design_id:07d>_p.cgns`
         None -> Hugging Face.
     n_samples : int | None
         Designs drawn at random from the range matches, None = all matches.

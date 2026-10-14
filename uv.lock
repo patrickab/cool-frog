@@ -785,6 +785,7 @@ source = { editable = "." }
 dependencies = [
     { name = "cooldata" },
     { name = "polars" },
+    { name = "rich" },
     { name = "tadpole" },
     { name = "tensordict" },
 ]
@@ -803,6 +804,7 @@ dev = [
 requires-dist = [
     { name = "cooldata", git = "https://github.com/peteole/flow_field_dataset" },
     { name = "polars", specifier = ">=2.0.0" },
+    { name = "rich", specifier = ">=15.0.0" },
     { name = "tadpole", git = "https://github.com/tum-pbs/Tadpole" },
     { name = "tensordict", specifier = ">=0.14" },
 ]

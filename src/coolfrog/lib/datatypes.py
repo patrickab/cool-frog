@@ -1,6 +1,6 @@
 """Core datatypes shared across coolfrog."""
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -54,12 +54,14 @@ class Grid:
 
     def __post_init__(self) -> None:
         """Raise ValueError unless every axis is a multiple of 16."""
-        raise NotImplementedError
+        if any(voxels <= 0 or voxels % 16 for voxels in self.resolution):
+            raise ValueError(f"every resolution axis must be a positive multiple of 16, got {self.resolution}")
 
     @property
     def spacing(self) -> tuple[float, float, float]:
         """Voxel spacing in m, `extent / (resolution - 1)` like cooldata."""
-        raise NotImplementedError
+        spacing_x, spacing_y, spacing_z = (length / (voxels - 1) for length, voxels in zip(self.extent, self.resolution, strict=True))
+        return spacing_x, spacing_y, spacing_z
 
 
 @tensorclass
@@ -80,7 +82,23 @@ class NormalizationStats:
     @classmethod
     def from_flowfields(cls, flowfields: Iterable["FlowField"]) -> "NormalizationStats":
         """Per-channel fluid min and max over physical flow fields, reduced batch by batch, ValueError for a constant channel."""
-        raise NotImplementedError
+        channel_min, channel_max = None, None
+        for flowfield in flowfields:
+            fluid = flowfield.mask.unsqueeze(-4)
+            batch_min = _reduce_to_channels(torch.where(fluid, flowfield.fields, torch.inf), torch.amin)
+            batch_max = _reduce_to_channels(torch.where(fluid, flowfield.fields, -torch.inf), torch.amax)
+            channel_min = batch_min if channel_min is None else torch.minimum(channel_min, batch_min)
+            channel_max = batch_max if channel_max is None else torch.maximum(channel_max, batch_max)
+        if channel_min is None or channel_max is None:
+            raise ValueError("no flow fields to reduce")
+        if (channel_max <= channel_min).any():
+            raise ValueError(f"constant or fluid-free channel, min {channel_min.tolist()}, max {channel_max.tolist()}")
+        return cls(channel_min=channel_min.view(-1, 1, 1, 1), channel_max=channel_max.view(-1, 1, 1, 1), batch_size=[])
+
+
+def _reduce_to_channels(fields: torch.Tensor, reduction: Callable[..., torch.Tensor]) -> torch.Tensor:
+    """Reduce (..., C, X, Y, Z) over every axis but C."""
+    return reduction(fields.movedim(-4, 0).flatten(1), dim=1)
 
 
 @tensorclass
@@ -109,11 +127,18 @@ class FlowField:
 
     def normalize(self, stats: NormalizationStats) -> "FlowField":
         """Scale fields to [-1, 1] and attach `stats`, one broadcast over the whole batch."""
-        raise NotImplementedError
+        if self.stats is not None:
+            raise ValueError("flow field is already normalized")
+        stats = stats.to(self.fields.device).expand(self.batch_size)
+        fields = 2 * (self.fields - stats.channel_min) / (stats.channel_max - stats.channel_min) - 1
+        return self.replace(fields=fields, stats=stats)
 
     def denormalize(self) -> "FlowField":
         """Restore physical units and drop `stats`."""
-        raise NotImplementedError
+        if self.stats is None:
+            raise ValueError("flow field is not normalized")
+        fields = (self.fields + 1) * (self.stats.channel_max - self.stats.channel_min) / 2 + self.stats.channel_min
+        return self.replace(fields=fields, stats=None)
 
 
 @tensorclass
@@ -143,4 +168,5 @@ class LatentFlowField:
 
     def kl_divergence(self) -> torch.Tensor:
         """Elementwise KL divergence to the standard normal prior."""
-        raise NotImplementedError
+        latent_mean, latent_logvar = self.latent_mean.float(), self.latent_logvar.float()
+        return 0.5 * (latent_mean.square() + latent_logvar.exp() - 1 - latent_logvar)
