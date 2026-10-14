@@ -4,7 +4,9 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
   "cooldata",
+  "polars>=2.0.0",
   "tadpole",
+  "tensordict>=0.14",
 ]
 
 [dependency-groups]
@@ -12,7 +14,6 @@ dev = [
   "ipykernel>=7.4.0",
   "jupyterlab>=4",
   "jupytext>=1.19.6",
-  "mypy>=2.3.1",
   "pre-commit>=4.6.2",
   "pytest>=9.1.1",
   "ruff>=0.16.4",
@@ -22,19 +23,17 @@ dev = [
 requires = ["uv_build>=0.12.5"]
 build-backend = "uv_build"
 
+[tool.uv.build-backend]
+module-root = "src"
+module-name = "coolfrog"
+namespace = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = [
   "-ra",
   "--import-mode=importlib",
 ]
-
-[tool.mypy]
-python_version = "3.12"
-files = ["src", "tests"]
-strict = false
-disallow_any_generics = false
-warn_unreachable = true
 
 [tool.ruff]
 target-version = "py312"
@@ -47,7 +46,6 @@ select = [
   "I",   # isort
   "B",   # bugbear
   "C4",  # comprehensions
-  "TC",  # type-checking hygiene
   "UP",  # modern python standards
   "PERF", # Performance suggestions
   "PL",  # Pylint

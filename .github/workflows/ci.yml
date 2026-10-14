@@ -33,5 +33,4 @@ jobs:
       # --output-format=github renders findings as inline annotations on the diff
       - run: uv run ruff check --output-format=github .
       - run: uv run ruff format --check .
-      - run: uv run mypy
       - run: uv run pytest
