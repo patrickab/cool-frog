@@ -11,3 +11,5 @@ build/
 .upstream
 
 data/
+node_modules/
+*.tsbuildinfo

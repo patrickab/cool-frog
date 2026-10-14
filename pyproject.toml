@@ -10,6 +10,12 @@ dependencies = [
   "tensordict>=0.14",
 ]
 
+[project.optional-dependencies]
+web = [
+  "fastapi>=0.115",
+  "uvicorn>=0.34",
+]
+
 [dependency-groups]
 dev = [
   "ipykernel>=7.4.0",

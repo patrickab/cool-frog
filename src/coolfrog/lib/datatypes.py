@@ -17,6 +17,16 @@ class Channel(StrEnum):
     PRESSURE = "p [Pa]"
     TEMPERATURE = "T [K]"
 
+    @property
+    def symbol(self) -> str:
+        """Label without unit, `Vx`."""
+        return self.value.partition(" [")[0]
+
+    @property
+    def unit(self) -> str:
+        """SI unit, `m/s`."""
+        return self.value.partition(" [")[2].removesuffix("]")
+
 
 # Order of the C axis in `FlowField.fields`
 CHANNELS: tuple[Channel, ...] = tuple(Channel)
@@ -35,6 +45,9 @@ PARAM_COLUMNS: tuple[str, ...] = (
     "r6",  # cylinder 6 radius
     "V",  # inlet velocity
 )
+
+# Units of `PARAM_COLUMNS` where known, others are unitless or undocumented upstream
+PARAM_UNITS: dict[str, str] = {"V": "m/s"}
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,71 @@
+@import "@fontsource-variable/outfit";
+@import "tailwindcss";
+
+/* Theme tokens, light mode of ~/git/gigachad-bot.
+   Role tokens are warm OKLCH (hue 85, tiny chroma): surfaces ascend from a
+   cream page toward, never to, white. Derived tokens mix from the role tokens. */
+:root {
+  --shadow-color: oklch(35% 0.01 85);
+
+  /* Text, warm charcoal down to faint grey */
+  --ink: oklch(30% 0.012 85);
+  --ink-muted: oklch(46% 0.012 85);
+  --ink-subtle: oklch(58% 0.010 85);
+  --ink-faint: oklch(72% 0.008 85);
+
+  /* Surfaces, page < card < floating */
+  --paper: oklch(95% 0.020 85);
+  --surface: oklch(97.5% 0.012 85);
+  --surface-elevated: oklch(99% 0.006 85);
+
+  --danger: oklch(52% 0.22 25);
+  /* Solid voxels in plots, keep in sync with `solid` in colors.ts */
+  --solid: oklch(84% 0.012 85);
+
+  /* Derived */
+  --divider: color-mix(in oklab, var(--ink) 24%, transparent);
+  --divider-soft: color-mix(in oklab, var(--ink) 10%, transparent);
+  --hover: color-mix(in oklab, var(--ink) 6%, transparent);
+  --hover-strong: color-mix(in oklab, var(--ink) 10%, transparent);
+  --danger-soft: color-mix(in oklab, var(--danger) 12%, transparent);
+
+  /* Layered warm shadows plus a top inner highlight for depth */
+  --shadow-sm: 0 1px 2px color-mix(in oklab, var(--shadow-color) 6%, transparent),
+    0 2px 8px color-mix(in oklab, var(--shadow-color) 5%, transparent);
+  --shadow-md: 0 1px 3px color-mix(in oklab, var(--shadow-color) 8%, transparent),
+    0 4px 12px color-mix(in oklab, var(--shadow-color) 5%, transparent),
+    0 8px 20px color-mix(in oklab, var(--shadow-color) 3%, transparent);
+  --inner-highlight: inset 0 1px 0 0 oklch(100% 0 0 / 0.5);
+}
+
+/* Wipe Tailwind's default palette so only role tokens compile */
+@theme {
+  --color-*: initial;
+  --color-paper: var(--paper);
+  --color-surface: var(--surface);
+  --color-surface-elevated: var(--surface-elevated);
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-ink-subtle: var(--ink-subtle);
+  --color-ink-faint: var(--ink-faint);
+  --color-divider: var(--divider);
+  --color-divider-soft: var(--divider-soft);
+  --color-hover: var(--hover);
+  --color-hover-strong: var(--hover-strong);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-solid: var(--solid);
+  --font-sans: "Outfit Variable", system-ui, -apple-system, sans-serif;
+}
+
+/* Native range inputs stacked over a drawn track, only the thumbs take pointer events */
+.slider { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; appearance: none; background: none; pointer-events: none; }
+.slider::-webkit-slider-runnable-track { height: 100%; background: none; }
+.slider::-moz-range-track { background: none; }
+.slider::-webkit-slider-thumb { appearance: none; pointer-events: auto; width: 16px; height: 16px; border-radius: 9999px; background: var(--surface-elevated); border: 1px solid var(--divider); box-shadow: var(--shadow-sm); cursor: grab; transition: transform 0.15s; }
+.slider::-moz-range-thumb { pointer-events: auto; width: 16px; height: 16px; border-radius: 9999px; background: var(--surface-elevated); border: 1px solid var(--divider); box-shadow: var(--shadow-sm); cursor: grab; }
+.slider:active::-webkit-slider-thumb { cursor: grabbing; transform: scale(1.1); }
+.slider:focus-visible { outline: none; }
+.slider:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px var(--hover-strong); }
+.slider:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 3px var(--hover-strong); }
+.slider:disabled { opacity: 0.4; }

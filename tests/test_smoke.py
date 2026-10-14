@@ -1,14 +1,11 @@
 """Behavior tests for normalization, solid filling, metrics and design selection."""
 
-from pathlib import Path
-
 import polars as pl
 import pytest
 import torch
 
-from coolfrog.engine.data import _select_designs
+from coolfrog.engine.data import select_designs
 from coolfrog.engine.tadpole import _fill_solids
-from coolfrog.lib.config import DataConfig
 from coolfrog.lib.datatypes import FlowField, Grid, NormalizationStats
 from coolfrog.lib.metrics import nrmse
 
@@ -75,10 +72,8 @@ def test_nrmse_uses_fluid_voxels_only() -> None:
 
 def test_selection_is_inclusive_sorted_and_independent_of_row_order() -> None:
     metadata = pl.DataFrame({"design_id": list(range(100)), "V": [design_id / 10 for design_id in range(100)]})
-    config = DataConfig(grid=Grid(resolution=(16, 16, 16)), source=Path(), n_samples=5, ranges={"V": (2.0, None)}, seed=3)
-    selected = _select_designs(metadata, config)["design_id"].to_list()
+    selected = select_designs(metadata, ranges={"V": (2.0, None)}, n_samples=5, seed=3)["design_id"].to_list()
     assert selected == sorted(selected)
     assert min(selected) >= 20
-    assert _select_designs(metadata.reverse(), config)["design_id"].to_list() == selected
-    full = DataConfig(grid=Grid(resolution=(16, 16, 16)), ranges={"V": (2.0, 5.0)})
-    assert _select_designs(metadata, full)["design_id"].to_list() == list(range(20, 51))
+    assert select_designs(metadata.reverse(), ranges={"V": (2.0, None)}, n_samples=5, seed=3)["design_id"].to_list() == selected
+    assert select_designs(metadata, ranges={"V": (2.0, 5.0)})["design_id"].to_list() == list(range(20, 51))
