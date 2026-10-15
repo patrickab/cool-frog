@@ -1,6 +1,7 @@
 """CoolData browser API. Run with `uvicorn coolfrog.api.main:app --port 8010`."""
 
 import asyncio
+from collections.abc import Callable
 from functools import cache
 import logging
 from pathlib import Path
@@ -13,8 +14,16 @@ import numpy as np
 import polars as pl
 from pydantic import BaseModel, Field, FiniteFloat, field_validator
 
-from coolfrog.engine.data import UnknownDesignError, cache_path, load_flow_field, load_metadata, select_designs
-from coolfrog.lib.datatypes import CHANNELS, PARAM_COLUMNS, PARAM_UNITS, FlowField, Grid
+from coolfrog.engine.data import (
+    UnknownDesignError,
+    cache_path,
+    load_flow_field,
+    load_metadata,
+    load_surface,
+    select_designs,
+    surface_cache_path,
+)
+from coolfrog.lib.datatypes import CHANNELS, PARAM_COLUMNS, PARAM_UNITS, SURFACE_CHANNELS, Grid
 
 app = FastAPI(title="Coolfrog")
 GRID = Grid((400, 80, 16))
@@ -23,8 +32,8 @@ LOCAL_SOURCE = Path("data/cooldata")
 DATASET_COLUMNS = ("design_id", *PARAM_COLUMNS)
 HISTOGRAM_BINS = 40
 logger = logging.getLogger(__name__)
-# `load_flow_field` voxelizes non-thread-safe, so uncached designs queue here and abandoned requests are skipped
-VOXELIZE_QUEUE = asyncio.Lock()
+# VTK readers share state, so uncached designs queue here and abandoned requests are skipped
+VTK_QUEUE = asyncio.Lock()
 
 
 class Parameter(BaseModel):
@@ -38,12 +47,19 @@ class Channel(BaseModel):
     name: str
     unit: str
 
+    @classmethod
+    def from_label(cls, label: str) -> "Channel":
+        """`Vx [m/s]` → name `Vx`, unit `m/s`."""
+        name, _, unit = label.partition(" [")
+        return cls(name=name, unit=unit.removesuffix("]"))
+
 
 class Config(BaseModel):
     """Sampling inputs and the grid every field is returned on, `dimensions` and `spacing` in x, y, z."""
 
     parameters: list[Parameter]
     channels: list[Channel]
+    surface_channels: list[Channel]
     dimensions: tuple[int, int, int]
     spacing: tuple[float, float, float]
 
@@ -92,7 +108,7 @@ class DatasetColumn(BaseModel):
 
 
 class Dataset(BaseModel):
-    """Static overview, `header` is the column order of `/api/dataset/rows` rows."""
+    """Static overview, `header` orders `/api/dataset/rows` rows."""
 
     total: int
     header: list[str]
@@ -101,9 +117,10 @@ class Dataset(BaseModel):
 
 
 class DatasetFilter(BaseModel):
-    """Inclusive column ranges and the runs to keep, None = every run."""
+    """Inclusive column ranges, design ids starting with `search` ("" = all) and the runs to keep, None = every run."""
 
     ranges: dict[str, tuple[FiniteFloat, FiniteFloat]] = Field(default_factory=dict)
+    search: Annotated[str, Field(pattern=r"^\d*$")] = ""
     runs: list[str] | None = None
 
     @field_validator("ranges")
@@ -112,8 +129,10 @@ class DatasetFilter(BaseModel):
         return check_ranges(ranges, DATASET_COLUMNS)
 
     def apply(self) -> tuple[pl.DataFrame, pl.DataFrame]:
-        """Rows inside the ranges, then those also inside the run filter."""
+        """Rows inside the ranges and search, then those also inside the run filter."""
         in_ranges = select_designs(load_metadata(), ranges=self.ranges)
+        if self.search:
+            in_ranges = in_ranges.filter(pl.col("design_id").cast(pl.String).str.starts_with(self.search))
         return in_ranges, in_ranges if self.runs is None else in_ranges.filter(pl.col("run").is_in(self.runs))
 
 
@@ -157,8 +176,11 @@ def config() -> Config:
         if finite.is_empty():
             raise HTTPException(503, f"No finite metadata bounds for {name}")
         parameters.append(Parameter(name=name, unit=PARAM_UNITS.get(name), min=finite.min(), max=finite.max()))
-    channels = [Channel(name=channel.symbol, unit=channel.unit) for channel in CHANNELS]
-    return Config(parameters=parameters, channels=channels, dimensions=GRID.resolution, spacing=GRID.spacing)
+    channels = [Channel.from_label(channel) for channel in CHANNELS]
+    surface_channels = [Channel.from_label(channel) for channel in SURFACE_CHANNELS]
+    return Config(
+        parameters=parameters, channels=channels, surface_channels=surface_channels, dimensions=GRID.resolution, spacing=GRID.spacing
+    )
 
 
 @app.post("/api/sample")
@@ -170,10 +192,12 @@ def sample(request: SampleRequest) -> Sample:
             f"Only {matches.height} designs match these ranges; requested {request.count}. Widen the ranges or reduce the count.",
         )
     selected = select_designs(matches, ranges={}, n_samples=request.count, seed=request.seed)
-    designs = [
-        Design(id=row["design_id"], params={name: row[name] for name in PARAM_COLUMNS}) for row in selected.iter_rows(named=True)
-    ]
+    designs = [design_from_row(row) for row in selected.iter_rows(named=True)]
     return Sample(designs=designs, matched=matches.height)
+
+
+def design_from_row(row: dict) -> Design:
+    return Design(id=row["design_id"], params={name: row[name] for name in PARAM_COLUMNS})
 
 
 @cache
@@ -192,6 +216,15 @@ def dataset_overview() -> Dataset:
 @app.get("/api/dataset")
 def dataset() -> Dataset:
     return dataset_overview()
+
+
+@app.get("/api/designs")
+def designs(ids: Annotated[list[int], Query(alias="id", min_length=1, max_length=24)]) -> list[Design]:
+    """Designs in the requested order."""
+    rows = {row["design_id"]: row for row in load_metadata().filter(pl.col("design_id").is_in(ids)).iter_rows(named=True)}
+    if missing := [design_id for design_id in ids if design_id not in rows]:
+        raise HTTPException(404, f"Unknown designs: {missing}")
+    return [design_from_row(rows[design_id]) for design_id in ids]
 
 
 @app.post("/api/dataset/summary")
@@ -214,7 +247,7 @@ def dataset_rows(query: RowsQuery) -> list[list[int | float | str]]:
 @app.get("/api/fields/{design_id}", response_class=Response)
 async def fields(request: Request, design_id: int, channel: Annotated[int, Query(ge=0, lt=len(CHANNELS))] = 0) -> Response:
     """Channel values as float32 little-endian, then the uint8 fluid mask (fluid = finite value), both x-fastest."""
-    flow = await _load_flow(request, design_id)
+    flow = await _load(request, cache_path(design_id, GRID).exists(), load_flow_field, design_id, GRID, LOCAL_SOURCE)
     values = np.asarray(flow.fields[channel].numpy(), dtype="<f4").ravel(order="F")
     mask = flow.mask.numpy().ravel(order="F") & np.isfinite(values)
     if not mask.any():
@@ -222,14 +255,28 @@ async def fields(request: Request, design_id: int, channel: Annotated[int, Query
     return Response(values.tobytes() + mask.astype(np.uint8).tobytes(), media_type="application/octet-stream")
 
 
-async def _load_flow(request: Request, design_id: int) -> FlowField:
-    """Cached designs load concurrently, uncached ones wait in `VOXELIZE_QUEUE` unless the browser left meanwhile."""
+@app.get("/api/surface/{design_id}", response_class=Response)
+async def surface(request: Request, design_id: int) -> Response:
+    """Boundary faces, all little-endian.
+
+    - uint32 point count, polygon entry count, face count
+    - float32 x, y, z per point, uint32 legacy VTK polygons [n, i0, …]
+    - float32 face values per `SURFACE_CHANNELS` entry, NaN where a boundary doesn't store it
+    """
+    mesh = await _load(request, surface_cache_path(design_id).exists(), load_surface, design_id, LOCAL_SOURCE)
+    counts = np.array([len(mesh.points), len(mesh.polygons), mesh.values.shape[1]], dtype="<u4")
+    arrays = (counts, mesh.points.astype("<f4"), mesh.polygons.astype("<u4"), mesh.values.astype("<f4"))
+    return Response(b"".join(array.tobytes() for array in arrays), media_type="application/octet-stream")
+
+
+async def _load[Loaded](request: Request, cached: bool, load: Callable[..., Loaded], *args: object) -> Loaded:
+    """Cached designs load concurrently, uncached ones wait in `VTK_QUEUE` unless the browser left meanwhile."""
     try:
-        if cache_path(design_id, GRID).exists():
-            return await run_in_threadpool(load_flow_field, design_id, GRID, LOCAL_SOURCE)
-        async with VOXELIZE_QUEUE:
+        if cached:
+            return await run_in_threadpool(load, *args)
+        async with VTK_QUEUE:
             if await request.is_disconnected():
                 raise HTTPException(499, "Client disconnected")
-            return await run_in_threadpool(load_flow_field, design_id, GRID, LOCAL_SOURCE)
+            return await run_in_threadpool(load, *args)
     except UnknownDesignError as error:
         raise HTTPException(404, str(error)) from error

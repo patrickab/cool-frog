@@ -44,9 +44,10 @@ Two layers:
   - `http.ts` `fetchOk`/`fetchJson` surface the server's `detail` as the error message
   - `useAsync.ts` is the only async-state pattern: abortable, `idle | loading | done | error`, no loose loading/error booleans
 - `api.ts`: server contract types and endpoints. The server owns invariants (field `mask` = fluid with finite value), clients don't re-check them
-- Components: `App` (config + dataset gate, view select, flow toolbar), `Sidebar` (sampling inputs), `Gallery` (`useFieldBatch`, design cards), `Heatmap`/`Volume` (`FieldViewProps` renderers), `Dataset` (dataset explorer view)
+- Components: `App` (config + dataset gate, view select), `Sidebar` (sampling inputs), `Gallery` (`useFieldBatch`, `FieldControls`, design cards), `Heatmap`/`Volume` (`FieldViewProps` renderers), `Dataset` (dataframe view), `Overview` (guided tour)
 - State holds only what can't be derived, e.g. `Sidebar` and `Dataset` store narrowed ranges only (`withRange`), full bounds come from the server
-- Views: the subtitle `Select` switches between the flow and dataset explorer (`#flow`/`#dataset` hash). Both stay mounted (`hidden`) so switching keeps state. Picked dataset rows reach the flow explorer as a `Design[]` request
+- Views: the subtitle `Select` switches between Cool Overview (default), Cool Flowfields and Cool Dataframe (`#overview`/`#flow`/`#dataset` hash). All stay mounted (`hidden`) so switching keeps state. Picked designs reach Cool Flowfields as a `Design[]` request
+- Overview: showcase design ids in `SHOWCASES` were picked offline as nearest-neighbour pairs that differ mainly in one parameter, and their numbers in the prose were measured from the voxel fields. Changing a design id means re-measuring its prose
 
 ## Components
 
@@ -60,6 +61,7 @@ Reuse `src/lib/ui.tsx` before writing new markup:
 - `Select`: listbox ported from gigachad-bot `StyledSelect` (`src/frontend/components/StyledSelect.tsx`). `box` variant for form fields, `inline` for text triggers like the subtitle. Never native `<select>`, its popup ignores the theme
 - `Slider`: one thumb for a value, two thumbs for a range
 - `RangeControl`: name, unit, range readout and a range `Slider`, `children` (e.g. a histogram) sit above the slider
+- `FieldControls` (in `Gallery.tsx`): render mode, field, Z slice and color legend for one gallery, state as one `FieldDisplay`
 
 ## Typography and spacing
 

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { formatNumber } from './format';
 import type { Bounded, Range } from './range';
@@ -46,14 +46,15 @@ export function Disclosure({ label, aside, className = '', summaryClassName = ''
   </details>;
 }
 
-/** Radio group styled as a segmented control, arrow keys work natively. */
+/** Radio group styled as a segmented control, arrow keys work natively, `name` unique per instance. */
 export function Segmented<T extends string | number>({ label, options, value, onChange }: {
   label: string; options: { value: T; label: string }[]; value: T; onChange: (value: T) => void;
 }) {
+  const name = useId();
   return <fieldset className="inline-flex rounded-xl bg-hover-strong p-1">
     <legend className="sr-only">{label}</legend>
     {options.map((option) => <label key={option.value} className="cursor-pointer">
-      <input type="radio" name={label} className="peer sr-only" checked={option.value === value} onChange={() => onChange(option.value)} />
+      <input type="radio" name={name} className="peer sr-only" checked={option.value === value} onChange={() => onChange(option.value)} />
       <span className="block rounded-lg px-3 py-1 text-xs text-ink-muted transition peer-checked:bg-surface-elevated peer-checked:text-ink peer-checked:shadow-[var(--shadow-sm)] peer-focus-visible:ring-2 peer-focus-visible:ring-divider hover:text-ink">{option.label}</span>
     </label>)}
   </fieldset>;

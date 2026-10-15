@@ -6,7 +6,7 @@ import torch
 
 from coolfrog.engine.data import select_designs
 from coolfrog.engine.tadpole import _fill_solids
-from coolfrog.lib.datatypes import FlowField, Grid, NormalizationStats
+from coolfrog.lib.datatypes import CHANNELS, FlowField, Grid, NormalizationStats
 from coolfrog.lib.metrics import nrmse
 
 
@@ -61,11 +61,11 @@ def test_fill_solids_keeps_fluid_and_extends_constant_field() -> None:
 def test_nrmse_uses_fluid_voxels_only() -> None:
     torch.manual_seed(0)
     mask = torch.rand(2, 16, 16, 16) > 0.3
-    reference = make_flowfield(torch.randn(2, 5, 16, 16, 16), mask)
+    reference = make_flowfield(torch.randn(2, len(CHANNELS), 16, 16, 16), mask)
     prediction_fields = reference.fields + 0.1
     prediction_fields[~mask.unsqueeze(1).expand_as(prediction_fields)] = 1e6
     table = nrmse(make_flowfield(prediction_fields, mask), reference)
-    fluid_std = torch.stack([reference.fields[0, channel][mask[0]].std() for channel in range(5)])
+    fluid_std = torch.stack([reference.fields[0, channel][mask[0]].std() for channel in range(len(CHANNELS))])
     assert table.columns[0] == "design_id"
     torch.testing.assert_close(torch.tensor(table.row(0)[1:], dtype=torch.float32), 100 * 0.1 / fluid_std, rtol=1e-4, atol=1e-4)
 

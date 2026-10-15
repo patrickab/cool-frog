@@ -3,18 +3,16 @@ import type { ReactNode } from 'react';
 import { fetchConfig, fetchDataset, fetchSample } from './api';
 import type { Config, Design, Sample, SampleQuery } from './api';
 import DatasetExplorer from './Dataset';
-import Gallery, { useFieldBatch } from './Gallery';
-import type { RenderMode } from './Gallery';
+import Gallery, { defaultDisplay, FieldControls, useFieldBatch } from './Gallery';
+import Overview from './Overview';
 import Sidebar from './Sidebar';
-import { gradient } from './lib/colormap';
 import { formatNumber } from './lib/format';
-import { Layout, Panel, Segmented, Select, Slider } from './lib/ui';
+import { Layout, Panel, Select } from './lib/ui';
 import { useAsync } from './lib/useAsync';
 
-const TEMPERATURE_CHANNEL = 4;
-const VIEWS = { flow: 'Cool Flowfields', dataset: 'Cool Dataframe' } as const;
-type View = keyof typeof VIEWS;
-/** A seeded sample from the sidebar or designs picked in the dataset explorer. */
+const VIEWS = { overview: 'Cool Overview', flow: 'Cool Flowfields', dataset: 'Cool Dataframe' } as const;
+export type View = keyof typeof VIEWS;
+/** A seeded sample from the sidebar or designs picked in the overview or dataframe. */
 type FlowRequest = SampleQuery | Design[];
 
 /** Subtitle-styled select switching between views. */
@@ -28,17 +26,14 @@ function Explorer({ config, nav, request, onRequest }: { config: Config; nav: Re
   const sample = useAsync<Sample & { seed?: number }>(request && ((signal) => Array.isArray(request)
     ? Promise.resolve({ designs: request, matched: request.length })
     : fetchSample(request, signal).then((result) => ({ ...result, seed: request.seed }))), [request]);
-  const [channel, setChannel] = useState(Math.min(TEMPERATURE_CHANNEL, config.channels.length - 1));
-  const [mode, setMode] = useState<RenderMode>('2d');
-  const [slice, setSlice] = useState(Math.floor(config.dimensions[2] / 2));
+  const [display, setDisplay] = useState(() => defaultDisplay(config));
   const designs = sample.status === 'done' ? sample.data.designs : undefined;
-  const batch = useFieldBatch(designs, channel, config.dimensions);
-  const { colorRange } = batch;
+  const batch = useFieldBatch(designs, display, config);
 
   const status = sample.status === 'loading' ? 'Selecting designs…'
     : sample.status === 'done' ? [
       sample.data.seed === undefined
-        ? `${sample.data.designs.length} designs picked in the dataset explorer`
+        ? `${sample.data.designs.length} picked designs`
         : `${sample.data.designs.length} of ${formatNumber(sample.data.matched)} matching designs · seed ${sample.data.seed}`,
       batch.pending > 0 && `${batch.pending} loading`,
       batch.failed > 0 && `${batch.failed} failed`,
@@ -47,34 +42,20 @@ function Explorer({ config, nav, request, onRequest }: { config: Config; nav: Re
 
   return <Layout nav={nav} sidebar={<Sidebar config={config} busy={sample.status === 'loading'} onSample={onRequest} />}>
     <div className="flex flex-wrap items-center gap-3">
-      <Segmented label="Rendering mode" value={mode} onChange={setMode} options={[{ value: '2d', label: '2D' }, { value: '3d', label: '3D' }]} />
-      <Segmented label="Field" value={channel} onChange={setChannel} options={config.channels.map(({ name }, index) => ({ value: index, label: name }))} />
-      <div className="flex items-center gap-3 rounded-xl bg-hover-strong py-1.5 pr-1.5 pl-3">
-        <span className="text-xs text-ink-muted">Z</span>
-        <div className="w-32"><Slider label="Z slice" min={0} max={config.dimensions[2] - 1} values={[slice]} onChange={([value]) => setSlice(value)} /></div>
-        <span className="min-w-16 whitespace-nowrap rounded-lg bg-surface-elevated px-2 py-0.5 text-right text-xs tabular-nums shadow-[var(--shadow-sm)]">{formatNumber(slice * config.spacing[2] * 1000)} mm</span>
-      </div>
-      {colorRange && <div className="flex items-center gap-3 rounded-xl bg-hover-strong px-3 py-1 text-xs">
-        <span><span className="font-medium">{config.channels[channel].name}</span> <span className="text-ink-muted">{config.channels[channel].unit}</span></span>
-        <div className="w-40">
-          <div className="h-2 rounded-full" style={{ background: gradient }} />
-          <div className="mt-0.5 flex justify-between text-[10px] leading-none text-ink-muted tabular-nums"><span>{formatNumber(colorRange[0])}</span><span>{formatNumber(colorRange[1])}</span></div>
-        </div>
-        <span className="flex items-center gap-1.5 text-ink-muted"><i className="size-2.5 rounded-sm bg-solid" />Solid</span>
-      </div>}
+      <FieldControls config={config} display={display} onChange={setDisplay} colorRange={batch.colorRange} />
       <span className="ml-auto text-xs text-ink-muted" role="status">{status}</span>
     </div>
 
     {sample.status === 'error' && <Panel className="p-4 text-sm text-danger"><p role="alert">{sample.error}</p></Panel>}
     {designs
-      ? <Gallery designs={designs} batch={batch} config={config} mode={mode} slice={slice} />
-      : <Panel className="grid place-items-center py-32 text-sm text-ink-muted">{sample.status === 'loading' ? 'Selecting designs…' : 'Set parameter ranges and sample, or pick designs in the dataset explorer.'}</Panel>}
+      ? <Gallery designs={designs} batch={batch} config={config} display={display} />
+      : <Panel className="grid place-items-center py-32 text-sm text-ink-muted">{sample.status === 'loading' ? 'Selecting designs…' : 'Set parameter ranges and sample, or pick designs in Cool Dataframe.'}</Panel>}
   </Layout>;
 }
 
 export default function App() {
   const [attempt, setAttempt] = useState(0);
-  const [view, setView] = useState<View>(() => location.hash === '#dataset' ? 'dataset' : 'flow');
+  const [view, setView] = useState<View>(() => (location.hash.slice(1) in VIEWS ? location.hash.slice(1) as View : 'overview'));
   const [flowRequest, setFlowRequest] = useState<FlowRequest>();
   const loaded = useAsync((signal) => Promise.all([fetchConfig(signal), fetchDataset(signal)]), [attempt]);
   useEffect(() => {
@@ -85,12 +66,12 @@ export default function App() {
 
   if (loaded.status === 'done') {
     const [config, dataset] = loaded.data;
-    // Both views stay mounted so switching keeps loaded fields and filters
+    const openInFlow = (designs: Design[]) => { setFlowRequest([...designs].sort((a, b) => a.id - b.id)); setView('flow'); };
+    // All views stay mounted so switching keeps loaded fields and filters
     return <>
+      <div hidden={view !== 'overview'}><Overview config={config} dataset={dataset} nav={nav} onView={setView} onOpen={openInFlow} /></div>
       <div hidden={view !== 'flow'}><Explorer config={config} nav={nav} request={flowRequest} onRequest={setFlowRequest} /></div>
-      <div hidden={view !== 'dataset'}>
-        <DatasetExplorer dataset={dataset} config={config} nav={nav} onOpen={(designs) => { setFlowRequest(designs.sort((a, b) => a.id - b.id)); setView('flow'); }} />
-      </div>
+      <div hidden={view !== 'dataset'}><DatasetExplorer dataset={dataset} config={config} nav={nav} onOpen={openInFlow} /></div>
     </>;
   }
   return <Layout nav={nav}>

@@ -9,27 +9,31 @@ import torch
 
 
 class Channel(StrEnum):
-    """Physical channel in model order, value is the display label with unit."""
+    """Volume field channel in model order, value is the display label with unit."""
 
     VX = "Vx [m/s]"
     VY = "Vy [m/s]"
     VZ = "Vz [m/s]"
     PRESSURE = "p [Pa]"
     TEMPERATURE = "T [K]"
+    TURBULENT_KINETIC_ENERGY = "k [m²/s²]"
+    TURBULENT_DISSIPATION_RATE = "ε [m²/s³]"
 
-    @property
-    def symbol(self) -> str:
-        """Label without unit, `Vx`."""
-        return self.value.partition(" [")[0]
 
-    @property
-    def unit(self) -> str:
-        """SI unit, `m/s`."""
-        return self.value.partition(" [")[2].removesuffix("]")
+class SurfaceChannel(StrEnum):
+    """Per-face boundary quantity, value is the display label with unit, NaN where a boundary doesn't store it."""
+
+    HEAT_TRANSFER_COEFFICIENT = "h [W/(m²·K)]"
+    WALL_SHEAR_STRESS_X = "τx [Pa]"
+    WALL_SHEAR_STRESS_Y = "τy [Pa]"
+    WALL_SHEAR_STRESS_Z = "τz [Pa]"
+    PRESSURE = "p [Pa]"
+    TEMPERATURE = "T [K]"
 
 
 # Order of the C axis in `FlowField.fields`
 CHANNELS: tuple[Channel, ...] = tuple(Channel)
+SURFACE_CHANNELS: tuple[SurfaceChannel, ...] = tuple(SurfaceChannel)
 
 # Column names of the P axis in `FlowField.params`, in cooldata v2 metadata order, bodies 1-4 are quads, 5-6 cylinders
 # Defines simulation input.
