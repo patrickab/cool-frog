@@ -1,7 +1,68 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { formatNumber } from './format';
+import { gradientCss, scaleValue } from './colormap';
+import type { ColorScale } from './colormap';
+import { formatNumber, formatPower, formatTick } from './format';
 import type { Bounded, Range } from './range';
+
+const COLORBAR_WIDTH = 192;
+/** Approximate width of an 11 px tabular label, enough to keep labels apart. */
+const labelWidth = (text: string) => text.length * 5.8 + 6;
+
+/** Middle ticks: 0 when the range crosses it (diverging, or linear with negative values), else the midpoint, powers of ten when logarithmic. */
+function innerTicks(scale: ColorScale): [number, string][] {
+  const [min, max] = scale.range;
+  if (!scale.log) return min < 0 && max > 0 ? [[-min / (max - min), '0']] : [[0.5, formatTick(scaleValue(0.5, scale))]];
+  const [low, high] = scale.range.map(Math.log10);
+  const exponents = Array.from({ length: Math.max(0, Math.floor(high) - Math.ceil(low) + 1) }, (_, index) => Math.ceil(low) + index);
+  return exponents.map((exponent) => [(exponent - low) / (high - low), formatPower(exponent)]);
+}
+
+/**
+ * End ticks plus inner ticks that fit without overlapping.
+ *
+ * - Inner ticks colliding with an end label are dropped
+ * - The rest is thinned to every 2nd, 3rd, … tick until neighbours no longer overlap, so spacing stays even
+ */
+function fittingTicks(start: string, inner: [number, string][], end: string): [number, string][] {
+  const span = ([position, text]: [number, string]) => [position * COLORBAR_WIDTH - labelWidth(text) / 2, position * COLORBAR_WIDTH + labelWidth(text) / 2];
+  const free = inner.filter((tick) => span(tick)[0] >= labelWidth(start) && span(tick)[1] <= COLORBAR_WIDTH - labelWidth(end));
+  const isSpread = (ticks: [number, string][]) => ticks.every((tick, index) => index === 0 || span(tick)[0] >= span(ticks[index - 1])[1]);
+  const stride = Array.from({ length: free.length }, (_, index) => index + 1)
+    .find((step) => isSpread(free.filter((_, index) => index % step === 0)));
+  return [[0, start], ...(stride ? free.filter((_, index) => index % stride === 0) : []), [1, end]];
+}
+
+/**
+ * Horizontal colorbar with ticks at both ends and inside, see `innerTicks`.
+ *
+ * - `clipped.below`/`above` prefix the end labels with ≤/≥: values beyond the range show in the end colors
+ * - Log scales carry a "log scale" tag next to the unit
+ * - `label` (e.g. the quantity) sits left of the bar, `unit` after the ticks
+ */
+export function Colorbar({ scale, unit, label, clipped = { below: false, above: false } }: {
+  scale: ColorScale; unit?: string | null; label?: ReactNode; clipped?: { below: boolean; above: boolean };
+}) {
+  const ticks = fittingTicks(
+    `${clipped.below ? '≤ ' : ''}${formatTick(scale.range[0])}`,
+    innerTicks(scale),
+    `${clipped.above ? '≥ ' : ''}${formatTick(scale.range[1])}`,
+  );
+  return <div className="flex items-center gap-2 text-[11px] text-ink-muted tabular-nums">
+    {label}
+    <div style={{ width: COLORBAR_WIDTH }}>
+      <div className="h-2 rounded-sm" style={{ background: gradientCss(scale.colormap) }} />
+      <div className="relative mt-0.5 h-3.5">
+        {ticks.map(([position, text]) => <span key={position} className="absolute top-0 flex flex-col whitespace-nowrap leading-none"
+          style={{ left: `${position * 100}%`, transform: `translateX(${position === 0 ? '0' : position === 1 ? '-100%' : '-50%'})`, alignItems: position === 0 ? 'flex-start' : position === 1 ? 'flex-end' : 'center' }}>
+          <i aria-hidden className="h-1 w-px bg-ink-subtle" />{text}
+        </span>)}
+      </div>
+    </div>
+    {unit && <span className="whitespace-nowrap">{unit}</span>}
+    {scale.log && <span className="rounded-md bg-paper px-1.5 py-0.5 whitespace-nowrap text-ink">log scale</span>}
+  </div>;
+}
 
 /** Page shell: sticky sidebar with the title and `nav` (view select) left, content right. */
 export function Layout({ nav, sidebar, children }: { nav: ReactNode; sidebar?: ReactNode; children: ReactNode }) {

@@ -5,7 +5,7 @@ from collections.abc import Callable
 from functools import cache
 import logging
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
@@ -13,8 +13,10 @@ from fastapi.responses import JSONResponse
 import numpy as np
 import polars as pl
 from pydantic import BaseModel, Field, FiniteFloat, field_validator
+import torch
 
 from coolfrog.engine.data import (
+    CACHE_DIR,
     UnknownDesignError,
     cache_path,
     load_flow_field,
@@ -23,7 +25,10 @@ from coolfrog.engine.data import (
     select_designs,
     surface_cache_path,
 )
-from coolfrog.lib.datatypes import CHANNELS, PARAM_COLUMNS, PARAM_UNITS, SURFACE_CHANNELS, Grid
+from coolfrog.engine.tadpole import Tadpole
+from coolfrog.lib.config import TadpoleConfig
+from coolfrog.lib.datatypes import CHANNELS, PARAM_COLUMNS, PARAM_UNITS, SURFACE_CHANNELS, FlowField, Grid, NormalizationStats
+from coolfrog.lib.metrics import nrmse, spectral_loss
 
 app = FastAPI(title="Coolfrog")
 GRID = Grid((400, 80, 16))
@@ -43,15 +48,21 @@ class Parameter(BaseModel):
     max: float
 
 
+ScaleKind = Literal["linear", "log"]
+# k and ε span decades and are colored on a log scale, every other channel linearly
+LOG_SCALE_CHANNELS = {"k", "ε"}
+
+
 class Channel(BaseModel):
     name: str
     unit: str
+    scale: ScaleKind
 
     @classmethod
     def from_label(cls, label: str) -> "Channel":
-        """`Vx [m/s]` → name `Vx`, unit `m/s`."""
+        """`Vx [m/s]` → name `Vx`, unit `m/s`, log color scale for `LOG_SCALE_CHANNELS`."""
         name, _, unit = label.partition(" [")
-        return cls(name=name, unit=unit.removesuffix("]"))
+        return cls(name=name, unit=unit.removesuffix("]"), scale="log" if name in LOG_SCALE_CHANNELS else "linear")
 
 
 class Config(BaseModel):
@@ -160,6 +171,13 @@ class DatasetSummary(BaseModel):
     runs: dict[str, int]
 
 
+class ReconstructionMetrics(BaseModel):
+    """Per channel in `CHANNELS` order, `nrmse` in percent, `spectral_loss` on the per-design [-1, 1] scale Tadpole sees."""
+
+    nrmse: list[float]
+    spectral_loss: list[float]
+
+
 @app.exception_handler(Exception)
 async def server_error(_request: Request, exc: Exception) -> JSONResponse:
     """Show download, voxelization and other server failures in the browser."""
@@ -248,11 +266,69 @@ def dataset_rows(query: RowsQuery) -> list[list[int | float | str]]:
 async def fields(request: Request, design_id: int, channel: Annotated[int, Query(ge=0, lt=len(CHANNELS))] = 0) -> Response:
     """Channel values as float32 little-endian, then the uint8 fluid mask (fluid = finite value), both x-fastest."""
     flow = await _load(request, cache_path(design_id, GRID).exists(), load_flow_field, design_id, GRID, LOCAL_SOURCE)
-    values = np.asarray(flow.fields[channel].numpy(), dtype="<f4").ravel(order="F")
-    mask = flow.mask.numpy().ravel(order="F") & np.isfinite(values)
+    return _field_response(flow.fields[channel], flow, channel)
+
+
+@app.get("/api/reconstruction/{design_id}", response_class=Response)
+async def reconstruction(request: Request, design_id: int, channel: Annotated[int, Query(ge=0, lt=len(CHANNELS))] = 0) -> Response:
+    """Zero-shot Tadpole-B reconstruction of one channel, laid out like `/api/fields` with the simulation's fluid mask."""
+    cached = reconstruction_path(design_id).exists() and cache_path(design_id, GRID).exists()
+    flow, reconstructed = await _load(request, cached, load_reconstruction, design_id)
+    return _field_response(reconstructed[channel], flow, channel)
+
+
+@app.get("/api/reconstruction/{design_id}/metrics")
+async def reconstruction_metrics(request: Request, design_id: int) -> ReconstructionMetrics:
+    """NRMSE and spectral loss of the zero-shot reconstruction, `coolfrog.lib.metrics` definitions."""
+    cached = reconstruction_path(design_id).exists() and cache_path(design_id, GRID).exists()
+    flow, reconstructed = await _load(request, cached, load_reconstruction, design_id)
+    reference = flow.unsqueeze(0)
+    stats = NormalizationStats.from_flowfields([reference])
+    prediction = reference.replace(fields=reconstructed.unsqueeze(0)).normalize(stats)
+    reference = reference.normalize(stats)
+    return ReconstructionMetrics(
+        nrmse=nrmse(prediction, reference).row(0)[1:],
+        spectral_loss=spectral_loss(prediction, reference).row(0)[1:],
+    )
+
+
+def _field_response(values: torch.Tensor, flow: FlowField, channel: int) -> Response:
+    """`values` then the fluid mask of `flow`'s channel, see `/api/fields`."""
+    values = np.asarray(values.numpy(), dtype="<f4").ravel(order="F")
+    mask = flow.mask.numpy().ravel(order="F") & np.isfinite(flow.fields[channel].numpy().ravel(order="F"))
     if not mask.any():
-        raise HTTPException(422, f"Design {design_id} has no finite fluid values for {CHANNELS[channel]}")
+        raise HTTPException(422, f"Design {flow.design_id.item()} has no finite fluid values for {CHANNELS[channel]}")
     return Response(values.tobytes() + mask.astype(np.uint8).tobytes(), media_type="application/octet-stream")
+
+
+@cache
+def tadpole() -> Tadpole:
+    return Tadpole(TadpoleConfig(size="B")).eval()
+
+
+def reconstruction_path(design_id: int) -> Path:
+    voxels_x, voxels_y, voxels_z = GRID.resolution
+    return CACHE_DIR / f"tadpole_b_zero_shot_{voxels_x}x{voxels_y}x{voxels_z}" / f"{design_id}.pt"
+
+
+def load_reconstruction(design_id: int) -> tuple[FlowField, torch.Tensor]:
+    """Simulation and its cached zero-shot reconstruction (C, X, Y, Z) in physical units.
+
+    - Each channel is scaled to [-1, 1] by this design's own fluid min and max, Tadpole's pre-training range
+    - Takes about 45 s on 8 CPU cores when uncached
+    """
+    flow = load_flow_field(design_id, GRID, LOCAL_SOURCE)
+    path = reconstruction_path(design_id)
+    if path.exists():
+        return flow, torch.load(path, weights_only=True)
+    batch = flow.unsqueeze(0)
+    with torch.inference_mode():
+        decoded, _ = tadpole()(batch.normalize(NormalizationStats.from_flowfields([batch])), sample=False)
+    reconstructed = decoded.denormalize().fields[0].clone()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(reconstructed, path.with_suffix(".tmp"))
+    path.with_suffix(".tmp").replace(path)
+    return flow, reconstructed
 
 
 @app.get("/api/surface/{design_id}", response_class=Response)

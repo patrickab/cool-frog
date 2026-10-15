@@ -15,23 +15,24 @@ import vtkColorTransferFunction from '@kitware/vtk.js/Rendering/Core/ColorTransf
 import vtkCubeSource from '@kitware/vtk.js/Filters/Sources/CubeSource';
 import vtkMapper from '@kitware/vtk.js/Rendering/Core/Mapper';
 import vtkActor from '@kitware/vtk.js/Rendering/Core/Actor';
-import { colors, solid } from './lib/colormap';
+import { colormapStops, scalePosition, solid } from './lib/colormap';
+import type { ColorScale } from './lib/colormap';
 import { errorMessage } from './lib/format';
-import { nonDegenerate } from './lib/range';
-import type { Range } from './lib/range';
 import type { Config, FieldViewProps, Surface as SurfaceData } from './api';
 
 type Own = <T extends { delete: () => void }>(object: T) => T;
 /** Adds actors to `renderer`, returns what the view updates without rebuilding. */
 type Build<Controls> = (renderer: vtkRenderer, own: Own) => Controls;
+/** Scalar of masked voxels, below the [0, 1] color positions so it gets the solid color. */
+const MASKED_POSITION = -0.02;
 
-/** Colormap over `range`, `below` gets the solid color for masked values. */
-function lookupTable(range: Range, own: Own, below?: number) {
-  const [min, max] = nonDegenerate(range);
+/** Colormap of `scale` over color positions [0, 1], see `scalePosition`, masked and NaN values get the solid color. */
+function lookupTable(scale: ColorScale, own: Own) {
   const lookup = own(vtkColorTransferFunction.newInstance());
-  if (below !== undefined) lookup.addRGBPoint(below, solid[0] / 255, solid[1] / 255, solid[2] / 255);
+  lookup.addRGBPoint(MASKED_POSITION, solid[0] / 255, solid[1] / 255, solid[2] / 255);
   lookup.set({ nanColor: [solid[0] / 255, solid[1] / 255, solid[2] / 255, 1] });
-  colors.forEach((color, index) => lookup.addRGBPoint(min + (max - min) * index / (colors.length - 1), color[0] / 255, color[1] / 255, color[2] / 255));
+  const stops = colormapStops(scale.colormap);
+  stops.forEach((color, index) => lookup.addRGBPoint(index / (stops.length - 1), color[0] / 255, color[1] / 255, color[2] / 255));
   return lookup;
 }
 
@@ -113,19 +114,17 @@ function SceneView({ container, error, label, onReset }: { container: RefObject<
 }
 
 /** Three orthogonal voxel slices, the Z slice follows `slice`. */
-export default function Volume({ field, config, range, slice }: FieldViewProps) {
+export default function Volume({ field, config, scale, slice }: FieldViewProps) {
   const currentSlice = useRef(slice);
   currentSlice.current = slice;
   const build = useCallback<Build<{ setSlice: (value: number) => void }>>((renderer, own) => {
     const image = own(vtkImageData.newInstance());
     image.setDimensions(...config.dimensions);
     image.setSpacing(config.spacing);
-    const [min, max] = nonDegenerate(range);
-    const maskedValue = min - (max - min) * 0.02;
     const values = new Float32Array(field.values.length);
-    for (let i = 0; i < values.length; i++) values[i] = field.mask[i] ? field.values[i] : maskedValue;
+    for (let i = 0; i < values.length; i++) values[i] = field.mask[i] ? scalePosition(field.values[i], scale) : MASKED_POSITION;
     image.getPointData().setScalars(own(vtkDataArray.newInstance({ name: 'field', numberOfComponents: 1, values })));
-    const lookup = lookupTable(range, own, maskedValue);
+    const lookup = lookupTable(scale, own);
     const mappers = [SlicingMode.I, SlicingMode.J, SlicingMode.K].map((mode, axis) => {
       const mapper = own(vtkImageMapper.newInstance());
       mapper.setInputData(image);
@@ -140,22 +139,23 @@ export default function Volume({ field, config, range, slice }: FieldViewProps) 
       return mapper;
     });
     return { setSlice: (value: number) => { mappers[2].setSlice(value); renderer.getRenderWindow()?.render(); } };
-  }, [field, config, range]);
+  }, [field, config, scale]);
   const { container, scene, error } = useScene(config, build);
   useEffect(() => scene.current?.controls.setSlice(slice), [scene, slice]);
   return <SceneView container={container} error={error} label="Interactive 3D orthogonal field slices" onReset={() => scene.current?.reset()} />;
 }
 
 /** Boundary faces colored by one surface channel, faces facing the camera are culled so the inside stays visible from any angle. */
-export function Surface({ surface, channel, config, range }: { surface: SurfaceData; channel: number; config: Config; range: Range }) {
+export function Surface({ surface, channel, config, scale }: { surface: SurfaceData; channel: number; config: Config; scale: ColorScale }) {
   const build = useCallback<Build<null>>((renderer, own) => {
     const polyData = own(vtkPolyData.newInstance());
     polyData.getPoints().setData(surface.points, 3);
     polyData.getPolys().setData(surface.polygons);
-    polyData.getCellData().setScalars(own(vtkDataArray.newInstance({ name: 'surface', numberOfComponents: 1, values: surface.values[channel] })));
+    const positions = surface.values[channel].map((value) => Number.isNaN(value) ? NaN : scalePosition(value, scale));
+    polyData.getCellData().setScalars(own(vtkDataArray.newInstance({ name: 'surface', numberOfComponents: 1, values: positions })));
     const mapper = own(vtkMapper.newInstance());
     mapper.setInputData(polyData);
-    mapper.setLookupTable(lookupTable(range, own));
+    mapper.setLookupTable(lookupTable(scale, own));
     mapper.setUseLookupTableScalarRange(true);
     mapper.setScalarModeToUseCellData();
     const actor = own(vtkActor.newInstance());
@@ -165,7 +165,7 @@ export function Surface({ surface, channel, config, range }: { surface: SurfaceD
     actor.getProperty().setDiffuse(0.4);
     renderer.addActor(actor);
     return null;
-  }, [surface, channel, range]);
+  }, [surface, channel, scale]);
   const { container, scene, error } = useScene(config, build);
   return <SceneView container={container} error={error} label="Interactive 3D boundary surfaces" onReset={() => scene.current?.reset()} />;
 }

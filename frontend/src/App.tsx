@@ -42,7 +42,7 @@ function Explorer({ config, nav, request, onRequest }: { config: Config; nav: Re
 
   return <Layout nav={nav} sidebar={<Sidebar config={config} busy={sample.status === 'loading'} onSample={onRequest} />}>
     <div className="flex flex-wrap items-center gap-3">
-      <FieldControls config={config} display={display} onChange={setDisplay} colorRange={batch.colorRange} />
+      <FieldControls config={config} display={display} onChange={setDisplay} color={batch.color} />
       <span className="ml-auto text-xs text-ink-muted" role="status">{status}</span>
     </div>
 
