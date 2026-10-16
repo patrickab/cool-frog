@@ -8,6 +8,7 @@ import logging
 import math
 from pathlib import Path
 import tempfile
+from typing import ClassVar
 import zipfile
 
 from huggingface_hub import HfFileSystem
@@ -37,15 +38,6 @@ MESH_ARRAYS: dict[Channel, str] = {
     Channel.TEMPERATURE: "Temperature",
     Channel.TURBULENT_KINETIC_ENERGY: "TurbulentKineticEnergy",
     Channel.TURBULENT_DISSIPATION_RATE: "TurbulentDissipationRate",
-}
-# CGNS surface face array per surface channel
-SURFACE_ARRAYS: dict[SurfaceChannel, str] = {
-    SurfaceChannel.HEAT_TRANSFER_COEFFICIENT: "HeatTransferCoefficient",
-    SurfaceChannel.WALL_SHEAR_STRESS_X: "WallShearStress_0",
-    SurfaceChannel.WALL_SHEAR_STRESS_Y: "WallShearStress_1",
-    SurfaceChannel.WALL_SHEAR_STRESS_Z: "WallShearStress_2",
-    SurfaceChannel.PRESSURE: "Pressure",
-    SurfaceChannel.TEMPERATURE: "Temperature",
 }
 
 logger = logging.getLogger(__name__)
@@ -126,93 +118,110 @@ def _volume_filename(design_id: int) -> str:
 
 @dataclass(frozen=True)
 class SurfaceMesh:
-    """Boundary faces of one design: `points` (N, 3) in m, legacy VTK `polygons` [n, i0, …], `values` (channels, faces)."""
+    """Boundary faces of one design for the UI viewer, see `load`.
+
+    Attributes
+    ----------
+    points : np.ndarray
+        (N, 3) in m.
+    polygons : np.ndarray
+        Legacy VTK faces [n, i0, …, n, i0, …].
+    values : np.ndarray
+        (channels, faces) in `SURFACE_CHANNELS` order, NaN where a patch lacks the array.
+    """
 
     points: np.ndarray
     polygons: np.ndarray
     values: np.ndarray
 
+    # CGNS (CFD General Notation System) face array per surface channel
+    CGNS_ARRAYS: ClassVar[dict[SurfaceChannel, str]] = {
+        SurfaceChannel.HEAT_TRANSFER_COEFFICIENT: "HeatTransferCoefficient",
+        SurfaceChannel.WALL_SHEAR_STRESS_X: "WallShearStress_0",
+        SurfaceChannel.WALL_SHEAR_STRESS_Y: "WallShearStress_1",
+        SurfaceChannel.WALL_SHEAR_STRESS_Z: "WallShearStress_2",
+        SurfaceChannel.PRESSURE: "Pressure",
+        SurfaceChannel.TEMPERATURE: "Temperature",
+    }
+    # Vertical domain walls that can cut a body open, (normal axis, coordinate in m): inlet x = 0, sides y = 0 and y = 0.1
+    CUT_WALLS: ClassVar[tuple[tuple[int, float], ...]] = ((0, 0.0), (1, 0.0), (1, 0.1))
 
-def surface_cache_path(design_id: int) -> Path:
-    """Surface cache file of one design, existing once read."""
-    return CACHE_DIR / "surfaces" / f"{design_id}.npz"
+    @staticmethod
+    def cache_path(design_id: int) -> Path:
+        """Cache file of one design, existing once loaded."""
+        return CACHE_DIR / "surfaces" / f"{design_id}.npz"
 
+    @classmethod
+    def load(cls, design_id: int, source: Path | None = None) -> "SurfaceMesh":
+        """Surface of one design, from `cache_path` or read from its CGNS and cached.
 
-def load_surface(design_id: int, source: Path | None = None) -> SurfaceMesh:
-    """Boundary surface of one design in `SURFACE_CHANNELS` order, cached in `surface_cache_path` on first read.
-
-    - Reads the surface from `source` when it holds it, else from the design's HF batch zip
-    - Not thread-safe on cache misses, VTK readers share state
-    """
-    design_cache_path = surface_cache_path(design_id)
-    if not design_cache_path.exists():
+        - Reads the CGNS from `source` when it holds it, else from the design's HF batch zip
+        - Not thread-safe on cache misses, VTK readers share state
+        """
+        cache_path = cls.cache_path(design_id)
+        if cache_path.exists():
+            with np.load(cache_path) as cached:
+                return cls(**cached)
         rows = load_metadata().filter(pl.col("design_id") == design_id)
         if rows.is_empty():
             raise UnknownDesignError(f"Unknown design: {design_id}")
-        surface_filename = f"surface_design_{design_id:07d}_p.cgns"
+        filename = f"surface_design_{design_id:07d}_p.cgns"
         with tempfile.TemporaryDirectory() as temp_dir:
-            if source is not None and (source / "surface" / surface_filename).is_file():
-                surface = _read_surface(source / "surface" / surface_filename)
+            if source is not None and (source / "surface" / filename).is_file():
+                mesh = cls._read_cgns(source / "surface" / filename)
             else:
                 batch_path = f"{HF_DATASET}/runs/{rows.item(0, 'run')}/{rows.item(0, 'batch')}.zip"
                 with HfFileSystem().open(batch_path, "rb", block_size=2**18) as remote_zip, zipfile.ZipFile(remote_zip) as archive:
-                    surface = _read_surface(Path(archive.extract(surface_filename, temp_dir)))
-        design_cache_path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = design_cache_path.with_suffix(".tmp")
+                    mesh = cls._read_cgns(Path(archive.extract(filename, temp_dir)))
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = cache_path.with_suffix(".tmp")
         with temp_path.open("wb") as temp_file:
-            np.savez(temp_file, points=surface.points, polygons=surface.polygons, values=surface.values)
-        temp_path.replace(design_cache_path)
-    with np.load(design_cache_path) as cached:
-        return SurfaceMesh(points=cached["points"], polygons=cached["polygons"], values=cached["values"])
+            np.savez(temp_file, **vars(mesh))
+        temp_path.replace(cache_path)
+        return mesh
 
+    @classmethod
+    def _read_cgns(cls, cgns_path: Path) -> "SurfaceMesh":
+        """Merge every boundary patch into one mesh, plus caps where walls cut bodies open, see `_build_caps`."""
+        patches = pv.read(cgns_path)[0]
+        points, polygons, values = [], [], []
+        point_offset = 0
+        for name, patch in zip(patches.keys(), patches, strict=True):
+            face_sizes = np.diff(patch.cell_offsets)
+            polygons.append(np.insert(patch.cell_connectivity + point_offset, patch.cell_offsets[:-1], face_sizes))
+            points.append(patch.points)
+            point_offset += patch.n_points
+            missing = np.full(patch.n_cells, np.nan)
+            values.append([np.asarray(patch.cell_data.get(cls.CGNS_ARRAYS[channel], missing)) for channel in SURFACE_CHANNELS])
+            if name.startswith("Pipe Body"):
+                for cap in cls._build_caps(np.asarray(patch.points)):
+                    corner_indices = point_offset + np.arange(4)
+                    # Both windings, so the cap survives the viewer's front-face culling from either side
+                    polygons.append(np.concatenate([[4], corner_indices, [4], corner_indices[::-1]]))
+                    points.append(cap)
+                    values.append(np.full((len(SURFACE_CHANNELS), 2), np.nan))
+                    point_offset += 4
+        return cls(
+            points=np.concatenate(points).astype(np.float32),
+            polygons=np.concatenate(polygons).astype(np.uint32),
+            values=np.concatenate(values, axis=1).astype(np.float32),
+        )
 
-def _read_surface(surface_path: Path) -> SurfaceMesh:
-    """Merge every boundary patch of a surface CGNS into one mesh, NaN for arrays a patch lacks.
+    @classmethod
+    def _build_caps(cls, body_points: np.ndarray) -> list[np.ndarray]:
+        """(4, 3) corners of one rectangle per wall cutting the body, closing the hole the cut leaves.
 
-    - Adds NaN caps where walls cut bodies open, see `_build_caps`
-    """
-    surface = pv.read(surface_path)[0]
-    points, polygons, values = [], [], []
-    point_offset = 0
-    for name, patch in zip(surface.keys(), surface, strict=True):
-        face_sizes = np.diff(patch.cell_offsets)
-        polygons.append(np.insert(patch.cell_connectivity + point_offset, patch.cell_offsets[:-1], face_sizes))
-        points.append(patch.points)
-        point_offset += patch.n_points
-        missing = np.full(patch.n_cells, np.nan)
-        values.append([np.asarray(patch.cell_data.get(SURFACE_ARRAYS[channel], missing)) for channel in SURFACE_CHANNELS])
-        if name.startswith("Pipe Body"):
-            for cap in _build_caps(np.asarray(patch.points)):
-                corner_indices = point_offset + np.arange(4)
-                # Both windings, so the cap survives the viewer's front-face culling from either side
-                polygons.append(np.concatenate([[4], corner_indices, [4], corner_indices[::-1]]))
-                points.append(cap)
-                values.append(np.full((len(SURFACE_CHANNELS), 2), np.nan))
-                point_offset += 4
-    return SurfaceMesh(
-        points=np.concatenate(points).astype(np.float32),
-        polygons=np.concatenate(polygons).astype(np.uint32),
-        values=np.concatenate(values, axis=1).astype(np.float32),
-    )
-
-
-# Vertical domain walls that can cut a body open, (normal axis, coordinate in m): inlet x = 0, sides y = 0 and y = 0.1
-CUT_WALLS = ((0, 0.0), (1, 0.0), (1, 0.1))
-
-
-def _build_caps(body_points: np.ndarray) -> list[np.ndarray]:
-    """(4, 3) corners of one rectangle per wall cutting the body, closing the hole the cut leaves.
-
-    - UI rendering only, the caps touch no airflow and are not part of the simulation, so `CoolDataset` never sees them
-    - Walls and bodies are vertical, so a cut spans the body's in-wall points horizontally and vertically
-    """
-    caps = []
-    for axis, coordinate in CUT_WALLS:
-        points_in_wall = body_points[np.isclose(body_points[:, axis], coordinate, rtol=0, atol=1e-6)]
-        if len(points_in_wall) > 0:
-            (x_low, y_low, z_low), (x_high, y_high, z_high) = points_in_wall.min(axis=0), points_in_wall.max(axis=0)
-            caps.append(np.array([(x_low, y_low, z_low), (x_high, y_high, z_low), (x_high, y_high, z_high), (x_low, y_low, z_high)]))
-    return caps
+        - UI rendering only, the caps touch no airflow and are not part of the simulation, so `CoolDataset` never sees them
+        - Walls and bodies are vertical, so a cut spans the body's in-wall points horizontally and vertically
+        """
+        caps = []
+        for axis, coordinate in cls.CUT_WALLS:
+            points_in_wall = body_points[np.isclose(body_points[:, axis], coordinate, rtol=0, atol=1e-6)]
+            if len(points_in_wall) > 0:
+                (x_low, y_low, z_low), (x_high, y_high, z_high) = points_in_wall.min(axis=0), points_in_wall.max(axis=0)
+                corners = [(x_low, y_low, z_low), (x_high, y_high, z_low), (x_high, y_high, z_high), (x_low, y_low, z_high)]
+                caps.append(np.array(corners))
+        return caps
 
 
 class CoolDataset(Dataset[FlowField]):
