@@ -15,31 +15,47 @@ import vtkColorTransferFunction from '@kitware/vtk.js/Rendering/Core/ColorTransf
 import vtkCubeSource from '@kitware/vtk.js/Filters/Sources/CubeSource';
 import vtkMapper from '@kitware/vtk.js/Rendering/Core/Mapper';
 import vtkActor from '@kitware/vtk.js/Rendering/Core/Actor';
-import { colormapStops, scalePosition, solid } from './lib/colormap';
+import { colormapStops, oklchToRgb, scalePosition, themeColors } from './lib/colormap';
 import type { ColorScale } from './lib/colormap';
 import { errorMessage } from './lib/format';
+import { useTheme } from './lib/ui';
 import type { Config, FieldViewProps, Surface as SurfaceData } from './api';
 
 type Own = <T extends { delete: () => void }>(object: T) => T;
+type ThemeColors = ReturnType<typeof themeColors>;
+type ThemeControls = { setTheme: (colors: ThemeColors) => void };
 /** Adds actors to `renderer`, returns what the view updates without rebuilding. */
-type Build<Controls> = (renderer: vtkRenderer, own: Own) => Controls;
+type Build<Controls extends ThemeControls> = (renderer: vtkRenderer, own: Own, colors: ThemeColors) => Controls;
 /** Scalar of masked voxels, below the [0, 1] color positions so it gets the solid color. */
 const MASKED_POSITION = -0.02;
 
+function vtkColor(color: readonly number[]): [number, number, number] {
+  const [r, g, b] = oklchToRgb(color);
+  return [r / 255, g / 255, b / 255];
+}
+
 /** Colormap of `scale` over color positions [0, 1], see `scalePosition`, masked and NaN values get the solid color. */
-function lookupTable(scale: ColorScale, own: Own) {
+function lookupTable(scale: ColorScale, own: Own, colors: ThemeColors) {
   const lookup = own(vtkColorTransferFunction.newInstance());
-  lookup.addRGBPoint(MASKED_POSITION, solid[0] / 255, solid[1] / 255, solid[2] / 255);
-  lookup.set({ nanColor: [solid[0] / 255, solid[1] / 255, solid[2] / 255, 1] });
+  const setTheme = (palette: ThemeColors) => {
+    const solid = vtkColor(palette.solid);
+    lookup.addRGBPoint(MASKED_POSITION, ...solid);
+    lookup.set({ nanColor: [...solid, 1] });
+  };
+  setTheme(colors);
   const stops = colormapStops(scale.colormap);
   stops.forEach((color, index) => lookup.addRGBPoint(index / (stops.length - 1), color[0] / 255, color[1] / 255, color[2] / 255));
-  return lookup;
+  return { lookup, setTheme };
 }
 
 /** vtk.js window with the channel outline, rebuilt when `build` or `config` change, camera oblique over the channel. */
-function useScene<Controls>(config: Config, build: Build<Controls>) {
+function useScene<Controls extends ThemeControls>(config: Config, build: Build<Controls>) {
+  const { theme } = useTheme();
+  const colors = themeColors(theme);
+  const currentColors = useRef(colors);
+  currentColors.current = colors;
   const container = useRef<HTMLDivElement>(null);
-  const scene = useRef<{ controls: Controls; reset: () => void } | null>(null);
+  const scene = useRef<{ controls: Controls; reset: () => void; setTheme: (palette: ThemeColors) => void } | null>(null);
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -61,13 +77,13 @@ function useScene<Controls>(config: Config, build: Build<Controls>) {
       host.replaceChildren();
     };
     try {
-      // `--surface` from style.css, so the canvas blends into its card
-      genericWindow = vtkGenericRenderWindow.newInstance({ background: [0.98, 0.965, 0.933], listenWindowResize: false });
+      const palette = currentColors.current;
+      genericWindow = vtkGenericRenderWindow.newInstance({ background: vtkColor(palette.surface), listenWindowResize: false });
       genericWindow.setContainer(host);
       const renderWindow = own(genericWindow.getRenderWindow());
       const renderer = own(genericWindow.getRenderer());
       own(genericWindow.getInteractor());
-      const controls = build(renderer, own);
+      const controls = build(renderer, own, palette);
       const lengths = config.dimensions.map((size, axis) => (size - 1) * config.spacing[axis]);
       const center: [number, number, number] = [lengths[0] / 2, lengths[1] / 2, lengths[2] / 2];
       const box = own(vtkCubeSource.newInstance({ xLength: lengths[0], yLength: lengths[1], zLength: lengths[2], center }));
@@ -76,7 +92,7 @@ function useScene<Controls>(config: Config, build: Build<Controls>) {
       const outline = own(vtkActor.newInstance());
       outline.setMapper(mapper);
       outline.getProperty().setRepresentationToWireframe();
-      outline.getProperty().setColor(0.655, 0.643, 0.624);
+      outline.getProperty().setColor(...vtkColor(palette.outline));
       outline.getProperty().setLighting(false);
       renderer.addActor(outline);
       const reset = () => {
@@ -89,7 +105,14 @@ function useScene<Controls>(config: Config, build: Build<Controls>) {
         renderer.resetCameraClippingRange();
         renderWindow.render();
       };
-      scene.current = { controls, reset };
+      const setTheme = (nextColors: ThemeColors) => {
+        if (disposed) return;
+        renderer.setBackground(...vtkColor(nextColors.surface));
+        outline.getProperty().setColor(...vtkColor(nextColors.outline));
+        controls.setTheme(nextColors);
+        renderWindow.render();
+      };
+      scene.current = { controls, reset, setTheme };
       observer = new ResizeObserver(() => genericWindow?.resize());
       observer.observe(host);
       genericWindow.resize();
@@ -100,6 +123,8 @@ function useScene<Controls>(config: Config, build: Build<Controls>) {
     }
     return dispose;
   }, [build, config]);
+
+  useEffect(() => scene.current?.setTheme(colors), [colors]);
 
   return { container, scene, error };
 }
@@ -117,14 +142,14 @@ function SceneView({ container, error, label, onReset }: { container: RefObject<
 export default function Volume({ field, config, scale, slice }: FieldViewProps) {
   const currentSlice = useRef(slice);
   currentSlice.current = slice;
-  const build = useCallback<Build<{ setSlice: (value: number) => void }>>((renderer, own) => {
+  const build = useCallback<Build<ThemeControls & { setSlice: (value: number) => void }>>((renderer, own, colors) => {
     const image = own(vtkImageData.newInstance());
     image.setDimensions(...config.dimensions);
     image.setSpacing(config.spacing);
     const values = new Float32Array(field.values.length);
     for (let i = 0; i < values.length; i++) values[i] = field.mask[i] ? scalePosition(field.values[i], scale) : MASKED_POSITION;
     image.getPointData().setScalars(own(vtkDataArray.newInstance({ name: 'field', numberOfComponents: 1, values })));
-    const lookup = lookupTable(scale, own);
+    const { lookup, setTheme } = lookupTable(scale, own, colors);
     const mappers = [SlicingMode.I, SlicingMode.J, SlicingMode.K].map((mode, axis) => {
       const mapper = own(vtkImageMapper.newInstance());
       mapper.setInputData(image);
@@ -138,7 +163,7 @@ export default function Volume({ field, config, scale, slice }: FieldViewProps) 
       renderer.addViewProp(actor);
       return mapper;
     });
-    return { setSlice: (value: number) => { mappers[2].setSlice(value); renderer.getRenderWindow()?.render(); } };
+    return { setTheme, setSlice: (value: number) => { mappers[2].setSlice(value); renderer.getRenderWindow()?.render(); } };
   }, [field, config, scale]);
   const { container, scene, error } = useScene(config, build);
   useEffect(() => scene.current?.controls.setSlice(slice), [scene, slice]);
@@ -147,7 +172,7 @@ export default function Volume({ field, config, scale, slice }: FieldViewProps) 
 
 /** Boundary faces colored by one surface channel, faces facing the camera are culled so the inside stays visible from any angle. */
 export function Surface({ surface, channel, config, scale }: { surface: SurfaceData; channel: number; config: Config; scale: ColorScale }) {
-  const build = useCallback<Build<null>>((renderer, own) => {
+  const build = useCallback<Build<ThemeControls>>((renderer, own, colors) => {
     const polyData = own(vtkPolyData.newInstance());
     polyData.getPoints().setData(surface.points, 3);
     polyData.getPolys().setData(surface.polygons);
@@ -155,7 +180,8 @@ export function Surface({ surface, channel, config, scale }: { surface: SurfaceD
     polyData.getCellData().setScalars(own(vtkDataArray.newInstance({ name: 'surface', numberOfComponents: 1, values: positions })));
     const mapper = own(vtkMapper.newInstance());
     mapper.setInputData(polyData);
-    mapper.setLookupTable(lookupTable(scale, own));
+    const { lookup, setTheme } = lookupTable(scale, own, colors);
+    mapper.setLookupTable(lookup);
     mapper.setUseLookupTableScalarRange(true);
     mapper.setScalarModeToUseCellData();
     const actor = own(vtkActor.newInstance());
@@ -164,7 +190,7 @@ export function Surface({ surface, channel, config, scale }: { surface: SurfaceD
     actor.getProperty().setAmbient(0.6);
     actor.getProperty().setDiffuse(0.4);
     renderer.addActor(actor);
-    return null;
+    return { setTheme };
   }, [surface, channel, scale]);
   const { container, scene, error } = useScene(config, build);
   return <SceneView container={container} error={error} label="Interactive 3D boundary surfaces" onReset={() => scene.current?.reset()} />;

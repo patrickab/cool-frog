@@ -1,10 +1,11 @@
 @import "@fontsource-variable/outfit";
 @import "tailwindcss";
 
-/* Theme tokens, light mode of ~/git/gigachad-bot.
-   Role tokens are warm OKLCH (hue 85, tiny chroma): surfaces ascend from a
-   cream page toward, never to, white. Derived tokens mix from the role tokens. */
+/* Warm neutral themes. Renderer equivalents live in lib/colormap.ts. */
 :root {
+  color-scheme: light;
+  background: var(--paper);
+  color: var(--ink);
   --shadow-color: oklch(35% 0.01 85);
 
   /* Text, warm charcoal down to faint grey */
@@ -19,7 +20,7 @@
   --surface-elevated: oklch(99% 0.006 85);
 
   --danger: oklch(52% 0.22 25);
-  /* Solid voxels in plots, keep in sync with `solid` in colors.ts */
+  /* Solid voxels use the same role in canvas and WebGL renderers. */
   --solid: oklch(84% 0.012 85);
 
   /* Derived */
@@ -37,6 +38,27 @@
     0 8px 20px color-mix(in oklab, var(--shadow-color) 3%, transparent);
   --inner-highlight: inset 0 1px 0 0 oklch(100% 0 0 / 0.5);
 }
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --shadow-color: oklch(8% 0.006 85);
+  --ink: oklch(92% 0.012 85);
+  --ink-muted: oklch(75% 0.012 85);
+  --ink-subtle: oklch(64% 0.010 85);
+  --ink-faint: oklch(55% 0.008 85);
+  --paper: oklch(19% 0.008 85);
+  --surface: oklch(23.5% 0.008 85);
+  --surface-elevated: oklch(29% 0.008 85);
+  --danger: oklch(75% 0.15 25);
+  --solid: oklch(44% 0.008 85);
+  --shadow-sm: 0 1px 2px color-mix(in oklab, var(--shadow-color) 24%, transparent),
+    0 2px 8px color-mix(in oklab, var(--shadow-color) 18%, transparent);
+  --shadow-md: 0 2px 4px color-mix(in oklab, var(--shadow-color) 28%, transparent),
+    0 6px 20px color-mix(in oklab, var(--shadow-color) 24%, transparent);
+  --inner-highlight: inset 0 1px 0 0 color-mix(in oklab, var(--ink) 7%, transparent);
+}
+
+body { margin: 0; }
 
 /* Wipe Tailwind's default palette so only role tokens compile */
 @theme {

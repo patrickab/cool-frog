@@ -19,8 +19,6 @@ const COLORMAPS: Record<Colormap, readonly Rgb[]> = {
 };
 /** Colormap over `range`, `log` maps log10 of the value, values outside `range` clip to the end colors. */
 export type ColorScale = { colormap: Colormap; range: Range; log: boolean };
-// `--solid` from style.css
-export const solid = [206, 202, 194] as const;
 
 export const gradientCss = (colormap: Colormap) => `linear-gradient(90deg, ${COLORMAPS[colormap].map((color) => `rgb(${color.join(',')})`).join(', ')})`;
 
@@ -73,18 +71,21 @@ export function colorScaleOf(kind: ScaleKind, values: Float32Array, trim = 0): C
 
 /** Tensor axis kinds of the Tadpole shape notation, one fixed color each in formulas and 3D scenes. */
 export type Axis = 'batch' | 'channel' | 'crop' | 'spatial' | 'feature';
-/** OKLCH lightness, chroma, hue per axis, mid lightness keeps ≥ 4.5:1 text contrast on `surface`. */
-export const AXIS_COLORS: Record<Axis, readonly [number, number, number]> = {
-  batch: [0.5, 0.13, 255],
-  channel: [0.5, 0.12, 150],
-  crop: [0.52, 0.12, 55],
-  spatial: [0.42, 0.015, 85],
-  feature: [0.5, 0.15, 320],
-};
-// `--surface`, `--ink` and `--solid` from style.css as OKLCH, for 3D scenes
-export const SURFACE_OKLCH = [0.975, 0.012, 85] as const;
-export const INK_OKLCH = [0.3, 0.012, 85] as const;
-export const SOLID_OKLCH = [0.84, 0.012, 85] as const;
+type Oklch = readonly [number, number, number]
+type ThemeColors = { surface: Oklch; ink: Oklch; solid: Oklch; outline: Oklch; axes: Record<Axis, Oklch> }
+/** Renderer colors mirror CSS roles, axis hues retain their meaning in both themes. */
+const THEME_COLORS: Record<'light' | 'dark', ThemeColors> = {
+  light: {
+    surface: [0.975, 0.012, 85], ink: [0.3, 0.012, 85], solid: [0.84, 0.012, 85], outline: [0.72, 0.008, 85],
+    axes: { batch: [0.5, 0.13, 255], channel: [0.5, 0.12, 150], crop: [0.52, 0.12, 55], spatial: [0.42, 0.015, 85], feature: [0.5, 0.15, 320] },
+  },
+  dark: {
+    surface: [0.235, 0.008, 85], ink: [0.92, 0.012, 85], solid: [0.44, 0.008, 85], outline: [0.55, 0.008, 85],
+    axes: { batch: [0.76, 0.10, 255], channel: [0.76, 0.10, 150], crop: [0.78, 0.10, 55], spatial: [0.78, 0.015, 85], feature: [0.76, 0.12, 320] },
+  },
+}
+
+export const themeColors = (theme: 'light' | 'dark') => THEME_COLORS[theme]
 
 export const oklchCss = ([lightness, chroma, hue]: readonly number[]) => `oklch(${lightness} ${chroma} ${hue})`;
 
@@ -100,6 +101,13 @@ export function oklchToLinear([lightness, chroma, hue]: readonly number[]): [num
     -1.2684380046 * long + 2.6097574011 * medium - 0.3413193965 * short,
     -0.0041960863 * long - 0.7034186147 * medium + 1.707614701 * short,
   ].map((component) => Math.min(1, Math.max(0, component))) as [number, number, number];
+}
+
+/** Convert theme colors to 8-bit sRGB for canvas pixels and vtk.js. */
+export function oklchToRgb(color: readonly number[]): [number, number, number] {
+  return oklchToLinear(color).map((component) => Math.round(255 * (component <= 0.0031308
+    ? 12.92 * component
+    : 1.055 * component ** (1 / 2.4) - 0.055))) as [number, number, number]
 }
 
 /** Whether any of `values` falls below or above the scale and shows in an end color. */

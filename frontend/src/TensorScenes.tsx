@@ -5,9 +5,9 @@ import type { ReactNode } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { Config, Field } from './api';
-import { AXIS_COLORS, colorAt, INK_OKLCH, oklchCss, oklchToLinear, SOLID_OKLCH, SURFACE_OKLCH } from './lib/colormap';
+import { colorAt, oklchCss, oklchToLinear, themeColors } from './lib/colormap';
 import type { Axis, ColorScale } from './lib/colormap';
-import { Disclosure, Panel, Segmented, Slider } from './lib/ui';
+import { Disclosure, Panel, Segmented, Slider, useTheme } from './lib/ui';
 
 /** Exact integer with thousands separators, value counts here must not be rounded. */
 const formatCount = (value: number) => value.toLocaleString('en-US');
@@ -160,15 +160,14 @@ function arrange(stage: Stage, toy: Toy, size: Size, elements: Element[]): { pos
 
 /* ---------- Shared 3D primitives ---------- */
 
-const SURFACE = oklchToLinear(SURFACE_OKLCH);
-const INK = oklchToLinear(INK_OKLCH);
-const SOLID = oklchToLinear(SOLID_OKLCH);
-const axisLinear = (axis: Axis) => oklchToLinear(AXIS_COLORS[axis]);
+type Palette = ReturnType<typeof themeColors>;
 /** Mix a linear color toward the surface, 0 keeps it, 1 is the surface. */
-const dim = (color: readonly number[], amount: number) => color.map((component, index) => component + (SURFACE[index] - component) * amount);
+const dim = (color: readonly number[], amount: number, surface: readonly number[]) => color.map((component, index) => component + (surface[index] - component) * amount);
 const linearColor = (rgb: readonly number[]) => COLOR.setRGB(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255, THREE.SRGBColorSpace).toArray();
-/** Learned features have no field value, they are drawn in one neutral gray. */
-const FEATURE_GRAY = [0.68, 0.01, 85] as const;
+/** Learned features are neutral, with contrast measured from solid toward ink in either theme. */
+const featureGray = (palette: Palette, contrast: number, chroma = palette.solid[1]) => oklchToLinear([
+  palette.solid[0] + Math.sign(palette.ink[0] - palette.solid[0]) * contrast, chroma, palette.solid[2],
+]);
 
 const MATRIX = new THREE.Matrix4();
 const COLOR = new THREE.Color();
@@ -176,6 +175,7 @@ const BOX = new THREE.BoxGeometry(1, 1, 1);
 const EDGES = new THREE.EdgesGeometry(BOX);
 const VIEW_DIRECTION = new THREE.Vector3(0.9, 1, 1.5).normalize();
 const TRANSITION_MS = 700;
+const SCENE_CAMERA = { near: 1, far: 4000, position: [0, 0, 1000] as THREE.Vector3Tuple };
 
 /** Instanced cubes, position and scale changes animate so every element can be followed, colors switch at once. */
 function Voxels({ positions, scales, colors, onHover, onSelect }: {
@@ -237,17 +237,23 @@ function Voxels({ positions, scales, colors, onHover, onSelect }: {
 
 /** Box outline from `min` to `max` corner, in ink. */
 function Outline({ min, max }: { min: THREE.Vector3Tuple; max: THREE.Vector3Tuple }) {
+  const { theme } = useTheme();
+  const ink = themeColors(theme).ink;
+  const color = useMemo(() => new THREE.Color(...oklchToLinear(ink)), [ink]);
   return <lineSegments geometry={EDGES} position={min.map((value, axis) => (value + max[axis]) / 2) as THREE.Vector3Tuple}
     scale={min.map((value, axis) => max[axis] - value) as THREE.Vector3Tuple}>
-    <lineBasicMaterial color={new THREE.Color(...INK)} />
+    <lineBasicMaterial color={color} />
   </lineSegments>;
 }
 
 /** Straight segments between consecutive point pairs. */
 function Segments({ points, opacity = 1 }: { points: number[]; opacity?: number }) {
+  const { theme } = useTheme();
+  const ink = themeColors(theme).ink;
+  const color = useMemo(() => new THREE.Color(...oklchToLinear(ink)), [ink]);
   const geometry = useMemo(() => new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(points, 3)), [points]);
   return <lineSegments geometry={geometry} renderOrder={1}>
-    <lineBasicMaterial color={new THREE.Color(...INK)} transparent opacity={opacity} depthTest={false} />
+    <lineBasicMaterial color={color} transparent opacity={opacity} depthTest={false} />
   </lineSegments>;
 }
 
@@ -292,8 +298,12 @@ function Orbit() {
 
 /** Canvas on the panel surface: soft light, orbit on drag, no animation loop. */
 function Scene({ bounds, label, height = 380, children }: { bounds: THREE.Box3; label: string; height?: number; children: ReactNode }) {
+  const { theme } = useTheme();
+  const surface = themeColors(theme).surface;
+  const background = useMemo(() => oklchToLinear(surface), [surface]);
   return <div role="img" aria-label={label} style={{ height }} className="cursor-grab active:cursor-grabbing">
-    <Canvas orthographic frameloop="demand" dpr={[1, 2]} camera={{ near: 1, far: 4000, position: [0, 0, 1000] }} gl={{ antialias: true }}>
+    <Canvas orthographic frameloop="demand" dpr={[1, 2]} camera={SCENE_CAMERA} gl={{ antialias: true }}>
+      <color attach="background" args={background} />
       <ambientLight intensity={2.1} />
       <directionalLight position={[3, 10, 6]} intensity={1.4} />
       {children}
@@ -361,7 +371,8 @@ function symbolValue(symbol: AxisSymbol, stage: Stage, toy: Toy): number {
 type Highlight = { varies: Coordinate[] } | undefined;
 
 /** Field values in viridis while a stage holds values, gray once it holds learned features. */
-function elementColors(elements: Element[], toy: Toy, stage: Stage, selected: number | undefined, highlight: Highlight): Float32Array {
+function elementColors(elements: Element[], toy: Toy, stage: Stage, selected: number | undefined, highlight: Highlight, palette: Palette): Float32Array {
+  const surface = oklchToLinear(palette.surface);
   const fields = toy.batch * toy.channels;
   const group = stage.arrangement === 'downstream' ? toy.factor : toyGroup(stage.divisor, toy.factor);
   const showsValues = stage.channels(SIZE) === 1;
@@ -373,11 +384,11 @@ function elementColors(elements: Element[], toy: Toy, stage: Stage, selected: nu
     const logVariance = stage.kl === 'split' && coordinate(element, 'q', group) === 1;
     let color: readonly number[] = showsValues
       ? linearColor(colorAt(toyValue(field, element.u * toy.crop + element.i, element.v * toy.crop + element.j, element.w * toy.crop + element.k), TOY_VALUE_SCALE))
-      : oklchToLinear([FEATURE_GRAY[0] - (0.16 * field) / Math.max(1, fields - 1) + (logVariance ? 0.12 : 0), FEATURE_GRAY[1], FEATURE_GRAY[2]]);
+      : featureGray(palette, 0.16 + (0.16 * field) / Math.max(1, fields - 1) - (logVariance ? 0.12 : 0), palette.solid[1] * 5 / 6);
     if (anchor) {
       const keep = highlight ? fixed.filter((name) => !highlight.varies.includes(name)) : fixed.filter((name) => name !== 'q');
       const matches = keep.every((name) => coordinate(element, name, group) === coordinate(anchor, name, group));
-      if (!matches) color = dim(color, highlight ? 0.85 : 0.6);
+      if (!matches) color = dim(color, highlight ? 0.85 : 0.6, surface);
     }
     colors.set(color, index * 3);
   });
@@ -385,10 +396,12 @@ function elementColors(elements: Element[], toy: Toy, stage: Stage, selected: nu
 }
 
 function IndexTrace({ element, toy, size }: { element: Element; toy: Toy; size: Size }) {
+  const { theme } = useTheme();
+  const palette = themeColors(theme);
   const { b, c, u, v, w, i, j, k } = element;
   const { batch, channels, crop, factor } = toy;
   const cropsPerAxis = TOY_EDGE / crop;
-  const color = (axis: Axis) => ({ color: oklchCss(AXIS_COLORS[axis]) });
+  const color = (axis: Axis) => ({ color: oklchCss(palette.axes[axis]) });
   const S = ({ axis, children }: { axis: Axis; children: ReactNode }) => <span style={color(axis)}>{children}</span>;
   const [x, y, z] = [u * crop + i, v * crop + j, w * crop + k];
   const row = (((b * channels + c) * cropsPerAxis + u) * cropsPerAxis + v) * cropsPerAxis + w;
@@ -408,11 +421,13 @@ function IndexTrace({ element, toy, size }: { element: Element; toy: Toy; size: 
 
 /** Shape symbols with their toy sizes, hovering a symbol highlights the cubes along its axis. */
 function ShapeReadout({ stage, toy, onHighlight }: { stage: Stage; toy: Toy; onHighlight: (highlight: Highlight) => void }) {
+  const { theme } = useTheme();
+  const palette = themeColors(theme);
   const shape = shapeOf(stage, SIZE);
   const tuple = (render: (symbol: AxisSymbol) => ReactNode) => <>({shape.map((dimension, index) => <Fragment key={index}>{index > 0 && ', '}
     {dimension.map((symbol, part) => <Fragment key={part}>{part > 0 && '·'}{render(symbol)}</Fragment>)}</Fragment>)})</>;
   return <p className="text-base tabular-nums">
-    {tuple((symbol) => <button type="button" title="Highlight this axis" style={{ color: oklchCss(AXIS_COLORS[symbol.axis]) }}
+    {tuple((symbol) => <button type="button" title="Highlight this axis" style={{ color: oklchCss(palette.axes[symbol.axis]) }}
       className="rounded px-px font-medium hover:bg-hover-strong focus-visible:bg-hover-strong focus-visible:outline-none"
       onPointerEnter={() => onHighlight({ varies: symbol.varies })} onPointerLeave={() => onHighlight(undefined)}
       onFocus={() => onHighlight({ varies: symbol.varies })} onBlur={() => onHighlight(undefined)}><Notation text={symbol.text} /></button>)}
@@ -501,6 +516,8 @@ function stageLesson(stage: Stage): { action: string; explanation: string } {
  * - Toy edge 8, crop 4 or 8 and factor 4 stand in for Tadpole's 64³ crops and factor 16
  */
 export function TensorExplorer({ range, diagram = false, label }: { range: keyof typeof EXPLORER_STAGES; diagram?: boolean; label: string }) {
+  const { theme } = useTheme();
+  const palette = themeColors(theme);
   const stages = EXPLORER_STAGES[range];
   const [fields, setFields] = useState({ batch: 1, channels: range === 'network' ? 1 : 2 });
   const toy = useMemo<Toy>(() => ({ ...fields, crop: range === 'network' ? 8 : 4, factor: 4 }), [fields, range]);
@@ -522,7 +539,7 @@ export function TensorExplorer({ range, diagram = false, label }: { range: keyof
   const stage = STAGES[stages[position]];
   const lesson = stageLesson(stage);
   const anchor = selected ?? (highlight ? 0 : undefined);
-  const colors = useMemo(() => elementColors(elements, toy, stage, anchor, highlight), [elements, toy, stage, anchor, highlight]);
+  const colors = useMemo(() => elementColors(elements, toy, stage, anchor, highlight, palette), [elements, toy, stage, anchor, highlight, palette]);
   const updateFields = (next: Partial<typeof fields>) => {
     setFields({ ...fields, ...next });
     setSelected(undefined);
@@ -742,6 +759,8 @@ const ATTENTION_COORDINATES: THREE.Vector3Tuple[] = Array.from({ length: ATTENTI
 
 /** The same query and window expand from a planar teaching example into spatial attention. */
 export function AttentionScene() {
+  const { theme } = useTheme();
+  const palette = themeColors(theme);
   const [step, setStep] = useState(0);
   const [edge, setEdge] = useState(8);
   const [query, setQuery] = useState<THREE.Vector3Tuple>([0, 3, 0]);
@@ -780,22 +799,29 @@ export function AttentionScene() {
   const layout = useMemo(() => {
     const positions = new Float32Array(ATTENTION_COORDINATES.length * 3);
     const scales = new Float32Array(positions.length);
-    const colors = new Float32Array(positions.length);
-    const weights = new Map(data.partners.map((partner) => [partner.index, partner.weight]));
-    const featureColor = axisLinear('feature');
-    const outsideColor = dim(INK, 0.82);
-    const maxWeight = data.strongest[0].weight;
     ATTENTION_COORDINATES.forEach(([x, y, z], index) => {
       const inWindow = x >= sx && x < sx + WINDOW && y >= sy && y < sy + WINDOW && z >= sz && z < sz + WINDOW;
       const visible = x < edge && y < edge && z < edge && (wholeGrid || inWindow) && (!plane || z === qz);
       // Hidden layers start on the query plane and unfold without replacing instances.
       positions.set([x - 1.5, y - 1.5, (plane ? qz : z) - 1.5], index * 3);
       scales.fill(!visible ? HIDDEN_SCALE : index === token ? 0.62 : inWindow ? 0.38 : 0.12, index * 3, index * 3 + 3);
-      const weight = weights.get(index);
-      colors.set(index === token ? INK : weight !== undefined ? dim(featureColor, 0.65 * (1 - weight / maxWeight)) : outsideColor, index * 3);
     });
-    return { positions, scales, colors };
-  }, [data, edge, wholeGrid, plane, qz, sx, sy, sz, token]);
+    return { positions, scales };
+  }, [edge, wholeGrid, plane, qz, sx, sy, sz, token]);
+  const colors = useMemo(() => {
+    const colors = new Float32Array(ATTENTION_COORDINATES.length * 3);
+    const weights = new Map(data.partners.map((partner) => [partner.index, partner.weight]));
+    const surface = oklchToLinear(palette.surface);
+    const ink = oklchToLinear(palette.ink);
+    const featureColor = oklchToLinear(palette.axes.feature);
+    const outsideColor = dim(ink, 0.82, surface);
+    const maxWeight = data.strongest[0].weight;
+    for (let index = 0; index < ATTENTION_COORDINATES.length; index++) {
+      const weight = weights.get(index);
+      colors.set(index === token ? ink : weight !== undefined ? dim(featureColor, 0.65 * (1 - weight / maxWeight), surface) : outsideColor, index * 3);
+    }
+    return colors;
+  }, [data, token, palette]);
   // Keep the camera fixed while the plane unfolds, weights change or the query moves.
   const bounds = useMemo(() => {
     const min = wholeGrid ? [-2, -2, -2] : [sx - 2, sy - 2, sz - 2];
@@ -833,8 +859,8 @@ export function AttentionScene() {
     </div>}
     <div className="grid gap-5 lg:grid-cols-[minmax(0,1.6fr)_minmax(16rem,1fr)]">
       <figure className="min-w-0 space-y-2">
-        <Scene bounds={bounds} height={420} label={`Query (${query.join(', ')}) is dark. ${data.partners.length} partners including itself are highlighted. Four strongest illustrative links are shown. ${wholeGrid ? 'Other windows are dim and do not contribute.' : plane ? 'A planar teaching example.' : 'The same window expanded in depth.'}`}>
-          <Voxels {...layout} onSelect={selectToken} />
+        <Scene bounds={bounds} height={420} label={`Query (${query.join(', ')}) is ${theme === 'dark' ? 'light' : 'dark'}. ${data.partners.length} partners including itself are highlighted. Four strongest illustrative links are shown. ${wholeGrid ? 'Other windows are dim and do not contribute.' : plane ? 'A planar teaching example.' : 'The same window expanded in depth.'}`}>
+          <Voxels {...layout} colors={colors} onSelect={selectToken} />
           {windows.map(([x, y, z]) => <Outline key={`${x},${y},${z}`}
             min={[x - 1.95, y - 1.95, (plane ? qz : z) - 1.95]}
             max={[x + 1.95, y + 1.95, (plane ? qz - 1.05 : z + 1.95)]} />)}
@@ -843,7 +869,7 @@ export function AttentionScene() {
           {data.strongest.map((partner, index) => <Segments key={partner.index}
             points={[...queryPoint, ...point(partner.coordinate)]} opacity={index === rank ? 1 : 0.25 + 0.4 * partner.weight / data.strongest[0].weight} />)}
         </Scene>
-        <figcaption className="text-xs text-ink-muted">Dark = query · stronger color = more weight · lines = strongest four</figcaption>
+        <figcaption className="text-xs text-ink-muted">{theme === 'dark' ? 'Light' : 'Dark'} = query · stronger color = more weight · lines = strongest four</figcaption>
         <div className="grid grid-cols-3 gap-3">
           {(['x', 'y', 'z'] as const).map((axis, index) => <div key={axis} className="space-y-1.5">
             <p className="text-xs tabular-nums">{axis} {query[index]}</p>
@@ -899,6 +925,8 @@ const COOLDATA_STAGES = ['Voxels', 'Height collapses', 'Latent cells'] as const;
  * - The stages squeeze the 16 voxel layers into one cell height, then merge each block into its 512-feature pillar
  */
 export function CoolDataLatent({ config, field }: { config: Config; field: Field }) {
+  const { theme } = useTheme();
+  const palette = themeColors(theme);
   const [nx, ny, nz] = config.dimensions;
   const [cx, cy, cz] = [nx, ny, nz].map((voxels) => voxels / COARSE);
   const [stage, setStage] = useState(0);
@@ -937,17 +965,20 @@ export function CoolDataLatent({ config, field }: { config: Config; field: Field
   }, [stage, cx, cy, cz, pillar]);
   const colors = useMemo(() => {
     const colors = new Float32Array(cx * cy * cz * 3);
-    const neutral = oklchToLinear([0.62, 0.012, 85]);
+    const surface = oklchToLinear(palette.surface);
+    const solid = oklchToLinear(palette.solid);
+    const feature = oklchToLinear(palette.axes.feature);
+    const neutral = featureGray(palette, 0.22);
     const temperatureScale: ColorScale = { colormap: 'sequential', range: [field.min, field.max], log: false };
     for (let index = 0; index < cx * cy * cz; index++) {
       const [x, y] = [Math.floor(index / (cy * cz)), Math.floor(index / cz) % cy];
       const inCell = cell !== undefined && Math.floor(x / CELL) === cell[0] && Math.floor(y / CELL) === cell[1];
-      const base = stage === 2 ? neutral : coarse.solid[index] ? SOLID
-        : (COLOR.setRGB(...(colorAt(coarse.values[index], temperatureScale).map((component) => component / 255) as [number, number, number]), THREE.SRGBColorSpace).toArray() as number[]);
-      colors.set(stage === 2 && inCell ? axisLinear('feature') : dim(base, cell && !inCell ? 0.55 : 0), index * 3);
+      const base = stage === 2 ? neutral : coarse.solid[index] ? solid
+        : linearColor(colorAt(coarse.values[index], temperatureScale));
+      colors.set(stage === 2 && inCell ? feature : dim(base, cell && !inCell ? 0.55 : 0, surface), index * 3);
     }
     return colors;
-  }, [coarse, cell, stage, field, cx, cy, cz]);
+  }, [coarse, cell, stage, field, cx, cy, cz, palette]);
   const bounds = useMemo(() => {
     const box = boundsOf([layout]);
     return box.expandByPoint(new THREE.Vector3(0, pillar, 0));
@@ -982,7 +1013,7 @@ export function CoolDataLatent({ config, field }: { config: Config; field: Field
     <div className="space-y-1.5">
       <div className="flex items-baseline justify-between gap-3 text-xs tabular-nums">
         <span>{cell
-          ? <>Latent cell ({cell[0]}, {cell[1]}, 0) ← voxels x {cell[0] * DOWNSAMPLING}–{cell[0] * DOWNSAMPLING + DOWNSAMPLING - 1}, y {cell[1] * DOWNSAMPLING}–{cell[1] * DOWNSAMPLING + DOWNSAMPLING - 1}, z 0–{nz - 1}: {formatCount(DOWNSAMPLING ** 3)} voxels → <span style={{ color: oklchCss(AXIS_COLORS.feature) }}>512</span> features</>
+          ? <>Latent cell ({cell[0]}, {cell[1]}, 0) ← voxels x {cell[0] * DOWNSAMPLING}–{cell[0] * DOWNSAMPLING + DOWNSAMPLING - 1}, y {cell[1] * DOWNSAMPLING}–{cell[1] * DOWNSAMPLING + DOWNSAMPLING - 1}, z 0–{nz - 1}: {formatCount(DOWNSAMPLING ** 3)} voxels → <span style={{ color: oklchCss(palette.axes.feature) }}>512</span> features</>
           : <span className="text-ink-muted">Hover a voxel or a pillar for its latent cell. Drawn {COARSE}× coarser per axis, {formatCount(cx * cy * cz)} of {formatCount(nx * ny * nz)} voxels</span>}</span>
         <span className="shrink-0 text-ink-muted">{COOLDATA_STAGES[stage]}</span>
       </div>

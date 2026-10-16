@@ -1,10 +1,56 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react';
 import { gradientCss, scaleValue } from './colormap';
 import type { ColorScale } from './colormap';
 import { formatNumber, formatPower, formatTick } from './format';
 import type { Bounded, Range } from './range';
 import type { AsyncState } from './useAsync';
+
+type ThemePreference = 'system' | 'light' | 'dark'
+type ThemeState = { theme: 'light' | 'dark'; preference: ThemePreference; setPreference: (value: ThemePreference) => void }
+const ThemeContext = createContext<ThemeState | null>(null)
+
+/** Share the resolved theme without remounting views or visualization state. */
+export function ThemeProvider({ children }: { children: ReactNode }) {
+  const [preference, setPreference] = useState<ThemePreference>(() => {
+    const saved = document.documentElement.dataset.themePreference
+    return saved === 'light' || saved === 'dark' ? saved : 'system'
+  })
+  const [systemDark, setSystemDark] = useState(() => matchMedia('(prefers-color-scheme: dark)').matches)
+  const theme = preference === 'system' ? (systemDark ? 'dark' : 'light') : preference
+  useEffect(() => {
+    const media = matchMedia('(prefers-color-scheme: dark)')
+    const update = () => setSystemDark(media.matches)
+    update()
+    media.addEventListener('change', update)
+    return () => media.removeEventListener('change', update)
+  }, [])
+  useLayoutEffect(() => {
+    document.documentElement.dataset.theme = theme
+    document.documentElement.dataset.themePreference = preference
+    document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')!.content = theme === 'dark' ? '#161410' : '#f5eee0'
+    try { localStorage.setItem('coolfrog-theme', preference) } catch { /* Keep the in-memory preference when storage is unavailable. */ }
+  }, [theme, preference])
+  const value = useMemo(() => ({ theme, preference, setPreference }), [theme, preference])
+  return <ThemeContext.Provider value={value}>
+    {children}
+    <button type="button" aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+      onClick={() => setPreference(theme === 'dark' ? 'light' : 'dark')}
+      className="fixed top-4 right-4 z-50 grid size-10 place-items-center rounded-full bg-surface text-ink-muted opacity-0 shadow-[var(--shadow-sm),var(--inner-highlight)] transition hover:bg-surface-elevated hover:text-ink hover:opacity-100 focus-visible:text-ink focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ink-muted sm:top-6 sm:right-6">
+      <svg aria-hidden="true" viewBox="0 0 24 24" className="size-5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        {theme === 'dark'
+          ? <><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M2 12h2m16 0h2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" /></>
+          : <path d="M20.9 13a9 9 0 0 1-9.9-9.9A9 9 0 1 0 20.9 13Z" />}
+      </svg>
+    </button>
+  </ThemeContext.Provider>
+}
+
+export function useTheme() {
+  const theme = useContext(ThemeContext)
+  if (!theme) throw new Error('ThemeProvider is required')
+  return theme
+}
 
 const COLORBAR_WIDTH = 192;
 /** Approximate width of an 11 px tabular label, enough to keep labels apart. */

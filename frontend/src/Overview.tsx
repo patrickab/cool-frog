@@ -7,9 +7,9 @@ import { Reconstruction } from './Autoencoder';
 import Gallery, { defaultDisplay, FieldControls, useFieldBatch } from './Gallery';
 import type { FieldDisplay } from './Gallery';
 import Heatmap from './Heatmap';
-import { AXIS_COLORS, oklchCss } from './lib/colormap';
+import { themeColors, oklchCss } from './lib/colormap';
 import { formatNumber, formatTick } from './lib/format';
-import { Disclosure, HEADING, Layout, Panel, Pending } from './lib/ui';
+import { Disclosure, HEADING, Layout, Panel, Pending, Segmented, useTheme } from './lib/ui';
 import { useAsync } from './lib/useAsync';
 
 // three.js loads only once a 3D scene renders
@@ -82,12 +82,23 @@ const TOPICS = {
       { id: 'zero-shot', title: 'Zero-shot on CoolData' },
     ],
   },
+  finetune: {
+    label: 'Fine-tuning on CoolData',
+    steps: [
+      { id: 'ft-why', title: 'Why fine-tune' },
+      { id: 'ft-method', title: 'Full fine-tuning or LoRA' },
+      { id: 'ft-recipe', title: 'The recipe in Coolfrog' },
+      { id: 'ft-decisions', title: 'Open decisions' },
+      { id: 'ft-beyond', title: 'Beyond autoencoding' },
+    ],
+  },
 } as const;
 type Topic = keyof typeof TOPICS;
 /** Sidebar entries, a group with several topics nests them under its label. */
 const SIDEBAR_GROUPS: { label: string; topics: Topic[] }[] = [
   { label: 'CoolData', topics: ['cooldata'] },
   { label: 'Tadpole', topics: ['overview', 'architecture', 'zeroshot'] },
+  { label: 'CoolFrog', topics: ['finetune'] },
 ];
 type StepId = (typeof TOPICS)[Topic]['steps'][number]['id'];
 const ALL_STEPS = Object.values(TOPICS).flatMap((topic): readonly { id: StepId; title: string }[] => topic.steps);
@@ -133,6 +144,25 @@ const PRETRAINING_PIPELINE = [
   { title: 'MFU cache', detail: 'Batches drawn here' },
   { title: 'Random crop', detail: '64³, one channel' },
   { title: 'Autoencoder', detail: 'Plus discriminator' },
+];
+
+/** Tadpole-B autoencoding NRMSE ×10⁻² on the paper's four datasets, Table 2. */
+const FINETUNE_RESULTS = [
+  { method: 'Zero-shot', errors: ['3.23', '7.87', '1.27', '3.42'], trainable: '0' },
+  { method: 'From scratch', errors: ['7.17', '4.40', '1.67', '8.22'], trainable: '38.1 M' },
+  { method: 'Full fine-tuning (FPFT)', errors: ['2.73', '2.94', '0.50', '2.50'], trainable: '38.1 M' },
+  { method: 'LoRA-32', errors: ['3.01', '3.82', '0.78', '3.18'], trainable: '2.8 M' },
+];
+const PAPER_DATASETS = ['Iso', 'TCF', 'TBL', 'MHD'];
+
+/** Trainable Tadpole-B parameters per fine-tuning state, counted on `TadpoleAutoencoder`. */
+const TRAINABLE_PARAMETERS = [
+  { state: 'LoRA-4', parameters: 370_697 },
+  { state: 'LoRA-8', parameters: 719_185 },
+  { state: 'LoRA-16', parameters: 1_416_161 },
+  { state: 'LoRA-32', parameters: 2_810_113 },
+  { state: 'LoRA-64', parameters: 5_598_017 },
+  { state: 'FPFT', parameters: 38_068_329 },
 ];
 
 function channelIndex(config: Config, name: string): number {
@@ -240,6 +270,8 @@ function Pipeline({ label, stages }: { label: string; stages: readonly { title: 
 
 /** Symbolic field geometry and feature slots, not measured values or model activations. */
 function ReconstructionDiagram() {
+  const { theme } = useTheme()
+  const axes = themeColors(theme).axes
   return <Panel className="max-w-3xl space-y-4 p-4">
     <figure aria-label="A scalar field passes through an encoder, a learned feature bottleneck and a decoder to reconstruct the same field at the same time. There is no encoder-to-decoder bypass.">
       <div className="grid items-center gap-3 text-center text-xs sm:grid-cols-[1fr_auto_1fr_auto_1fr]">
@@ -248,17 +280,17 @@ function ReconstructionDiagram() {
           <div className="space-y-2">
             <p className="font-medium">{['Input field · time t', 'Learned bottleneck', 'Reconstruction · time t'][stage]}</p>
             <svg viewBox="0 0 160 112" aria-hidden="true" className="mx-auto h-28 w-40 max-w-full" fill="none">
-              {stage === 1 ? <g stroke={oklchCss(AXIS_COLORS.feature)} strokeWidth="1.5">
+              {stage === 1 ? <g stroke={oklchCss(axes.feature)} strokeWidth="1.5">
                 {[0, 1, 2].map((layer) => <g key={layer} transform={`translate(${48 + layer * 9} ${36 - layer * 9})`}>
                   <rect width="48" height="48" fill="var(--surface)" />
                   <path d="M16 0v48M32 0v48M0 16h48M0 32h48" />
                 </g>)}
               </g> : <>
-                <g stroke={oklchCss(AXIS_COLORS.spatial)} strokeWidth="1">
+                <g stroke={oklchCss(axes.spatial)} strokeWidth="1">
                   <path d="M20 30h96v66H20zM20 30l24-18h96v66l-24 18M116 30l24-18M44 12v18M116 78h24" />
                   <path d="M44 30v66M68 30v66M92 30v66M20 52h96M20 74h96" strokeOpacity="0.3" />
                 </g>
-                <g stroke={oklchCss(AXIS_COLORS.channel)} strokeWidth="2">
+                <g stroke={oklchCss(axes.channel)} strokeWidth="2">
                   <path d={stage === 0 ? 'M24 79C45 79 48 41 72 41S95 73 112 57' : 'M24 78C46 78 49 43 72 43S95 71 112 58'} />
                   <path d="M24 88C47 88 54 60 73 60S97 87 112 76" />
                 </g>
@@ -292,6 +324,147 @@ function TadpoleSizeTable() {
           <td className="px-2 py-2 text-right">{compression}</td>
           <td className="px-2 py-2 text-right">{error}</td>
           <td className="px-4 py-2 text-right">{cost}</td>
+        </tr>)}
+      </tbody>
+    </table>
+  </Panel>;
+}
+
+function FinetuneResultsTable() {
+  return <figure className="max-w-3xl space-y-2">
+    <Panel className="overflow-x-auto">
+      <table className="w-full text-left text-xs tabular-nums">
+        <caption className="sr-only">Tadpole-B autoencoding NRMSE ×10⁻², paper Table 2</caption>
+        <thead className="text-ink-muted shadow-[inset_0_-1px_0_var(--divider-soft)]">
+          <tr>
+            <th scope="col" className="px-4 py-2 font-medium">Tadpole-B</th>
+            {PAPER_DATASETS.map((dataset) => <th key={dataset} scope="col" className="px-2 py-2 text-right font-medium">{dataset}</th>)}
+            <th scope="col" className="px-4 py-2 text-right font-medium">Trainable</th>
+          </tr>
+        </thead>
+        <tbody>
+          {FINETUNE_RESULTS.map(({ method, errors, trainable }) => <tr key={method}>
+            <th scope="row" className="px-4 py-2 font-medium">{method}</th>
+            {errors.map((error, index) => <td key={PAPER_DATASETS[index]} className="px-2 py-2 text-right">{error}</td>)}
+            <td className="px-4 py-2 text-right">{trainable}</td>
+          </tr>)}
+        </tbody>
+      </table>
+    </Panel>
+    <figcaption className="text-xs text-ink-muted">NRMSE ×10⁻², Table 2 · Iso: isotropic turbulence · TCF: channel flow · TBL: boundary layer · MHD: magnetohydrodynamics</figcaption>
+  </figure>;
+}
+
+/** Explain a dense LoRA adapter with column-vector notation and a shape-only rank example. */
+function LoraExplainer() {
+  const [rank, setRank] = useState(2)
+  const parameters = rank * (8 + 8)
+  return <div className="max-w-3xl space-y-4">
+    <Panel className="p-4">
+      <h3 className={HEADING}>One layer, two parallel paths</h3>
+      <div className="grid items-center gap-5 lg:grid-cols-2">
+        <figure>
+          <svg viewBox="0 0 320 310" role="img" aria-labelledby="lora-forward-title lora-forward-description" className="mx-auto w-full max-w-80" fill="none">
+            <title id="lora-forward-title">LoRA forward pass</title>
+            <desc id="lora-forward-description">The same input x enters frozen W zero and trainable A then B in parallel. Scale the adapter output by s and add it to W zero x to obtain y.</desc>
+            <g stroke="var(--ink-muted)" strokeWidth="1.5">
+              <path d="M160 39v13H70v46M160 52h90v23M70 161v93h72M250 119v28M250 191v63h-72M160 272v19" />
+              <path d="M66 92l4 6 4-6M246 69l4 6 4-6M246 141l4 6 4-6M136 250l6 4-6 4M184 250l-6 4 6 4M156 285l4 6 4-6" />
+              <rect x="20" y="98" width="100" height="63" rx="8" strokeDasharray="4 3" />
+              <rect x="200" y="75" width="100" height="44" rx="8" />
+              <rect x="200" y="147" width="100" height="44" rx="8" />
+              <circle cx="160" cy="254" r="18" />
+            </g>
+            <g fill="var(--ink)" textAnchor="middle" fontSize="14">
+              <text x="160" y="27">x ∈ ℝᵏ</text>
+              <text x="70" y="124">W₀ · frozen</text>
+              <text x="70" y="147">d × k</text>
+              <text x="250" y="102">A · r × k</text>
+              <text x="250" y="174">B · d × r</text>
+              <text x="160" y="259" fontSize="20">+</text>
+              <text x="160" y="307">y ∈ ℝᵈ</text>
+            </g>
+            <g fill="var(--ink-muted)" fontSize="12">
+              <text x="173" y="137">Ax ∈ ℝʳ</text>
+              <text x="258" y="226">× s</text>
+              <text x="23" y="225">W₀x</text>
+            </g>
+          </svg>
+          <figcaption className="mt-3 text-center text-xs text-ink-muted">One dense layer · biases and optional dropout omitted</figcaption>
+        </figure>
+        <div className="space-y-3 text-sm leading-relaxed text-ink-muted">
+          <p className="text-lg text-ink">y = W₀x + sB(Ax)</p>
+          <p><strong className="font-medium text-ink">A reads, B writes.</strong> A turns k input features into r coefficients. B combines r learned output directions into a d-dimensional correction. Both matrices learn from the task loss.</p>
+          <p>There is <strong className="font-medium text-ink">no activation between A and B</strong>. Their composition is a linear update ΔW = sBA, not another nonlinear network.</p>
+          <p>In original LoRA, s = α/r. Rank r controls capacity, α controls the update scale, and the optimizer learning rate controls parameter steps. These are different knobs.</p>
+        </div>
+      </div>
+    </Panel>
+    <Panel className="space-y-4 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h3 className={HEADING}>What does low rank constrain?</h3>
+        <Segmented label="Illustrative adapter rank" options={[1, 2, 4, 8].map((value) => ({ value, label: `r = ${value}` }))} value={rank} onChange={setRank} />
+      </div>
+      <figure aria-label={`Shape example: B is 8 by ${rank}, A is ${rank} by 8, and their product is 8 by 8 with rank at most ${rank}.`}>
+        <div className="grid grid-cols-[1fr_auto_1fr_auto_1fr] items-center gap-1 text-center text-sm tabular-nums">
+          {[{ name: 'B', rows: 8, columns: rank }, { name: 'A', rows: rank, columns: 8 }, { name: 'BA', rows: 8, columns: 8 }].map(({ name, rows, columns }, index) => <Fragment key={name}>
+            {index > 0 && <span aria-hidden className="text-ink-muted">{index === 1 ? '×' : '='}</span>}
+            <div>
+              <svg viewBox="0 0 128 128" aria-hidden="true" className="mx-auto w-full max-w-40" fill="none">
+                <g transform={`translate(${(128 - columns * 14) / 2} ${(128 - rows * 14) / 2})`}>
+                  <rect width={columns * 14} height={rows * 14} fill="var(--hover-strong)" stroke="var(--ink-muted)" />
+                  {Array.from({ length: columns - 1 }, (_, column) => <path key={`c${column}`} d={`M${(column + 1) * 14} 0v${rows * 14}`} stroke="var(--divider)" />)}
+                  {Array.from({ length: rows - 1 }, (_, row) => <path key={`r${row}`} d={`M0 ${(row + 1) * 14}h${columns * 14}`} stroke="var(--divider)" />)}
+                </g>
+              </svg>
+              <p className="font-medium">{name}</p>
+              <p className="text-xs text-ink-muted">{rows} × {columns}</p>
+            </div>
+          </Fragment>)}
+        </div>
+        <figcaption className="mt-4 text-xs leading-relaxed text-ink-muted">Illustrative 8 × 8 layer, not Tadpole weights. Cells show parameter slots, not values. The product can be dense even at rank 1. During training, compute B(Ax) without materializing BA.</figcaption>
+      </figure>
+      <p aria-live="polite" className="text-sm tabular-nums"><strong className="font-medium">{parameters} trainable parameters</strong> instead of 64 for a full update · {parameters / 64 * 100} % of the dense count.{rank === 4 ? ' No parameter saving at this rank.' : rank === 8 ? ' Twice the dense count, with no rank restriction.' : ''}</p>
+      <div className="space-y-2 text-sm leading-relaxed text-ink-muted">
+        <p>In general: <strong className="font-medium text-ink">r(k + d) parameters instead of dk</strong>. Each column of B is one output direction, weighted by a coefficient from Ax. Thus rank(ΔW) ≤ r, even though all dk entries may change.</p>
+        <p>The constraint is on <strong className="font-medium text-ink">the correction, not W₀</strong>. LoRA does not compress the base model or take its SVD. The output directions are learned, not fixed beforehand. A larger r permits richer corrections, but does not guarantee better validation error.</p>
+      </div>
+    </Panel>
+    <Prose>
+      <h3 className={HEADING}>From initialization to inference</h3>
+      <ol className="list-decimal space-y-2 pl-5">
+        <li><strong>Start unchanged.</strong> Standard dense LoRA initializes A randomly and B to zero, so ΔW = 0. The first forward pass matches the base layer.</li>
+        <li><strong>Learn the correction.</strong> Backpropagate the task loss and update A and B, keeping W₀ fixed. Initially the loss gradient for A is zero because B = 0, while B can receive a gradient. Once B changes, both can learn.</li>
+        <li><strong>Store or merge.</strong> Save the small adapter alongside a reference to the base checkpoint. For inference, a compatible dense adapter can be merged as Wmerged = W₀ + sBA, removing the extra branch. This is an algebraic property, not a claim that Coolfrog currently exports merged weights.</li>
+      </ol>
+      <Disclosure label="How can gradients flow through a frozen layer?">
+        <div className="mt-3 space-y-2">
+          <p>Frozen means no optimizer update to W₀, not no differentiation through the layer. With g = ∂L/∂y, the input gradient is ∂L/∂x = W₀ᵀg + sAᵀBᵀg, so earlier trainable layers still receive a learning signal.</p>
+          <p>The adapter gradients are ∂L/∂B = sg(Ax)ᵀ and ∂L/∂A = sBᵀgxᵀ. Setting both A and B to zero would make both loss gradients zero. Random A breaks that dead start.</p>
+        </div>
+      </Disclosure>
+      <p className="text-xs">Sources: <a href="https://sebastianraschka.com/blog/2023/llm-finetuning-lora.html" className="underline underline-offset-2">Raschka’s visual introduction</a> for the intuition, <a href="https://arxiv.org/html/2106.09685v2#S4.SS1" className="underline underline-offset-2">Hu et al., §4.1</a> for the formulation, and <a href="https://github.com/microsoft/LoRA/blob/main/loralib/layers.py" className="underline underline-offset-2">Microsoft’s dense-layer implementation</a> for initialization, scaling and merging. Diagrams here are original schematics.</p>
+    </Prose>
+  </div>
+}
+
+function TrainableParametersTable() {
+  const total = TRAINABLE_PARAMETERS[TRAINABLE_PARAMETERS.length - 1].parameters;
+  return <Panel className="max-w-md overflow-x-auto">
+    <table className="w-full text-left text-xs tabular-nums">
+      <caption className="sr-only">Trainable Tadpole-B parameters per fine-tuning state</caption>
+      <thead className="text-ink-muted shadow-[inset_0_-1px_0_var(--divider-soft)]">
+        <tr>
+          <th scope="col" className="px-4 py-2 font-medium">State</th>
+          <th scope="col" className="px-2 py-2 text-right font-medium">Trainable parameters</th>
+          <th scope="col" className="px-4 py-2 text-right font-medium">Share</th>
+        </tr>
+      </thead>
+      <tbody>
+        {TRAINABLE_PARAMETERS.map(({ state, parameters }) => <tr key={state}>
+          <th scope="row" className="px-4 py-2 font-medium">{state}</th>
+          <td className="px-2 py-2 text-right">{parameters.toLocaleString('en')}</td>
+          <td className="px-4 py-2 text-right">{(100 * parameters / total).toFixed(1)} %</td>
         </tr>)}
       </tbody>
     </table>
@@ -738,7 +911,7 @@ export default function Overview({ config, dataset, nav, onView, onOpen }: {
 
       <Step id="downstream">
         <Prose>
-          <p><strong>One representation, three tasks.</strong> Encoder and decoder stay frozen, are fully retrained, or get <strong>LoRA</strong> adapters (W = W₀ + AB).</p>
+          <p><strong>One representation, three tasks.</strong> Encoder and decoder stay frozen, are fully retrained, or get <strong>LoRA</strong> adapters (W = W₀ + sBA, a scaled low-rank correction).</p>
         </Prose>
         <div className="grid max-w-5xl gap-5 lg:grid-cols-3">
           {[
@@ -812,6 +985,71 @@ export default function Overview({ config, dataset, nav, onView, onOpen }: {
         <div className="flex flex-wrap gap-3">
           <button onClick={() => onView('autoencoder')} className="rounded-xl border border-divider-soft px-4 py-2.5 text-sm text-ink-muted transition hover:border-divider hover:text-ink">Cool Autoencoder: reconstruct any design</button>
         </div>
+      </Step>
+    </div>
+
+    <div hidden={topic !== 'finetune'} className="space-y-16 pb-24">
+      <Step id="ft-why">
+        <Prose>
+          <p>Published Tadpole-B reconstructs CoolData with a median NRMSE of 28–39 % on Vx, Vy, Vz, T and k, and 110 % on ε (<button onClick={() => openTopic('zeroshot')} className="font-medium text-ink underline decoration-divider underline-offset-2 transition hover:decoration-ink">Zero-shot autoencoding</button> step 3). Fine-tuning adapts the weights to CoolData. On the paper's four unseen flows, both fine-tuning methods beat zero-shot and a model trained from scratch on every dataset:</p>
+        </Prose>
+        <FinetuneResultsTable />
+        <Prose>
+          <p>How much of the CoolData gap fine-tuning closes is unmeasured. This topic sketches how it should work here and which decisions are open.</p>
+        </Prose>
+      </Step>
+
+      <Step id="ft-method">
+        <Prose>
+          <p><strong>Full fine-tuning (FPFT)</strong> updates all 38.1 M weights. <strong>Low-rank adaptation (LoRA)</strong> keeps the pre-trained weight matrices fixed and learns small corrections at selected layers. The idea: adapting an existing representation may need far fewer independent directions than learning it from scratch.</p>
+        </Prose>
+        <LoraExplainer />
+        <Prose>
+          <h3 className={HEADING}>What this means for Tadpole-B</h3>
+          <p>These are whole-model counts from Coolfrog’s GIFt adapters, not the illustrative dense layer above. They include the biases left trainable by GIFt. Layer selection, tensor shapes and the implementation’s scaling convention determine the actual adapter budget:</p>
+        </Prose>
+        <TrainableParametersTable />
+        <Prose>
+          <ul className="list-disc space-y-1 pl-5">
+            <li><strong>Accuracy</strong>: FPFT is lowest on all four datasets. LoRA approaches it as the rank grows, and even small ranks beat training from scratch on Iso (Fig. 4)</li>
+            <li><strong>Stability</strong>: when fine-tuning for dynamics, FPFT's validation error oscillated, most at the start, while LoRA-32 stayed stable (Appendix A.4)</li>
+            <li><strong>Cost</strong>: 40 GPU hours for FPFT, 36 for LoRA-32 on L40S (Appendix C.4). Forward and backward still pass the full network, LoRA mainly shrinks the optimizer state and the saved weights</li>
+          </ul>
+        </Prose>
+      </Step>
+
+      <Step id="ft-recipe">
+        <Prose>
+          <p>The building blocks exist, the training loop is yours to write:</p>
+          <ul className="list-disc space-y-1 pl-5">
+            <li><strong>Data</strong>: <code>CoolDataset(DataConfig(...)).split([0.9, 0.1])</code> splits by design, <code>create_dataloader</code> batches <code>FlowField</code>s. The paper's 32 crops of 64³ hold as many voxels as 2.3 CoolData designs</li>
+            <li><strong>Model</strong>: <code>Tadpole(TadpoleConfig(encoder_state=..., decoder_state=...))</code>, each state <code>"frozen"</code>, <code>"FPFT"</code> or a LoRA rank. <code>forward</code> encodes whole domains and decodes a sampled latent</li>
+            <li><strong>Loss</strong>: reconstruction on fluid voxels only, solids hold fill values. Plus <code>kl_divergence()</code> at weight 10⁻⁶, which only the encoder can change</li>
+            <li><strong>Optimizer</strong>, paper settings for autoencoding: AdamW, learning rate 5 × 10⁻⁵ with 1,000 warm-up iterations, batch 32, 14,000 iterations, bf16 (Table 14)</li>
+            <li><strong>Evaluation</strong>: <code>nrmse</code> and <code>spectral_loss</code> from <code>coolfrog.lib.metrics</code>, against the published weights on the same validation designs</li>
+            <li><strong>Saving</strong>: keep the parameters with <code>requires_grad</code>, about 11 MB for LoRA-32. These include 47 biases GIFt leaves trainable, not only the LoRA matrices</li>
+          </ul>
+        </Prose>
+      </Step>
+
+      <Step id="ft-decisions">
+        <Prose>
+          <ul className="list-disc space-y-1 pl-5">
+            <li><strong>Normalization</strong>: <code>NormalizationStats</code> fits one min and max per variable over the training designs. Over the 23 cached designs, the standard deviation of p in a median design is only 0.55 % of that global range. On one validation design with the range fitted on five others, published Tadpole-B reconstructed p with 12,000 % NRMSE. Per-design scaling keeps the zero-shot behaviour (4.9 % median), but then one latent value means different physics in different designs</li>
+            <li><strong>ε</strong>: under any linear scaling, 87 % of fluid voxels in design {TADPOLE_DESIGN} sit below 1 % of its range. A transform such as log before scaling is untested</li>
+            <li><strong>Adversarial loss</strong>: pre-training adds a patch discriminator once L2 reconstruction is below 0.001. Its weights are not published, and the paper does not say whether downstream autoencoding keeps it</li>
+            <li><strong>FPFT or LoRA rank</strong>: the paper reports LoRA-32 for autoencoding, nothing has been tuned for CoolData</li>
+          </ul>
+        </Prose>
+      </Step>
+
+      <Step id="ft-beyond">
+        <Prose>
+          <ul className="list-disc space-y-1 pl-5">
+            <li><strong>Dynamics (Tadpole-DFT)</strong> learns u<sub>t</sub> → u<sub>t+Δt</sub>. Every CoolData design is one steady RANS solution, so there is no time step to learn</li>
+            <li><strong>Parameters → fields</strong>: predicting a design from its 35 parameters needs a new model on the latent, such as the paper's latent flow matching. The paper fine-tunes the autoencoder first: FPFT generated best, LoRA-32 second on most metrics (Table 1). <code>FlowField.params</code> already carries the parameters</li>
+          </ul>
+        </Prose>
       </Step>
     </div>
   </Layout>;
