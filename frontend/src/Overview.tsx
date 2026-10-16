@@ -1,17 +1,16 @@
 import { Fragment, lazy, Suspense, useEffect, useMemo, useState } from 'react';
-import type { FormEvent, ReactNode } from 'react';
-import { fetchDesigns, fetchField, fetchReconstructionMetrics, fluidValues } from './api';
+import type { ReactNode } from 'react';
+import { fetchDesigns, fetchField, voxelCount } from './api';
 import type { Config, Dataset, Design, Field } from './api';
 import type { View } from './App';
+import { Reconstruction } from './Autoencoder';
 import Gallery, { defaultDisplay, FieldControls, useFieldBatch } from './Gallery';
 import type { FieldDisplay } from './Gallery';
 import Heatmap from './Heatmap';
-import { AXIS_COLORS, clipping, colorScaleOf, oklchCss } from './lib/colormap';
-import type { ColorScale } from './lib/colormap';
+import { AXIS_COLORS, oklchCss } from './lib/colormap';
 import { formatNumber, formatTick } from './lib/format';
-import { Colorbar, Disclosure, HEADING, Layout, Panel, Segmented, Slider } from './lib/ui';
+import { Disclosure, HEADING, Layout, Panel, Pending } from './lib/ui';
 import { useAsync } from './lib/useAsync';
-import type { AsyncState } from './lib/useAsync';
 
 // three.js loads only once a 3D scene renders
 const TensorExplorer = lazy(() => import('./TensorScenes').then((module) => ({ default: module.TensorExplorer })));
@@ -32,7 +31,7 @@ const SHOWCASES = {
 };
 const SHOWCASE_IDS = [...new Set(Object.values(SHOWCASES).flat())];
 /** Design every Tadpole step shows, its zero-shot errors in the prose were measured offline. */
-const TADPOLE_DESIGN = SHOWCASES.hero[0];
+export const TADPOLE_DESIGN = SHOWCASES.hero[0];
 
 /** Topics, one expanded at a time, step ids are unique across topics, numbering restarts per topic. */
 const TOPICS = {
@@ -138,10 +137,6 @@ const PRETRAINING_PIPELINE = [
 
 function channelIndex(config: Config, name: string): number {
   return Math.max(0, config.channels.findIndex((channel) => channel.name === name));
-}
-
-function voxelCount(config: Config): number {
-  return config.dimensions[0] * config.dimensions[1] * config.dimensions[2];
 }
 
 /** Id of the step currently crossing the upper third of the viewport, hidden topics never intersect. */
@@ -351,151 +346,6 @@ function ScalarFields({ config, fields }: { config: Config; fields: Field[] }) {
 /** Lazily loaded 3D scene with a placeholder in its place while three.js loads. */
 function Lazy3D({ children }: { children: ReactNode }) {
   return <Suspense fallback={<Panel className="grid h-40 animate-pulse place-items-center text-xs text-ink-muted"><span role="status">Loading 3D view…</span></Panel>}>{children}</Suspense>;
-}
-
-/** Signed error (reconstruction − simulation), its magnitude, and |error| max and 99th percentile over fluid voxels. */
-function compareFields(simulation: Field, reconstruction: Field): { signed: Field; absolute: Field; maximum: number; percentile99: number } {
-  const signed = new Float32Array(simulation.values.length);
-  const absolute = new Float32Array(simulation.values.length);
-  const fluidErrors: number[] = [];
-  let [minimum, maximum] = [0, 0];
-  for (let index = 0; index < signed.length; index++) {
-    if (!simulation.mask[index]) continue;
-    signed[index] = reconstruction.values[index] - simulation.values[index];
-    absolute[index] = Math.abs(signed[index]);
-    [minimum, maximum] = [Math.min(minimum, signed[index]), Math.max(maximum, signed[index])];
-    fluidErrors.push(absolute[index]);
-  }
-  const sorted = Float32Array.from(fluidErrors).sort();
-  const largest = sorted[sorted.length - 1];
-  return {
-    signed: { values: signed, mask: simulation.mask, min: minimum, max: maximum },
-    absolute: { values: absolute, mask: simulation.mask, min: 0, max: largest },
-    maximum: largest,
-    percentile99: sorted[Math.floor(0.99 * (sorted.length - 1))],
-  };
-}
-
-/** Range of the simulation and reconstruction colors: all 16 layers, or only the shown slice. */
-const FIELD_SCALES = [{ value: 'volume', label: 'Volume' }, { value: 'slice', label: 'Slice' }] as const;
-type FieldScale = (typeof FIELD_SCALES)[number]['value'];
-/** Signed error on a diverging map shows over- vs under-prediction, absolute error on a single-hue map shows magnitude only. */
-const ERROR_KINDS = [{ value: 'signed', label: 'Signed' }, { value: 'absolute', label: 'Absolute' }] as const;
-type ErrorKind = (typeof ERROR_KINDS)[number]['value'];
-/** End of each channel's error color scale: max |error| over the whole 3D tensor, its 99th percentile, or max |error| in the shown slice. */
-const ERROR_SCALES = [
-  { value: 'volume', label: 'Volume max' },
-  { value: 'percentile', label: 'Volume p99' },
-  { value: 'slice', label: 'Slice max' },
-] as const;
-type ErrorScale = (typeof ERROR_SCALES)[number]['value'];
-
-function ControlGroup({ label, children }: { label: string; children: ReactNode }) {
-  return <div className="flex items-center gap-2 text-xs"><span className="text-ink-muted">{label}</span>{children}</div>;
-}
-
-/**
- * Simulation, zero-shot Tadpole-B reconstruction and error of every channel at a chosen height, one row per channel.
- *
- * - Simulation and reconstruction share one colorbar per row, the error has its own
- * - Colorbars mark with ≤/≥ when values in the shown slice are clipped to the end colors
- */
-function ZeroShot({ config, initialDesign }: { config: Config; initialDesign: number }) {
-  const [designId, setDesignId] = useState(initialDesign);
-  const [draft, setDraft] = useState(String(initialDesign));
-  const [slice, setSlice] = useState(Math.floor(config.dimensions[2] / 2));
-  const [fieldScale, setFieldScale] = useState<FieldScale>('volume');
-  const [errorKind, setErrorKind] = useState<ErrorKind>('signed');
-  const [errorScale, setErrorScale] = useState<ErrorScale>('percentile');
-  const loaded = useAsync((signal) => Promise.all([
-    Promise.all(config.channels.map((_, channel) => Promise.all([
-      fetchField(designId, channel, voxelCount(config), signal),
-      fetchField(designId, channel, voxelCount(config), signal, 'reconstruction'),
-    ]))),
-    fetchReconstructionMetrics(designId, signal),
-  ]), [designId, config]);
-  const comparisons = useMemo(() => loaded.status === 'done' ? loaded.data[0].map((pair) => compareFields(...pair)) : undefined, [loaded]);
-  const volumeScales = useMemo(() => loaded.status === 'done'
-    ? loaded.data[0].map(([simulation], channel) => colorScaleOf(config.channels[channel].scale, fluidValues(simulation, config))!)
-    : undefined, [loaded, config]);
-  const rows = useMemo(() => {
-    if (loaded.status !== 'done' || !comparisons || !volumeScales) return undefined;
-    return loaded.data[0].map(([simulation, reconstruction], channel) => {
-      const shown = [fluidValues(simulation, config, slice), fluidValues(reconstruction, config, slice)];
-      const scale = fieldScale === 'volume' ? volumeScales[channel] : colorScaleOf(config.channels[channel].scale, shown[0])!;
-      const comparison = comparisons[channel];
-      const error = errorKind === 'signed' ? comparison.signed : comparison.absolute;
-      const shownError = fluidValues(error, config, slice);
-      const bound = {
-        volume: comparison.maximum,
-        percentile: comparison.percentile99,
-        slice: fluidValues(comparison.absolute, config, slice).reduce((maximum, value) => Math.max(maximum, value), 0),
-      }[errorScale] || 1;
-      const errorScaleOf: ColorScale = errorKind === 'signed'
-        ? { colormap: 'diverging', range: [-bound, bound], log: false }
-        : { colormap: 'magnitude', range: [0, bound], log: false };
-      return {
-        simulation, reconstruction, scale, error, errorScale: errorScaleOf,
-        simulationClipped: clipping(shown[0], scale),
-        reconstructionClipped: clipping(shown[1], scale),
-        errorClipped: clipping(shownError, errorScaleOf),
-      };
-    });
-  }, [loaded, comparisons, volumeScales, config, slice, fieldScale, errorKind, errorScale]);
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
-    const parsed = Number(draft);
-    if (Number.isInteger(parsed) && parsed >= 0) setDesignId(parsed);
-  };
-  const height = formatNumber(slice * config.spacing[2] * 1000);
-  return <div className="space-y-4">
-    <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
-      <form onSubmit={submit} className="flex items-center gap-2 text-xs">
-        <label htmlFor="zero-shot-design" className="text-ink-muted">Design</label>
-        <input id="zero-shot-design" inputMode="numeric" value={draft} onChange={(event) => setDraft(event.target.value)} onBlur={submit}
-          className="w-24 rounded-lg bg-surface-elevated px-2.5 py-1 text-right tabular-nums shadow-[var(--shadow-sm)] outline-none focus-visible:ring-2 focus-visible:ring-divider" />
-      </form>
-      <ControlGroup label="Height">
-        <div className="w-32"><Slider label="Z slice" min={0} max={config.dimensions[2] - 1} values={[slice]} onChange={([next]) => setSlice(next)} /></div>
-        <span className="min-w-16 whitespace-nowrap rounded-lg bg-surface-elevated px-2 py-0.5 text-right tabular-nums shadow-[var(--shadow-sm)]">{height} mm</span>
-      </ControlGroup>
-      <ControlGroup label="Field scale"><Segmented label="Field color range" value={fieldScale} onChange={setFieldScale} options={[...FIELD_SCALES]} /></ControlGroup>
-      <ControlGroup label="Error"><Segmented label="Error kind" value={errorKind} onChange={setErrorKind} options={[...ERROR_KINDS]} /></ControlGroup>
-      <ControlGroup label="Error scale"><Segmented label="Error color scale" value={errorScale} onChange={setErrorScale} options={[...ERROR_SCALES]} /></ControlGroup>
-    </div>
-    {loaded.status !== 'done' || !rows
-      ? <Pending state={loaded} message={`Running Tadpole-B on design ${designId} · uncached designs take about a minute on the CPU`} />
-      : <Panel className="grid gap-y-2 py-4 lg:grid-cols-[11rem_repeat(3,minmax(0,1fr))]">
-        <p className="px-4 text-xs text-ink-muted tabular-nums max-lg:hidden">z = {height} mm</p>
-        {[`Simulation, design ${designId}`, 'Tadpole-B reconstruction', errorKind === 'signed' ? 'Error, reconstruction − simulation' : 'Absolute error'].map((title) =>
-          <p key={title} className="px-4 text-xs font-medium max-lg:hidden">{title}</p>)}
-        {rows.map((row, channel) => {
-          const { name, unit } = config.channels[channel];
-          const metrics = loaded.data[1];
-          const last = channel === rows.length - 1;
-          return <Fragment key={name}>
-            <dl className="row-span-2 grid h-fit grid-cols-[auto_auto] gap-x-2 px-4 pt-4 text-xs whitespace-nowrap tabular-nums lg:pt-6">
-              <dt className="text-ink-muted">Metric:</dt><dd><span className="font-medium">{name}</span> <span className="text-ink-muted">{unit}</span></dd>
-              <dt className="mt-2 text-ink-muted">NRMSE:</dt><dd className="mt-2 font-medium">{metrics.nrmse[channel].toFixed(1)} %</dd>
-              <dt className="text-ink-muted">Spectral loss:</dt><dd className="font-medium">{metrics.spectral_loss[channel].toFixed(3)}</dd>
-            </dl>
-            <div className="flex justify-start px-4 pt-4"><Colorbar scale={row.scale} clipped={row.simulationClipped} unit={unit} /></div>
-            <div className="flex justify-start px-4 pt-4"><Colorbar scale={row.scale} clipped={row.reconstructionClipped} unit={unit} /></div>
-            <div className="flex justify-start px-4 pt-4"><Colorbar scale={row.errorScale} clipped={row.errorClipped} unit={unit} /></div>
-            <Heatmap field={row.simulation} config={config} scale={row.scale} slice={slice} axis={last} />
-            <Heatmap field={row.reconstruction} config={config} scale={row.scale} slice={slice} axis={last} />
-            <Heatmap field={row.error} config={config} scale={row.errorScale} slice={slice} axis={last} />
-          </Fragment>;
-        })}
-      </Panel>}
-  </div>;
-}
-
-/** Inline error, or a pulsing placeholder with one factual line while `state` loads. */
-function Pending({ state, message }: { state: AsyncState<unknown>; message: string }) {
-  return state.status === 'error'
-    ? <Panel className="p-4 text-sm text-danger"><p role="alert">{state.error}</p></Panel>
-    : <Panel className="grid h-40 animate-pulse place-items-center text-xs text-ink-muted"><span role="status">{message}</span></Panel>;
 }
 
 /** Guided tour in two topics: the Tadpole model and the CoolData dataset, one shown at a time. */
@@ -956,9 +806,12 @@ export default function Overview({ config, dataset, nav, onView, onOpen }: {
             <li><strong>NRMSE</strong>: as above, fluid voxels only</li>
             <li><strong>Spectral loss</strong>: mean absolute difference of log(1 + |FFT amplitude|) between reconstruction and simulation, solids set to 0. Computed on the [−1, 1] scale Tadpole sees, so channels compare. 0 is a perfect spectrum, larger values mean missing or spurious scales</li>
           </ul>
-          <p>Simulation and reconstruction show the same range, taken from the simulation over all layers or over the shown slice. Every field uses viridis from the minimum to the 99th percentile, so a few extreme voxels don't flatten the rest, with a 0 tick where values change sign. k and ε use a log scale. The error is reconstruction − simulation by default, red where Tadpole overshoots, blue where it undershoots, or its magnitude on a single-hue map. Its scale ends at the channel's largest |error| in the 3D volume, at the 99th percentile, or at the largest |error| in the slice. ≤ and ≥ on a colorbar mark values clipped to the end colors. Any design id with a simulation works:</p>
+          <p>Simulation and reconstruction show the same range, taken from the simulation over all layers or over the shown slice. Every field uses viridis from the minimum to the 99th percentile, so a few extreme voxels don't flatten the rest, with a 0 tick where values change sign. k and ε use a log scale. The error is reconstruction − simulation by default, red where Tadpole overshoots, blue where it undershoots, or its magnitude on a single-hue map. Its scale ends at the channel's largest |error| in the 3D volume, at the 99th percentile, or at the largest |error| in the slice. ≤ and ≥ on a colorbar mark values clipped to the end colors.</p>
         </Prose>
-        <ZeroShot config={config} initialDesign={TADPOLE_DESIGN} />
+        <Reconstruction config={config} designId={TADPOLE_DESIGN} />
+        <div className="flex flex-wrap gap-3">
+          <button onClick={() => onView('autoencoder')} className="rounded-xl border border-divider-soft px-4 py-2.5 text-sm text-ink-muted transition hover:border-divider hover:text-ink">Cool Autoencoder: reconstruct any design</button>
+        </div>
       </Step>
     </div>
   </Layout>;

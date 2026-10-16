@@ -2,15 +2,16 @@ import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { fetchConfig, fetchDataset, fetchSample } from './api';
 import type { Config, Design, Sample, SampleQuery } from './api';
+import AutoencoderView from './Autoencoder';
 import DatasetExplorer from './Dataset';
 import Gallery, { defaultDisplay, FieldControls, useFieldBatch } from './Gallery';
-import Overview from './Overview';
+import Overview, { TADPOLE_DESIGN } from './Overview';
 import Sidebar from './Sidebar';
 import { formatNumber } from './lib/format';
 import { Layout, Panel, Select } from './lib/ui';
 import { useAsync } from './lib/useAsync';
 
-const VIEWS = { overview: 'Cool Overview', flow: 'Cool Flowfields', dataset: 'Cool Dataframe' } as const;
+const VIEWS = { overview: 'Cool Overview', flow: 'Cool Flowfields', dataset: 'Cool Dataframe', autoencoder: 'Cool Autoencoder' } as const;
 export type View = keyof typeof VIEWS;
 /** A seeded sample from the sidebar or designs picked in the overview or dataframe. */
 type FlowRequest = SampleQuery | Design[];
@@ -72,6 +73,7 @@ export default function App() {
       <div hidden={view !== 'overview'}><Overview config={config} dataset={dataset} nav={nav} onView={setView} onOpen={openInFlow} /></div>
       <div hidden={view !== 'flow'}><Explorer config={config} nav={nav} request={flowRequest} onRequest={setFlowRequest} /></div>
       <div hidden={view !== 'dataset'}><DatasetExplorer dataset={dataset} config={config} nav={nav} onOpen={openInFlow} /></div>
+      <div hidden={view !== 'autoencoder'}><AutoencoderView config={config} nav={nav} initialDesign={TADPOLE_DESIGN} /></div>
     </>;
   }
   return <Layout nav={nav}>

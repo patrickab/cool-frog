@@ -29,6 +29,10 @@ export function fluidValues(field: Field, config: Config, slice?: number): Float
   return Float32Array.from(values);
 }
 
+export function voxelCount(config: Config): number {
+  return config.dimensions[0] * config.dimensions[1] * config.dimensions[2];
+}
+
 /** Boundary faces: x, y, z per point in m, legacy VTK `polygons` [n, i0, …], face `values` per surface channel, NaN where a boundary lacks it. */
 export type Surface = { points: Float32Array; polygons: Uint32Array; values: Float32Array[] };
 /** Props of every field renderer. */

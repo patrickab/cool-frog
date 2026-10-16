@@ -4,6 +4,7 @@ import { gradientCss, scaleValue } from './colormap';
 import type { ColorScale } from './colormap';
 import { formatNumber, formatPower, formatTick } from './format';
 import type { Bounded, Range } from './range';
+import type { AsyncState } from './useAsync';
 
 const COLORBAR_WIDTH = 192;
 /** Approximate width of an 11 px tabular label, enough to keep labels apart. */
@@ -88,6 +89,13 @@ export const HEADING = 'text-[11px] font-medium uppercase tracking-[0.12em] text
 /** Elevated container on the page: surface layer, warm shadow, top inner highlight. */
 export function Panel({ className = '', children }: { className?: string; children: ReactNode }) {
   return <div className={`rounded-2xl bg-surface shadow-[var(--shadow-sm),var(--inner-highlight)] ${className}`}>{children}</div>;
+}
+
+/** Inline error, or a pulsing placeholder with one factual line while `state` loads. */
+export function Pending({ state, message }: { state: AsyncState<unknown>; message: string }) {
+  return state.status === 'error'
+    ? <Panel className="p-4 text-sm text-danger"><p role="alert">{state.error}</p></Panel>
+    : <Panel className="grid h-40 animate-pulse place-items-center text-xs text-ink-muted"><span role="status">{message}</span></Panel>;
 }
 
 export function Badge({ children }: { children: ReactNode }) {
