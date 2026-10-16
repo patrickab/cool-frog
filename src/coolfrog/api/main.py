@@ -15,16 +15,7 @@ import polars as pl
 from pydantic import BaseModel, Field, FiniteFloat, field_validator
 import torch
 
-from coolfrog.engine.data import (
-    CACHE_DIR,
-    UnknownDesignError,
-    cache_path,
-    load_flow_field,
-    load_metadata,
-    load_surface,
-    select_designs,
-    surface_cache_path,
-)
+from coolfrog.engine.data import CACHE_DIR, CoolData, CoolMetadata, SurfaceMesh, UnknownDesignError
 from coolfrog.engine.tadpole import Tadpole
 from coolfrog.lib.config import TadpoleConfig
 from coolfrog.lib.datatypes import CHANNELS, PARAM_COLUMNS, PARAM_UNITS, SURFACE_CHANNELS, FlowField, Grid, NormalizationStats
@@ -141,7 +132,7 @@ class DatasetFilter(BaseModel):
 
     def apply(self) -> tuple[pl.DataFrame, pl.DataFrame]:
         """Rows inside the ranges and search, then those also inside the run filter."""
-        in_ranges = select_designs(load_metadata(), ranges=self.ranges)
+        in_ranges = CoolMetadata.load().select(ranges=self.ranges).designs
         if self.search:
             in_ranges = in_ranges.filter(pl.col("design_id").cast(pl.String).str.starts_with(self.search))
         return in_ranges, in_ranges if self.runs is None else in_ranges.filter(pl.col("run").is_in(self.runs))
@@ -187,7 +178,7 @@ async def server_error(_request: Request, exc: Exception) -> JSONResponse:
 
 @app.get("/api/config")
 def config() -> Config:
-    metadata = load_metadata()
+    metadata = CoolMetadata.load().designs
     parameters = []
     for name in PARAM_COLUMNS:
         finite = metadata[name].filter(metadata[name].is_finite())
@@ -203,15 +194,16 @@ def config() -> Config:
 
 @app.post("/api/sample")
 def sample(request: SampleRequest) -> Sample:
-    matches = select_designs(load_metadata(), ranges=request.ranges)
-    if matches.height < request.count:
+    matches = CoolMetadata.load().select(ranges=request.ranges)
+    matched = matches.designs.height
+    if matched < request.count:
         raise HTTPException(
             400,
-            f"Only {matches.height} designs match these ranges; requested {request.count}. Widen the ranges or reduce the count.",
+            f"Only {matched} designs match these ranges; requested {request.count}. Widen the ranges or reduce the count.",
         )
-    selected = select_designs(matches, ranges={}, n_samples=request.count, seed=request.seed)
+    selected = matches.select(ranges={}, n_samples=request.count, seed=request.seed).designs
     designs = [design_from_row(row) for row in selected.iter_rows(named=True)]
-    return Sample(designs=designs, matched=matches.height)
+    return Sample(designs=designs, matched=matched)
 
 
 def design_from_row(row: dict) -> Design:
@@ -220,7 +212,7 @@ def design_from_row(row: dict) -> Design:
 
 @cache
 def dataset_overview() -> Dataset:
-    metadata = load_metadata()
+    metadata = CoolMetadata.load().designs
     columns = []
     for name in DATASET_COLUMNS:
         values = metadata[name].to_numpy()
@@ -239,7 +231,7 @@ def dataset() -> Dataset:
 @app.get("/api/designs")
 def designs(ids: Annotated[list[int], Query(alias="id", min_length=1, max_length=24)]) -> list[Design]:
     """Designs in the requested order."""
-    rows = {row["design_id"]: row for row in load_metadata().filter(pl.col("design_id").is_in(ids)).iter_rows(named=True)}
+    rows = {row["design_id"]: row for row in CoolMetadata.load().designs.filter(pl.col("design_id").is_in(ids)).iter_rows(named=True)}
     if missing := [design_id for design_id in ids if design_id not in rows]:
         raise HTTPException(404, f"Unknown designs: {missing}")
     return [design_from_row(rows[design_id]) for design_id in ids]
@@ -265,14 +257,15 @@ def dataset_rows(query: RowsQuery) -> list[list[int | float | str]]:
 @app.get("/api/fields/{design_id}", response_class=Response)
 async def fields(request: Request, design_id: int, channel: Annotated[int, Query(ge=0, lt=len(CHANNELS))] = 0) -> Response:
     """Channel values as float32 little-endian, then the uint8 fluid mask (fluid = finite value), both x-fastest."""
-    flow = await _load(request, cache_path(design_id, GRID).exists(), load_flow_field, design_id, GRID, LOCAL_SOURCE)
+    cached = CoolData.cache_path(design_id, GRID).exists()
+    flow = await _load(request, cached, CoolData.load_flow_field, design_id, GRID, LOCAL_SOURCE)
     return _field_response(flow.fields[channel], flow, channel)
 
 
 @app.get("/api/reconstruction/{design_id}", response_class=Response)
 async def reconstruction(request: Request, design_id: int, channel: Annotated[int, Query(ge=0, lt=len(CHANNELS))] = 0) -> Response:
     """Zero-shot Tadpole-B reconstruction of one channel, laid out like `/api/fields` with the simulation's fluid mask."""
-    cached = reconstruction_path(design_id).exists() and cache_path(design_id, GRID).exists()
+    cached = reconstruction_path(design_id).exists() and CoolData.cache_path(design_id, GRID).exists()
     flow, reconstructed = await _load(request, cached, load_reconstruction, design_id)
     return _field_response(reconstructed[channel], flow, channel)
 
@@ -280,7 +273,7 @@ async def reconstruction(request: Request, design_id: int, channel: Annotated[in
 @app.get("/api/reconstruction/{design_id}/metrics")
 async def reconstruction_metrics(request: Request, design_id: int) -> ReconstructionMetrics:
     """NRMSE and spectral loss of the zero-shot reconstruction, `coolfrog.lib.metrics` definitions."""
-    cached = reconstruction_path(design_id).exists() and cache_path(design_id, GRID).exists()
+    cached = reconstruction_path(design_id).exists() and CoolData.cache_path(design_id, GRID).exists()
     flow, reconstructed = await _load(request, cached, load_reconstruction, design_id)
     reference = flow.unsqueeze(0)
     stats = NormalizationStats.from_flowfields([reference])
@@ -317,7 +310,7 @@ def load_reconstruction(design_id: int) -> tuple[FlowField, torch.Tensor]:
     - Each channel is scaled to [-1, 1] by this design's own fluid min and max, Tadpole's pre-training range
     - Takes about 45 s on 8 CPU cores when uncached
     """
-    flow = load_flow_field(design_id, GRID, LOCAL_SOURCE)
+    flow = CoolData.load_flow_field(design_id, GRID, LOCAL_SOURCE)
     path = reconstruction_path(design_id)
     if path.exists():
         return flow, torch.load(path, weights_only=True)
@@ -339,7 +332,7 @@ async def surface(request: Request, design_id: int) -> Response:
     - float32 x, y, z per point, uint32 legacy VTK polygons [n, i0, …]
     - float32 face values per `SURFACE_CHANNELS` entry, NaN where a boundary doesn't store it
     """
-    mesh = await _load(request, surface_cache_path(design_id).exists(), load_surface, design_id, LOCAL_SOURCE)
+    mesh = await _load(request, SurfaceMesh.cache_path(design_id).exists(), SurfaceMesh.load, design_id, LOCAL_SOURCE)
     counts = np.array([len(mesh.points), len(mesh.polygons), mesh.values.shape[1]], dtype="<u4")
     arrays = (counts, mesh.points.astype("<f4"), mesh.polygons.astype("<u4"), mesh.values.astype("<f4"))
     return Response(b"".join(array.tobytes() for array in arrays), media_type="application/octet-stream")
