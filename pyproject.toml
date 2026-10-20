@@ -5,6 +5,7 @@ requires-python = ">=3.12"
 dependencies = [
   "cooldata",
   "polars>=2.0.0",
+  "pyyaml>=6",
   "rich>=15.0.0",
   "tadpole",
   "tensordict>=0.14",
