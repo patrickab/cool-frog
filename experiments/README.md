@@ -1,25 +1,28 @@
 # Experiments
 
-One folder per run: `experiments/<NN>_<concise-name>/` (2-digit zero-padded index, kebab-case).
+One folder per experiment: `experiments/<NN>_<experiment-name>`
+
+Create experiment script anywhere (e.g. `experiments/my_experiment.py`) that calls `create_experiment(TITLE, GOAL, HYPOTHESIS, configs)` and run it from the repo root. The first run creates the folder and moves the script into it. Rerunning the moved script reuses its folder and overwrites `config.yaml`, `meta.json` and the results. `README.md` is never overwritten.
 
 ```
 01_zero-shot-autoencoding/
-  config.yaml   # resolved configs (DataConfig, TadpoleConfig, ...)
-  meta.json     # {"commit": "<full sha>", "date": "<ISO 8601>"}
-  README.md     # copy of the template below
-  results/      # metrics, plots, runtime logs
+  my_experiment.py  # the script, moved here on first run
+  config.yaml       # resolved configs (DataConfig, TadpoleConfig, ...)
+  meta.json         # {"commit": "<full sha>", "date": "<ISO 8601>"}
+  README.md         # generated from the template below
+  results/          # metrics, plots, runtime logs
 ```
 
 ## README template
 
 ```markdown
-# <NN> <experiment name>
+# <experiment title>
 
 ## Goal
-<What is measured, tested, trained etc.>
+<Optional. What is measured, tested, trained etc.>
 
 ## Hypothesis
-<Optional. Delete for pure measurements>
+<Optional, e.g. omitted for pure measurements.>
 
 ## Result
 <Key numbers and plots, link into `results/`.>
