@@ -20,7 +20,15 @@ from torch.utils.data import DataLoader, Dataset, random_split
 from tqdm import tqdm
 
 from coolfrog.lib.config import DataConfig, Range
-from coolfrog.lib.datatypes import CHANNELS, PARAM_COLUMNS, SURFACE_CHANNELS, Channel, FlowField, Grid, SurfaceChannel
+from coolfrog.lib.datatypes import (
+    CHANNELS,
+    PARAM_COLUMNS,
+    SURFACE_CHANNELS,
+    Channel,
+    FlowField,
+    Grid,
+    SurfaceChannel,
+)
 
 CACHE_DIR = Path.cwd() / ".cache"
 

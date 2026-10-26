@@ -25,6 +25,7 @@ class Tadpole(nn.Module):
             weight_decoder=_weight_path(config, "decoder"),
             encoder_ft_state=config.encoder_state,
             decoder_ft_state=config.decoder_state,
+            encoder_crop_size=None,
         )
         self.encoder = autoencoder.encoder
         self.decoder = autoencoder.decoder

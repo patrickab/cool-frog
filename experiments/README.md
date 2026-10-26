@@ -4,6 +4,7 @@ One folder per experiment: `experiments/<NN>_<experiment-name>`
 
 Create experiment script anywhere (e.g. `experiments/my_experiment.py`) that calls `create_experiment(TITLE, GOAL, HYPOTHESIS, configs)` and run it from the repo root. The first run creates the folder and moves the script into it. Rerunning the moved script reuses its folder and overwrites `config.yaml`, `meta.json` and the results. `README.md` is never overwritten.
 
+
 ```
 01_zero-shot-autoencoding/
   my_experiment.py  # the script, moved here on first run

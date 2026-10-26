@@ -1,12 +1,13 @@
 """Global per-channel fluid min and max over all CoolData designs, run from the repo root."""
 
 import polars as pl
+from tqdm import tqdm
+
 from coolfrog.engine.cooldata import CoolData, create_dataloader
 from coolfrog.lib.config import DataConfig
 from coolfrog.lib.datatypes import CHANNELS, Grid, NormalizationStats
 from coolfrog.lib.experiment import create_experiment
 from coolfrog.lib.log import get_logger, setup_logging
-from tqdm import tqdm
 
 TITLE = "Min-max normalization stats on CoolData"
 GOAL = "Measure the global per-channel fluid min and max over every voxelized CoolData design, reused for normalization."
