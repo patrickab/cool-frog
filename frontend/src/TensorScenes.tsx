@@ -395,29 +395,6 @@ function elementColors(elements: Element[], toy: Toy, stage: Stage, selected: nu
   return colors;
 }
 
-function IndexTrace({ element, toy, size }: { element: Element; toy: Toy; size: Size }) {
-  const { theme } = useTheme();
-  const palette = themeColors(theme);
-  const { b, c, u, v, w, i, j, k } = element;
-  const { batch, channels, crop, factor } = toy;
-  const cropsPerAxis = TOY_EDGE / crop;
-  const color = (axis: Axis) => ({ color: oklchCss(palette.axes[axis]) });
-  const S = ({ axis, children }: { axis: Axis; children: ReactNode }) => <span style={color(axis)}>{children}</span>;
-  const [x, y, z] = [u * crop + i, v * crop + j, w * crop + k];
-  const row = (((b * channels + c) * cropsPerAxis + u) * cropsPerAxis + v) * cropsPerAxis + w;
-  const latentEdge = crop / factor;
-  const rows: [string, ReactNode][] = [
-    ['Input', <>(<S axis="batch">b</S>, <S axis="channel">c</S>, <S axis="spatial">x, y, z</S>) = ({b}, {c}, {x}, {y}, {z})</>],
-    ['Cut', <><S axis="crop">u</S> = ⌊x / H<sub>X</sub>⌋ = ⌊{x} / {crop}⌋ = {u}, <S axis="spatial">i</S> = x − u·H<sub>X</sub> = {i}, so x = {u}·{crop} + {i}. Likewise (v, j) = ({v}, {j}), (w, k) = ({w}, {k})</>],
-    ['Fold', <>n = (((<S axis="batch">b</S>·C + <S axis="channel">c</S>)·U + <S axis="crop">u</S>)·V + <S axis="crop">v</S>)·W + <S axis="crop">w</S> = ((({b}·{channels} + {c})·{cropsPerAxis} + {u})·{cropsPerAxis} + {v})·{cropsPerAxis} + {w} = {row} of {batch * channels * cropsPerAxis ** 3}</>],
-    ['Coarse address', <>Grid-stride illustration only: (⌊i/{factor}⌋, ⌊j/{factor}⌋, ⌊k/{factor}⌋) = ({Math.floor(i / factor)}, {Math.floor(j / factor)}, {Math.floor(k / factor)}). Learned features mix neighbouring inputs, not just this block</>],
-    ['Layout', <>(<S axis="batch">b</S>, <S axis="channel">c</S>·<S axis="feature">C<sub>l</sub></S> + ℓ, <S axis="crop">u</S>·X<sub>l</sub> + ⌊i/{factor}⌋, …) = ({b}, {c * latentChannels(size)} + ℓ, {u}·{latentEdge} + {Math.floor(i / factor)} = {u * latentEdge + Math.floor(i / factor)}, …), ℓ &lt; {latentChannels(size)}</>],
-    ['Output', <>x = u·H<sub>X</sub> + i = {x}, the cut inverted</>],
-  ];
-  return <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs tabular-nums">
-    {rows.map(([label, content]) => <Fragment key={label}><dt className="text-ink-muted">{label}</dt><dd>{content}</dd></Fragment>)}
-  </dl>;
-}
 
 /** Shape symbols with their toy sizes, hovering a symbol highlights the cubes along its axis. */
 function ShapeReadout({ stage, toy, onHighlight }: { stage: Stage; toy: Toy; onHighlight: (highlight: Highlight) => void }) {
@@ -510,7 +487,7 @@ function stageLesson(stage: Stage): { action: string; explanation: string } {
 }
 
 /**
- * Toy tensor animated through `stages`, with Tadpole-B sizes and the index trace of a clicked cube.
+ * Toy tensor animated through `stages`, with Tadpole-B sizes.
  *
  * - `diagram` shows the flat block diagram of the selected stages, clicking a block jumps there
  * - Toy edge 8, crop 4 or 8 and factor 4 stand in for Tadpole's 64³ crops and factor 16
@@ -579,7 +556,6 @@ export function TensorExplorer({ range, diagram = false, label }: { range: keyof
     </div>}
     {range === 'rearrange' && <ShapeReadout stage={stage} toy={toy} onHighlight={setHighlight} />}
     {diagram && <Disclosure label="Full network · select a layer"><div className="pt-3"><StageDiagram stages={stages} active={stages[position]} size={SIZE} onSelect={(index) => setPosition(stages.indexOf(index))} /></div></Disclosure>}
-    {selected !== undefined && <Disclosure label="Selected cube · index arithmetic"><div className="pt-3"><IndexTrace element={elements[selected]} toy={toy} size={SIZE} /></div></Disclosure>}
   </Panel>;
 }
 
