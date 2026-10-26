@@ -13,7 +13,6 @@ from huggingface_hub import hf_hub_download
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import pyvista as pv
 from tadpole.model.autoencoder import TadpoleAutoencoder
 import torch
 import torch.nn.functional as F
@@ -26,7 +25,7 @@ N_SAMPLES = 1
 FACTOR_ACCURACY = 1
 FACTOR_DOWNSAMPLING = 16
 FACTOR = FACTOR_ACCURACY * FACTOR_DOWNSAMPLING
-RESOLUTION = (25*FACTOR, 5*FACTOR, 1*FACTOR)
+RESOLUTION = (25 * FACTOR, 5 * FACTOR, 1 * FACTOR)
 CHANNELS = ["Vx [m/s]", "Vy [m/s]", "Vz [m/s]", "p [Pa]", "T [K]"]
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -96,14 +95,11 @@ autoencoder = (
         size="B",
         weight_encoder=hf_hub_download(HF_REPO, "tadpole_b_encoder.safetensors"),
         weight_decoder=hf_hub_download(HF_REPO, "tadpole_b_decoder.safetensors"),
-
         # deterministic, no sampling
         latent_type="sample",
-
         # zero-shot: weights never change
         encoder_ft_state="frozen",
         decoder_ft_state="frozen",
-        
         encoder_crop_size=None,
     )
     .to(DEVICE)
@@ -189,3 +185,4 @@ for c, name in enumerate(CHANNELS):
     show(axes[c, 2], np.abs(pr - gt), msk, f"|error| | {name}", cmap="magma")
 fig.suptitle(f"sample {b}")
 plt.show()
+

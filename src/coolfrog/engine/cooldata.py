@@ -7,6 +7,7 @@ import functools
 import logging
 import math
 from pathlib import Path
+import socket
 import tempfile
 from typing import Any, ClassVar
 import zipfile
@@ -30,7 +31,8 @@ from coolfrog.lib.datatypes import (
     SurfaceChannel,
 )
 
-CACHE_DIR = Path.cwd() / ".cache"
+CACHE_DIRS_BY_HOSTNAME = {"cube1": Path("/mnt/data/bitzer/.cache")}
+CACHE_DIR = CACHE_DIRS_BY_HOSTNAME.get(socket.gethostname(), Path.cwd() / ".cache")
 
 HF_REVISION = "49d714f48160e3ecc788aa3b5a89c5c0c68a40e2"
 HF_DATASET = f"datasets/bgce/cooldata-v2@{HF_REVISION}"
