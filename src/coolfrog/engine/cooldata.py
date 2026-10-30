@@ -139,6 +139,8 @@ class CoolDataShard:
     }
     # Lossless, about 4x smaller than raw float32 and decoded in ~12 ms per design at 400x80x16, h5py detects it when reading
     COMPRESSION: ClassVar[hdf5plugin.Blosc2] = hdf5plugin.Blosc2(cname="zstd", clevel=1, filters=hdf5plugin.Blosc2.SHUFFLE)
+    # Raw over compressed size assumed by the disk check, below the ~4x measured on real designs
+    COMPRESSION_RATIO: ClassVar[float] = 3.0
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -285,7 +287,8 @@ class CoolData(Dataset[FlowField]):
                 logger.info("Deleting leftover %s", temp_path.name)
                 temp_path.unlink()
             uncached = metadata.designs.filter(~pl.col("design_id").is_in(list(cached_shards(grid)))).sort("run", "batch", "design_id")
-            required_bytes = uncached.height * (len(CHANNELS) * 4 + 1) * math.prod(grid.resolution)  # uncompressed, upper bound
+            raw_bytes = uncached.height * (len(CHANNELS) * 4 + 1) * math.prod(grid.resolution)  # float32 fields + bool mask
+            required_bytes = raw_bytes / CoolDataShard.COMPRESSION_RATIO
             available_bytes = shutil.disk_usage(cache_dir).free
             logger.info(
                 "%d of %d designs uncached, %.1f GB needed, %.1f GB free",
