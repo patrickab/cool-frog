@@ -40,6 +40,9 @@ from coolfrog.lib.log import get_logger, progress_bar
 CACHE_DIR = HOST_CONFIG.cache_dir
 SHARD_SIZE = 64
 PROCESSES = max(1, len(os.sched_getaffinity(0)) - 2)  # shards built in parallel by `build_voxel_cache`, 2 CPUs left for the system
+TETRAHEDRON_CHUNK = 2_000_000  # (tetrahedron, grid point) pairs tested at once by `CoolDataShard._containing_cells`, ~200 MB
+BARYCENTRIC_TOLERANCE = 1e-9  # keeps grid points on cell faces and domain walls inside
+FLAT_TETRAHEDRON_DETERMINANT = 1e-18  # m³, tetrahedra of degenerate fan triangles below it are dropped
 
 HF_REVISION = "49d714f48160e3ecc788aa3b5a89c5c0c68a40e2"
 HF_DATASET = f"datasets/bgce/cooldata-v2@{HF_REVISION}"
@@ -211,14 +214,103 @@ class CoolDataShard:
 
     @classmethod
     def voxelize(cls, volume_path: Path, grid: Grid) -> tuple[torch.Tensor, torch.Tensor]:
-        """Sample a CGNS volume onto `grid` as (C, X, Y, Z) fields and (X, Y, Z) fluid mask, like cooldata `from_pyvista`."""
-        axes = [np.linspace(0.0, length, voxels) for length, voxels in zip(grid.extent, grid.resolution, strict=True)]
+        """Values of the CGNS cell containing each `grid` point, as (C, X, Y, Z) fields and (X, Y, Z) fluid mask, solids 0.
+
+        - CFD values are constant per cell, so voxelizing only needs the containing cell, see `_containing_cells`
+        - Replaces VTK `sample`, which is ~10x slower on polyhedra and takes values from distant cells for ~2% of voxels
+        """
         with pv.vtk_verbosity("error"):  # silences "Skipping BC_t node" warnings, only cell and face data are read
             volume = pv.read(volume_path)[0][0][0]
-        sampled = pv.StructuredGrid(*np.meshgrid(*axes, indexing="ij")).sample(volume)
-        fields = np.stack([sampled[cls.CGNS_ARRAYS[channel]].reshape(grid.resolution, order="F") for channel in CHANNELS])
-        mask = sampled["vtkValidPointMask"].reshape(grid.resolution, order="F")
-        return torch.tensor(fields, dtype=torch.float32), torch.tensor(mask, dtype=torch.bool)
+        cell_ids = cls._containing_cells(volume, grid)
+        mask = cell_ids >= 0
+        cell_values = torch.tensor(np.stack([volume.cell_data[cls.CGNS_ARRAYS[channel]] for channel in CHANNELS]), dtype=torch.float32)
+        return cell_values[:, cell_ids.clamp_min(0)] * mask, mask
+
+    @staticmethod
+    def _fan_tetrahedra(volume: pv.UnstructuredGrid) -> tuple[torch.Tensor, torch.Tensor]:
+        """(T, 4, 3) tetrahedra from each polyhedral cell's vertex mean to the fan triangles of its faces, and their (T,) cell."""
+        points = torch.tensor(volume.points, dtype=torch.float64)
+        face_vertices = torch.tensor(volume.polyhedron_face_connectivity)
+        face_offsets = torch.tensor(volume.polyhedron_face_offsets)
+        cell_faces = torch.tensor(volume.polyhedron_face_location_connectivity)
+        cell_face_offsets = torch.tensor(volume.polyhedron_face_location_offsets)
+        face_start, face_size = face_offsets[cell_faces], face_offsets.diff()[cell_faces]
+        face_cell = torch.repeat_interleave(torch.arange(volume.n_cells), cell_face_offsets.diff())
+
+        vertex_face = torch.repeat_interleave(torch.arange(len(cell_faces)), face_size)
+        vertex_cell = face_cell[vertex_face]
+        vertex_points = points[face_vertices[face_start[vertex_face] + _ranks(face_size)]]
+        centres = torch.zeros(volume.n_cells, 3, dtype=torch.float64).index_add_(0, vertex_cell, vertex_points)
+        centres /= torch.bincount(vertex_cell, minlength=volume.n_cells).unsqueeze(1)
+
+        triangle_count = face_size - 2
+        triangle_face = torch.repeat_interleave(torch.arange(len(cell_faces)), triangle_count)
+        first, rank = face_start[triangle_face], _ranks(triangle_count)
+        corners = torch.stack([face_vertices[first], face_vertices[first + 1 + rank], face_vertices[first + 2 + rank]], 1)
+        tetrahedron_cell = face_cell[triangle_face]
+        return torch.cat([centres[tetrahedron_cell].unsqueeze(1), points[corners]], 1), tetrahedron_cell
+
+    @classmethod
+    def _containing_cells(cls, volume: pv.UnstructuredGrid, grid: Grid) -> torch.Tensor:
+        """(X, Y, Z) id of the cell containing each grid point, -1 outside the mesh.
+
+        - Splits cells into signed fan tetrahedra, a point is inside a cell at winding number ≥ 1, also for non-convex cells
+        - Tests each tetrahedron only against the grid points in its bounding box, in chunks of `TETRAHEDRON_CHUNK` pairs
+        - Points on a face shared by two cells go to the higher cell id, both hold valid values there
+        """
+        tetrahedra, tetrahedron_cell = cls._fan_tetrahedra(volume)
+        edges = (tetrahedra[:, 1:] - tetrahedra[:, :1]).transpose(1, 2)  # columns are the 3 edge vectors from the first corner
+        determinant = torch.linalg.det(edges)
+        valid = determinant.abs() > FLAT_TETRAHEDRON_DETERMINANT
+        tetrahedra, tetrahedron_cell, edges = tetrahedra[valid], tetrahedron_cell[valid], edges[valid]
+        orientation = determinant[valid].sign().long()
+        inverse_edges = torch.linalg.inv(edges)
+
+        sizes = torch.tensor(grid.resolution)
+        axes = [torch.tensor(np.linspace(0.0, length, voxels)) for length, voxels in zip(grid.extent, grid.resolution, strict=True)]
+        steps = torch.tensor([length / (voxels - 1) for length, voxels in zip(grid.extent, grid.resolution, strict=True)])
+        low = torch.ceil(tetrahedra.amin(1) / steps - 1e-6).long().clamp_min(0)
+        high = torch.minimum(torch.floor(tetrahedra.amax(1) / steps + 1e-6).long(), sizes - 1)
+        span = (high - low + 1).clamp_min(0)
+        candidates = span.prod(1)
+        cumulative = candidates.cumsum(0)
+
+        keys, windings = [], []  # key = grid point * cell count + cell
+        start = 0
+        while start < len(tetrahedra):
+            end = max(int(torch.searchsorted(cumulative, cumulative[start] - candidates[start] + TETRAHEDRON_CHUNK)), start + 1)
+            chunk = torch.arange(start, end)
+            start = end
+            pair = torch.repeat_interleave(chunk, candidates[chunk])
+            rank = _ranks(candidates[chunk])
+            pair_span = span[pair]
+            index = low[pair] + torch.stack(
+                [rank // (pair_span[:, 1] * pair_span[:, 2]), rank // pair_span[:, 2] % pair_span[:, 1], rank % pair_span[:, 2]], 1
+            )
+            coordinates = torch.stack([axes[axis][index[:, axis]] for axis in range(3)], 1)
+            weights = torch.einsum("pij,pj->pi", inverse_edges[pair], coordinates - tetrahedra[pair, 0])
+            inside = (weights >= -BARYCENTRIC_TOLERANCE).all(1) & (weights.sum(1) <= 1 + BARYCENTRIC_TOLERANCE)
+            point = (index[inside, 0] * sizes[1] + index[inside, 1]) * sizes[2] + index[inside, 2]
+            keys.append(point * volume.n_cells + tetrahedron_cell[pair[inside]])
+            windings.append(orientation[pair[inside]])
+
+        unique_keys, key_index = torch.unique(torch.cat(keys), return_inverse=True)
+        winding = torch.zeros(len(unique_keys), dtype=torch.long).index_add_(0, key_index, torch.cat(windings))
+        inside_keys = unique_keys[winding >= 1]
+        cell_ids = torch.full((int(sizes.prod()),), -1, dtype=torch.long)
+        cell_ids.scatter_reduce_(0, inside_keys // volume.n_cells, inside_keys % volume.n_cells, reduce="amax")
+        return cell_ids.view(*grid.resolution)
+
+
+def _ranks(lengths: torch.Tensor) -> torch.Tensor:
+    """0..n-1 within each run of `lengths`, concatenated: `[2, 3]` -> `[0, 1, 0, 1, 2]`."""
+    return torch.arange(int(lengths.sum())) - torch.repeat_interleave(lengths.cumsum(0) - lengths, lengths)
+
+
+def _init_build_worker() -> None:
+    """Set up a `build_voxel_cache` worker: Ctrl+C reaches only the main process, one torch thread as `PROCESSES` fill the CPUs."""
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    torch.set_num_threads(1)
 
 
 def cached_shards(grid: Grid) -> dict[int, tuple[CoolDataShard, int]]:
@@ -308,7 +400,7 @@ class CoolData(Dataset[FlowField]):
             rows = uncached.select("design_id", "run", "batch").rows()
             fork = multiprocessing.get_context("fork")
             with (
-                fork.Pool(PROCESSES, initializer=signal.signal, initargs=(signal.SIGINT, signal.SIG_IGN)) as pool,
+                fork.Pool(PROCESSES, initializer=_init_build_worker) as pool,
                 progress_bar() as progress,
             ):
                 voxelized = progress.track(pool.imap_unordered(voxelize_design, rows), len(rows), description="Voxelizing designs")
