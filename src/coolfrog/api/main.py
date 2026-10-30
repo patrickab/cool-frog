@@ -3,7 +3,6 @@
 import asyncio
 from collections.abc import Callable
 from functools import cache
-import logging
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -15,10 +14,11 @@ import polars as pl
 from pydantic import BaseModel, Field, FiniteFloat, field_validator
 import torch
 
-from coolfrog.engine.data import CACHE_DIR, CoolData, CoolMetadata, SurfaceMesh, UnknownDesignError
+from coolfrog.engine.cooldata import CACHE_DIR, CoolData, CoolMetadata, SurfaceMesh, UnknownDesignError
 from coolfrog.engine.tadpole import Tadpole
 from coolfrog.lib.config import TadpoleConfig
 from coolfrog.lib.datatypes import CHANNELS, PARAM_COLUMNS, PARAM_UNITS, SURFACE_CHANNELS, FlowField, Grid, NormalizationStats
+from coolfrog.lib.log import get_logger, setup_logging
 from coolfrog.lib.metrics import nrmse, spectral_loss
 
 app = FastAPI(title="Coolfrog")
@@ -27,7 +27,8 @@ LOCAL_SOURCE = Path("data/cooldata")
 # Numeric columns the dataset explorer filters and sorts, `run` is filtered separately
 DATASET_COLUMNS = ("design_id", *PARAM_COLUMNS)
 HISTOGRAM_BINS = 40
-logger = logging.getLogger(__name__)
+setup_logging()
+logger = get_logger(__name__)
 # VTK readers share state, so uncached designs queue here and abandoned requests are skipped
 VTK_QUEUE = asyncio.Lock()
 
@@ -257,7 +258,7 @@ def dataset_rows(query: RowsQuery) -> list[list[int | float | str]]:
 @app.get("/api/fields/{design_id}", response_class=Response)
 async def fields(request: Request, design_id: int, channel: Annotated[int, Query(ge=0, lt=len(CHANNELS))] = 0) -> Response:
     """Channel values as float32 little-endian, then the uint8 fluid mask (fluid = finite value), both x-fastest."""
-    cached = CoolData.cache_path(design_id, GRID).exists()
+    cached = CoolData.is_cached(design_id, GRID)
     flow = await _load(request, cached, CoolData.load_flow_field, design_id, GRID, LOCAL_SOURCE)
     return _field_response(flow.fields[channel], flow, channel)
 
@@ -265,7 +266,7 @@ async def fields(request: Request, design_id: int, channel: Annotated[int, Query
 @app.get("/api/reconstruction/{design_id}", response_class=Response)
 async def reconstruction(request: Request, design_id: int, channel: Annotated[int, Query(ge=0, lt=len(CHANNELS))] = 0) -> Response:
     """Zero-shot Tadpole-B reconstruction of one channel, laid out like `/api/fields` with the simulation's fluid mask."""
-    cached = reconstruction_path(design_id).exists() and CoolData.cache_path(design_id, GRID).exists()
+    cached = reconstruction_path(design_id).exists() and CoolData.is_cached(design_id, GRID)
     flow, reconstructed = await _load(request, cached, load_reconstruction, design_id)
     return _field_response(reconstructed[channel], flow, channel)
 
@@ -273,7 +274,7 @@ async def reconstruction(request: Request, design_id: int, channel: Annotated[in
 @app.get("/api/reconstruction/{design_id}/metrics")
 async def reconstruction_metrics(request: Request, design_id: int) -> ReconstructionMetrics:
     """NRMSE and spectral loss of the zero-shot reconstruction, `coolfrog.lib.metrics` definitions."""
-    cached = reconstruction_path(design_id).exists() and CoolData.cache_path(design_id, GRID).exists()
+    cached = reconstruction_path(design_id).exists() and CoolData.is_cached(design_id, GRID)
     flow, reconstructed = await _load(request, cached, load_reconstruction, design_id)
     reference = flow.unsqueeze(0)
     stats = NormalizationStats.from_flowfields([reference])

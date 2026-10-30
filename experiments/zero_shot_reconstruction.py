@@ -2,14 +2,13 @@
 
 import polars as pl
 import torch
-from tqdm import tqdm
 
-from coolfrog.engine.cooldata import CoolData, create_dataloader
+from coolfrog.engine.cooldata import CoolData, CoolMetadata, create_dataloader
 from coolfrog.engine.tadpole import Tadpole
-from coolfrog.lib.config import DataConfig, TadpoleConfig
-from coolfrog.lib.datatypes import CHANNELS, Grid, NormalizationStats
+from coolfrog.lib.config import HOST_CONFIG, DataConfig, TadpoleConfig
+from coolfrog.lib.datatypes import CHANNELS, NormalizationStats
 from coolfrog.lib.experiment import create_experiment
-from coolfrog.lib.log import get_logger, setup_logging
+from coolfrog.lib.log import get_logger, setup_logging, track
 from coolfrog.lib.metrics import nrmse, spectral_loss
 from coolfrog.lib.plot import plot_slices
 
@@ -17,7 +16,7 @@ TITLE = "Zero-shot Tadpole reconstruction on CoolData"
 GOAL = "Measure NRMSE and spectral error of the frozen, pretrained Tadpole-B autoencoder on every voxelized CoolData design."
 HYPOTHESIS = None
 
-DATA_CONFIG = DataConfig(grid=Grid(resolution=(400, 80, 16)), batch_size=4)
+DATA_CONFIG = DataConfig(batch_size=4)
 TADPOLE_CONFIG = TadpoleConfig(size="B")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -25,17 +24,18 @@ path_results = create_experiment(TITLE, GOAL, HYPOTHESIS, [DATA_CONFIG, TADPOLE_
 setup_logging(log_file=path_results / "run.log")
 log = get_logger("coolfrog.experiment")
 
-dataset = CoolData(DATA_CONFIG)  # downloads and voxelizes every uncached design
+metadata = CoolMetadata.load(HOST_CONFIG.n_splits, HOST_CONFIG.idx_split)
+dataset = CoolData(metadata, DATA_CONFIG)  # downloads and voxelizes every uncached design
 loader = create_dataloader(dataset, DATA_CONFIG, shuffle=False)
 log.info("%d designs on grid %s", len(dataset), DATA_CONFIG.grid.resolution)
 
 # no training split in zero-shot, so global per-channel min/max over all designs
-stats = NormalizationStats.from_flowfields(tqdm(loader, desc="Normalization stats"))
+stats = NormalizationStats.from_flowfields(track(loader, "Normalization stats"))
 model = Tadpole(TADPOLE_CONFIG).to(DEVICE).eval()
 
 nrmse_tables, spectral_tables = [], []
 with torch.no_grad():
-    for batch_index, flowfield in enumerate(tqdm(loader, desc="Reconstructing")):
+    for batch_index, flowfield in enumerate(track(loader, "Reconstructing")):
         reference = flowfield.to(DEVICE).normalize(stats)
         prediction = model.decode(model.encode(reference))
         nrmse_tables.append(nrmse(prediction, reference))  # scale-invariant, equals physical-unit NRMSE

@@ -1,7 +1,8 @@
 """Frozen run configuration."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
+import socket
 from typing import Literal
 
 from coolfrog.lib.datatypes import Grid
@@ -11,26 +12,48 @@ FinetuneState = Literal["frozen", "FPFT"] | int  # frozen, full-parameter fine-t
 
 
 @dataclass(frozen=True)
+class HostConfig:
+    """Per-machine cache location, voxel grid and dataset split.
+
+    Attributes
+    ----------
+    cache_dir : Path
+        Root of every cache: metadata, voxel shards, surfaces.
+    grid : Grid
+        Default voxel grid of `DataConfig`.
+    n_splits, idx_split : int
+        This machine voxelizes split `idx_split` of `n_splits`, passed to `CoolMetadata.load`.
+    """
+
+    cache_dir: Path
+    grid: Grid
+    n_splits: int
+    idx_split: int
+
+
+DEFAULT_HOST_CONFIG = HostConfig(cache_dir=Path.cwd() / ".cache", grid=Grid(resolution=(400, 80, 16)), n_splits=10, idx_split=0)
+CUBE1_HOST_CONFIG = HostConfig(
+    cache_dir=Path("/mnt/data/bitzer/.cache"), grid=Grid(resolution=(800, 160, 32)), n_splits=1, idx_split=0
+)
+HOST_CONFIG = CUBE1_HOST_CONFIG if socket.gethostname() == "cube1" else DEFAULT_HOST_CONFIG
+
+
+@dataclass(frozen=True)
 class DataConfig:
-    """Design selection, data source and batching.
+    """Data source, caching and batching, the design selection comes as `CoolMetadata`.
 
     Attributes
     ----------
     grid : Grid
-        Voxel grid every design is sampled onto.
+        Voxel grid every design is sampled onto, defaults to this machine's `HOST_CONFIG.grid`.
     source : Path | None
         Path -> Local CoolData root with `volume/volume_design_<design_id:07d>_p.cgns`
         None -> Hugging Face.
-    n_samples : int | None
-        Designs drawn at random from the range matches, None = all matches.
-    ranges : dict[str, Range] | None
-        dict[str, Range] -> Defines `Range=(min, max)` filtering on metadata column str
-        None -> No restrictions.
     cache : bool
-        True -> voxelize uncached designs into `CACHE_DIR` on construction, then load from disk.
-        False -> voxelize on every access, nothing written.
+        True -> voxelize uncached designs into HDF5 shards in `CACHE_DIR` on construction, then read from disk.
+        False -> voxelize from `source` on every access, nothing written.
     seed : int
-        Seeds the `n_samples` draw and `CoolDataset.split`.
+        Seeds `CoolData.split`.
     batch_size : int
         Designs per batch.
     num_workers : int
@@ -38,19 +61,14 @@ class DataConfig:
 
     Examples
     --------
-    >>> config = DataConfig(
-    ...     grid=Grid(resolution=(400, 80, 16)),
-    ...     n_samples=50,
-    ...     ranges={"V": (2.0, 5.0), "T1": (None, 60.0)},
-    ... )
-    >>> train, val = CoolDataset(config).split([0.9, 0.1])
+    >>> config = DataConfig()  # grid of `HOST_CONFIG`
+    >>> metadata = CoolMetadata.load(HOST_CONFIG.n_splits, HOST_CONFIG.idx_split).select(ranges={"V": (2.0, 5.0), "T1": (None, 60.0)})
+    >>> train, val = CoolData(metadata, config).split([0.9, 0.1])  # voxelizes uncached designs first
     >>> train_loader = create_dataloader(train, config, shuffle=True)
     """
 
-    grid: Grid
+    grid: Grid = HOST_CONFIG.grid
     source: Path | None = None
-    n_samples: int | None = None
-    ranges: dict[str, Range] = field(default_factory=dict)
     cache: bool = True
     seed: int = 42
     batch_size: int = 32

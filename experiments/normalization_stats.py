@@ -1,29 +1,29 @@
 """Global per-channel fluid min and max over all CoolData designs, run from the repo root."""
 
 import polars as pl
-from tqdm import tqdm
 
-from coolfrog.engine.cooldata import CoolData, create_dataloader
-from coolfrog.lib.config import DataConfig
-from coolfrog.lib.datatypes import CHANNELS, Grid, NormalizationStats
+from coolfrog.engine.cooldata import CoolData, CoolMetadata, create_dataloader
+from coolfrog.lib.config import HOST_CONFIG, DataConfig
+from coolfrog.lib.datatypes import CHANNELS, NormalizationStats
 from coolfrog.lib.experiment import create_experiment
-from coolfrog.lib.log import get_logger, setup_logging
+from coolfrog.lib.log import get_logger, setup_logging, track
 
 TITLE = "Min-max normalization stats on CoolData"
 GOAL = "Measure the global per-channel fluid min and max over every voxelized CoolData design, reused for normalization."
 HYPOTHESIS = None
 
-DATA_CONFIG = DataConfig(grid=Grid(resolution=(400, 80, 16)), batch_size=4)
+DATA_CONFIG = DataConfig(batch_size=4)
 
 path_results = create_experiment(TITLE, GOAL, HYPOTHESIS, [DATA_CONFIG])
 setup_logging(log_file=path_results / "run.log")
 log = get_logger("coolfrog.experiment")
 
-dataset = CoolData(DATA_CONFIG)  # downloads and voxelizes every uncached design
+metadata = CoolMetadata.load(HOST_CONFIG.n_splits, HOST_CONFIG.idx_split)
+dataset = CoolData(metadata, DATA_CONFIG)  # downloads and voxelizes every uncached design
 loader = create_dataloader(dataset, DATA_CONFIG, shuffle=False)
 log.info("%d designs on grid %s", len(dataset), DATA_CONFIG.grid.resolution)
 
-stats = NormalizationStats.from_flowfields(tqdm(loader, desc="Normalization stats"))
+stats = NormalizationStats.from_flowfields(track(loader, "Normalization stats"))
 table = pl.DataFrame(
     {
         "channel": [channel.value for channel in CHANNELS],

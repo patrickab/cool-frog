@@ -1022,7 +1022,7 @@ export default function Overview({ config, dataset, nav, onView, onOpen }: {
         <Prose>
           <p>The building blocks exist, the training loop is yours to write:</p>
           <ul className="list-disc space-y-1 pl-5">
-            <li><strong>Data</strong>: <code>CoolDataset(DataConfig(...)).split([0.9, 0.1])</code> splits by design, <code>create_dataloader</code> batches <code>FlowField</code>s. The paper's 32 crops of 64³ hold as many voxels as 2.3 CoolData designs</li>
+            <li><strong>Data</strong>: <code>CoolData(metadata, DataConfig(...))</code> voxelizes uncached designs into HDF5 shards once, <code>.split([0.9, 0.1])</code> splits by design, <code>create_dataloader</code> batches <code>FlowField</code>s. The paper's 32 crops of 64³ hold as many voxels as 2.3 CoolData designs</li>
             <li><strong>Model</strong>: <code>Tadpole(TadpoleConfig(encoder_state=..., decoder_state=...))</code>, each state <code>"frozen"</code>, <code>"FPFT"</code> or a LoRA rank. <code>forward</code> encodes whole domains and decodes a sampled latent</li>
             <li><strong>Loss</strong>: reconstruction on fluid voxels only, solids hold fill values. Plus <code>kl_divergence()</code> at weight 10⁻⁶, which only the encoder can change</li>
             <li><strong>Optimizer</strong>, paper settings for autoencoding: AdamW, learning rate 5 × 10⁻⁵ with 1,000 warm-up iterations, batch 32, 14,000 iterations, bf16 (Table 14)</li>
