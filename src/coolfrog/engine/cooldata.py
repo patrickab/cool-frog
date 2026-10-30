@@ -40,6 +40,7 @@ from coolfrog.lib.log import get_logger, progress_bar
 CACHE_DIR = HOST_CONFIG.cache_dir
 SHARD_SIZE = 64
 PROCESSES = max(1, len(os.sched_getaffinity(0)) - 2)  # shards built in parallel by `build_voxel_cache`, 2 CPUs left for the system
+WALL_INSET = 1e-7  # m, `CoolDataShard.voxelize` moves grid points on the domain walls this far inside
 
 HF_REVISION = "49d714f48160e3ecc788aa3b5a89c5c0c68a40e2"
 HF_DATASET = f"datasets/bgce/cooldata-v2@{HF_REVISION}"
@@ -211,10 +212,17 @@ class CoolDataShard:
 
     @classmethod
     def voxelize(cls, volume_path: Path, grid: Grid) -> tuple[torch.Tensor, torch.Tensor]:
-        """Sample a CGNS volume onto `grid` as (C, X, Y, Z) fields and (X, Y, Z) fluid mask, like cooldata `from_pyvista`."""
-        axes = [np.linspace(0.0, length, voxels) for length, voxels in zip(grid.extent, grid.resolution, strict=True)]
+        """Sample a CGNS volume onto `grid` as (C, X, Y, Z) fields and (X, Y, Z) fluid mask, solids 0.
+
+        - Splits polyhedral cells into tetrahedra first, VTK's polyhedron test is ~10x slower and picks wrong cells for ~2% of points
+        - Moves grid points on the domain walls `WALL_INSET` inside, VTK drops them as outside otherwise
+        """
+        axes = [
+            np.clip(np.linspace(0.0, length, voxels), WALL_INSET, length - WALL_INSET)
+            for length, voxels in zip(grid.extent, grid.resolution, strict=True)
+        ]
         with pv.vtk_verbosity("error"):  # silences "Skipping BC_t node" warnings, only cell and face data are read
-            volume = pv.read(volume_path)[0][0][0]
+            volume = pv.read(volume_path)[0][0][0].triangulate()
         sampled = pv.StructuredGrid(*np.meshgrid(*axes, indexing="ij")).sample(volume)
         fields = np.stack([sampled[cls.CGNS_ARRAYS[channel]].reshape(grid.resolution, order="F") for channel in CHANNELS])
         mask = sampled["vtkValidPointMask"].reshape(grid.resolution, order="F")
