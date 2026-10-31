@@ -1,5 +1,7 @@
 """Tadpole autoencoder wrapper for FlowFields."""
 
+from pathlib import Path
+
 from einops import rearrange
 import httpx
 from huggingface_hub import HfApi, hf_hub_download
@@ -79,6 +81,22 @@ class Tadpole(nn.Module):
         flowfield_latent = self.encode(flowfield)
         return self.decode(flowfield_latent, sample), flowfield_latent
 
+    def trainable_parameters(self) -> dict[str, nn.Parameter]:
+        """Parameters with requires_grad: LoRA matrices plus the biases GIFt leaves trainable, all under FPFT."""
+        return {name: parameter for name, parameter in self.named_parameters() if parameter.requires_grad}
+
+    def save_adapter(self, path: Path) -> None:
+        """Write `trainable_parameters` only, about 11 MB at LoRA-32."""
+        torch.save({name: parameter.detach().cpu() for name, parameter in self.trainable_parameters().items()}, path)
+
+    def load_adapter(self, path: Path) -> None:
+        """Load `save_adapter` output into a model built with the same `TadpoleConfig`, ValueError on mismatching names or shapes."""
+        adapter = torch.load(path, map_location="cpu")
+        expected_shapes = {name: parameter.shape for name, parameter in self.trainable_parameters().items()}
+        if {name: tensor.shape for name, tensor in adapter.items()} != expected_shapes:
+            raise ValueError(f"adapter {path} does not match the trainable parameters of this TadpoleConfig, e.g. its LoRA rank")
+        self.load_state_dict(adapter, strict=False)
+
     def _tiles_per_axis(self, resolution: torch.Size) -> tuple[int, int, int]:
         """Crop tiles along x, y, z, one tile per axis without `encoder_crop_size` or below it."""
         crop_size = self.config.encoder_crop_size
@@ -104,7 +122,8 @@ def _warn_if_newer_weights() -> None:
         return
     if latest_revision != TADPOLE_REVISION:
         logger.warning(
-            "Newer Tadpole weights on Hugging Face: %s (pinned %s). Bump TADPOLE_REVISION together with the `tadpole` rev in pyproject.toml",
+            "Newer Tadpole weights on Hugging Face: %s (pinned %s). "
+            "Bump TADPOLE_REVISION together with the `tadpole` rev in pyproject.toml",
             latest_revision,
             TADPOLE_REVISION,
         )
