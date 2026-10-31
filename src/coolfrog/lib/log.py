@@ -3,9 +3,10 @@
 from collections.abc import Iterable, Iterator
 import logging
 from pathlib import Path
+from typing import ClassVar
 
-from rich.console import Console
-from rich.highlighter import NullHighlighter
+from rich.console import Console, RenderableType
+from rich.highlighter import RegexHighlighter
 from rich.logging import RichHandler
 from rich.progress import (
     BarColumn,
@@ -16,10 +17,22 @@ from rich.progress import (
     TimeElapsedColumn,
     TimeRemainingColumn,
 )
+from rich.text import Text
+
+
+class NumberHighlighter(RegexHighlighter):
+    """Colors every number, also each axis of `1600x320x64`, but not digits within names like `tmp1o7.tmp`."""
+
+    base_style = "repr."
+    highlights: ClassVar[list[str]] = [
+        r"(?:(?<=\dx)|(?<![A-Za-z_.\d]))(?P<number>\d+(?:\.\d+)?)(?:(?=x\d)|(?![A-Za-z_\d]))",
+    ]
+
 
 PACKAGE_LOGGER_NAME = "coolfrog"
 FILE_FORMAT = "%(asctime)s %(levelname)-8s %(name)s: %(message)s"
 CONSOLE = Console(stderr=True)
+NUMBER_HIGHLIGHTER = NumberHighlighter()
 
 
 def get_logger(name: str) -> logging.Logger:
@@ -30,7 +43,7 @@ def get_logger(name: str) -> logging.Logger:
 def setup_logging(level: int | str = "INFO", log_file: Path | None = None) -> logging.Logger:
     """Configure the `coolfrog` logger, safe to call repeatedly.
 
-    - Console: Rich, plain message only, no number highlighting, colors off when not on a TTY (pipes, CI)
+    - Console: Rich, message only with numbers colored, colors off when not on a TTY (pipes, CI)
     - `log_file`: plain text with timestamps
     """
     package_logger = logging.getLogger(PACKAGE_LOGGER_NAME)
@@ -42,7 +55,7 @@ def setup_logging(level: int | str = "INFO", log_file: Path | None = None) -> lo
         existing_handler.close()
 
     handler = RichHandler(
-        console=CONSOLE, show_time=False, show_level=False, show_path=False, highlighter=NullHighlighter(), rich_tracebacks=True
+        console=CONSOLE, show_time=False, show_level=False, show_path=False, highlighter=NUMBER_HIGHLIGHTER, rich_tracebacks=True
     )
     package_logger.addHandler(handler)
 
@@ -55,21 +68,38 @@ def setup_logging(level: int | str = "INFO", log_file: Path | None = None) -> lo
     return package_logger
 
 
-def progress_bar(*extra_columns: ProgressColumn) -> Progress:
-    """Rich progress bar: description, bar, done/total, percent, elapsed and remaining time, then `extra_columns`.
+class StatusProgress(Progress):
+    """Rich progress bars plus one status line below them, hidden until `set_status`."""
 
-    >>> with progress_bar(TextColumn("{task.fields[status]}")) as progress:
-    ...     task = progress.add_task("Voxelizing designs", total=100, status="")
-    ...     progress.update(task, advance=64, status="3 shards written")
+    def __init__(self, *columns: ProgressColumn, console: Console) -> None:
+        self.status = Text()  # before super().__init__, which already renders
+        super().__init__(*columns, console=console)
+
+    def set_status(self, message: str) -> None:
+        """Replace the status line, numbers colored like log lines."""
+        self.status = NUMBER_HIGHLIGHTER(message)
+
+    def get_renderables(self) -> Iterator[RenderableType]:
+        yield from super().get_renderables()
+        if self.status.plain:
+            yield self.status
+
+
+def progress_bar() -> StatusProgress:
+    """Rich progress bar: description, bar, done/total, percent, elapsed and remaining time, optional status line below.
+
+    >>> with progress_bar() as progress:
+    ...     task = progress.add_task("Voxelizing designs", total=100)
+    ...     progress.advance(task, 64)
+    ...     progress.set_status("170.0 GB needed · 258.0 GB free")
     """
-    return Progress(
+    return StatusProgress(
         TextColumn("[bold cyan]{task.description}"),
         BarColumn(complete_style="cyan", finished_style="green"),
         MofNCompleteColumn(),
         TextColumn("({task.percentage:.0f}%)"),
         TimeElapsedColumn(),
         TimeRemainingColumn(),
-        *extra_columns,
         console=CONSOLE,
     )
 

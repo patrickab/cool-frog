@@ -22,7 +22,6 @@ from huggingface_hub import HfFileSystem
 import numpy as np
 import polars as pl
 import pyvista as pv
-from rich.progress import TextColumn
 import torch
 from torch.utils.data import DataLoader, Dataset, random_split
 
@@ -340,14 +339,15 @@ class CoolData(Dataset[FlowField]):
             fork = multiprocessing.get_context("fork")
             with (
                 fork.Pool(PROCESSES, initializer=signal.signal, initargs=(signal.SIGINT, signal.SIG_IGN)) as pool,
-                progress_bar(TextColumn("{task.fields[disk]}", style="dim")) as progress,
+                progress_bar() as progress,
             ):
-                task = progress.add_task("Voxelizing designs", total=len(rows), disk=disk_status)
+                task = progress.add_task("Voxelizing designs", total=len(rows))
+                progress.set_status(disk_status)
                 voxelized = progress.track(pool.imap_unordered(voxelize_design, rows), task_id=task)
                 for shard_start in range(0, len(rows), SHARD_SIZE):
                     shards.append(CoolDataShard.write(voxelized, min(SHARD_SIZE, len(rows) - shard_start), grid))
                     if (remaining := len(rows) - shard_start - SHARD_SIZE) > 0:
-                        progress.update(task, disk=_require_disk_space(cache_dir, grid, shards, remaining))
+                        progress.set_status(_require_disk_space(cache_dir, grid, shards, remaining))
 
     @property
     def design_ids(self) -> list[int]:
