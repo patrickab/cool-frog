@@ -1,15 +1,14 @@
 """Zero-shot Tadpole reconstruction errors on all CoolData designs, run from the repo root."""
 
-import polars as pl
 import torch
 
 from coolfrog.engine.cooldata import CoolData, CoolMetadata, create_dataloader
+from coolfrog.engine.model_evaluation import evaluate, summarize, write_metric_tables
 from coolfrog.engine.tadpole import Tadpole
 from coolfrog.lib.config import HOST_CONFIG, DataConfig, TadpoleConfig
-from coolfrog.lib.datatypes import CHANNELS, NormalizationStats
+from coolfrog.lib.datatypes import NormalizationStats
 from coolfrog.lib.experiment import create_experiment
 from coolfrog.lib.log import get_logger, setup_logging, track
-from coolfrog.lib.metrics import nrmse, spectral_loss
 from coolfrog.lib.plot import plot_slices
 
 TITLE = "Zero-shot Tadpole reconstruction on CoolData"
@@ -30,25 +29,15 @@ loader = create_dataloader(dataset, DATA_CONFIG, shuffle=False)
 log.info("%d designs on grid %s", len(dataset), DATA_CONFIG.grid.shape)
 
 # no training split in zero-shot, so global per-channel min/max over all designs
-stats = NormalizationStats.from_flowfields(track(loader, "Normalization stats"))
+stats = NormalizationStats.compute(metadata, DATA_CONFIG)
 model = Tadpole(TADPOLE_CONFIG).to(DEVICE).eval()
 
-nrmse_tables, spectral_tables = [], []
-with torch.no_grad():
-    for batch_index, flowfield in enumerate(track(loader, "Reconstructing")):
-        reference = flowfield.to(DEVICE).normalize(stats)
-        prediction = model.decode(model.encode(reference))
-        nrmse_tables.append(nrmse(prediction, reference))  # scale-invariant, equals physical-unit NRMSE
-        spectral_tables.append(spectral_loss(prediction, reference))  # in normalized units
-        if batch_index == 0:
-            plot_slices(reference, prediction, DATA_CONFIG.grid).savefig(path_results / "slices_first_design.png", dpi=150)
+tables = evaluate(model, track(loader, "Reconstructing"), stats)
+write_metric_tables(tables, path_results)
+for name, per_design in tables.items():
+    log.info("%s\n%s", name, summarize(per_design))
 
-channel_columns = [channel.value for channel in CHANNELS]
-for name, tables in (("nrmse", nrmse_tables), ("spectral_loss", spectral_tables)):
-    per_design = pl.concat(tables)
-    per_design.write_csv(path_results / f"{name}_per_design.csv")
-    channels = pl.col(channel_columns)
-    statistics = {"mean": channels.mean(), "median": channels.median(), "max": channels.max()}
-    summary = pl.concat([per_design.select(pl.lit(statistic).alias("statistic"), values) for statistic, values in statistics.items()])
-    summary.write_csv(path_results / f"{name}_summary.csv")
-    log.info("%s\n%s", name, summary)
+with torch.no_grad():
+    reference = next(iter(loader)).to(DEVICE).normalize(stats)
+    prediction = model.decode(model.encode(reference))
+plot_slices(reference, prediction, DATA_CONFIG.grid).savefig(path_results / "slices_first_design.png", dpi=150)

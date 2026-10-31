@@ -974,7 +974,7 @@ export default function Overview({ config, dataset, nav, onView, onOpen }: {
             <li><strong>Walls</strong>: the Vx error is 65 % in the floor voxel layer and 72 % under the ceiling, against about 10 % at mid height. The boundary layers there share one latent column with everything above them (step 1)</li>
             <li><strong>Skewed values</strong>: 87 % of fluid voxels hold ε below 1 % of its range. After scaling to [−1, 1], nearly the whole field sits at −1, while a few voxels near the walls span the rest</li>
           </ul>
-          <p>Every channel at one height, with two error measures from <code>coolfrog.lib.metrics</code> over the whole 3D field:</p>
+          <p>Every channel at one height, with two error measures from <code>coolfrog.engine.model_evaluation</code> over the whole 3D field:</p>
           <ul className="list-disc space-y-1 pl-5">
             <li><strong>NRMSE</strong>: as above, fluid voxels only</li>
             <li><strong>Spectral loss</strong>: mean absolute difference of log(1 + |FFT amplitude|) between reconstruction and simulation, solids set to 0. Computed on the [−1, 1] scale Tadpole sees, so channels compare. 0 is a perfect spectrum, larger values mean missing or spurious scales</li>
@@ -1026,7 +1026,7 @@ export default function Overview({ config, dataset, nav, onView, onOpen }: {
             <li><strong>Model</strong>: <code>Tadpole(TadpoleConfig(encoder_state=..., decoder_state=...))</code>, each state <code>"frozen"</code>, <code>"FPFT"</code> or a LoRA rank. <code>forward</code> encodes whole domains and decodes a sampled latent</li>
             <li><strong>Loss</strong>: reconstruction on fluid voxels only, solids hold fill values. Plus <code>kl_divergence()</code> at weight 10⁻⁶, which only the encoder can change</li>
             <li><strong>Optimizer</strong>, paper settings for autoencoding: AdamW, learning rate 5 × 10⁻⁵ with 1,000 warm-up iterations, batch 32, 14,000 iterations, bf16 (Table 14)</li>
-            <li><strong>Evaluation</strong>: <code>nrmse</code> and <code>spectral_loss</code> from <code>coolfrog.lib.metrics</code>, against the published weights on the same validation designs</li>
+            <li><strong>Evaluation</strong>: <code>nrmse</code> and <code>spectral_loss</code> from <code>coolfrog.engine.model_evaluation</code>, against the published weights on the same validation designs</li>
             <li><strong>Saving</strong>: keep the parameters with <code>requires_grad</code>, about 11 MB for LoRA-32. These include 47 biases GIFt leaves trainable, not only the LoRA matrices</li>
           </ul>
         </Prose>

@@ -15,11 +15,11 @@ from pydantic import BaseModel, Field, FiniteFloat, field_validator
 import torch
 
 from coolfrog.engine.cooldata import CACHE_DIR, CoolData, CoolMetadata, SurfaceMesh, UnknownDesignError
+from coolfrog.engine.model_evaluation import nrmse, spectral_loss
 from coolfrog.engine.tadpole import Tadpole
 from coolfrog.lib.config import TadpoleConfig
 from coolfrog.lib.datatypes import CHANNELS, PARAM_COLUMNS, PARAM_UNITS, SURFACE_CHANNELS, FlowField, Grid, NormalizationStats
 from coolfrog.lib.log import get_logger, setup_logging
-from coolfrog.lib.metrics import nrmse, spectral_loss
 
 app = FastAPI(title="Coolfrog")
 GRID = Grid(latent_scale=1)
@@ -273,7 +273,7 @@ async def reconstruction(request: Request, design_id: int, channel: Annotated[in
 
 @app.get("/api/reconstruction/{design_id}/metrics")
 async def reconstruction_metrics(request: Request, design_id: int) -> ReconstructionMetrics:
-    """NRMSE and spectral loss of the zero-shot reconstruction, `coolfrog.lib.metrics` definitions."""
+    """NRMSE and spectral loss of the zero-shot reconstruction, `coolfrog.engine.model_evaluation` definitions."""
     cached = reconstruction_path(design_id).exists() and CoolData.is_cached(design_id, GRID)
     flow, reconstructed = await _load(request, cached, load_reconstruction, design_id)
     reference = flow.unsqueeze(0)
