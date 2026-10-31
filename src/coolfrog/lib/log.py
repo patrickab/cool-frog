@@ -21,7 +21,7 @@ def get_logger(name: str) -> logging.Logger:
 def setup_logging(level: int | str = "INFO", log_file: Path | None = None) -> logging.Logger:
     """Configure the `coolfrog` logger, safe to call repeatedly.
 
-    - Console: Rich, level and message only, colors off when not on a TTY (pipes, CI)
+    - Console: Rich, message only, colors off when not on a TTY (pipes, CI)
     - `log_file`: plain text with timestamps
     """
     package_logger = logging.getLogger(PACKAGE_LOGGER_NAME)
@@ -32,7 +32,7 @@ def setup_logging(level: int | str = "INFO", log_file: Path | None = None) -> lo
         package_logger.removeHandler(existing_handler)
         existing_handler.close()
 
-    package_logger.addHandler(RichHandler(console=CONSOLE, show_time=False, show_path=False, rich_tracebacks=True))
+    package_logger.addHandler(RichHandler(console=CONSOLE, show_time=False, show_level=False, show_path=False, rich_tracebacks=True))
 
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)

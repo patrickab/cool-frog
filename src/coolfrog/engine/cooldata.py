@@ -229,24 +229,30 @@ class CoolDataShard:
         return torch.tensor(fields, dtype=torch.float32), torch.tensor(mask, dtype=torch.bool)
 
 
-def _require_disk_space(cache_dir: Path, grid: Grid, shards: Sequence[CoolDataShard], remaining_designs: int) -> None:
-    """Raise `OSError` when `remaining_designs` will not fit on the disk of `cache_dir`.
+def _uncompressed_shard_bytes(grid: Grid) -> int:
+    """Bytes of one full shard before compression: float32 fields and bool mask."""
+    return SHARD_SIZE * (len(CHANNELS) * 4 + 1) * math.prod(grid.shape)
 
-    - From `SIZE_ESTIMATE_SHARDS` full shards on: projects their mean bytes per design plus `DISK_MARGIN`
-    - Before: requires room for one uncompressed shard, compression varies from ~4x at 400x80x16 to ~13x at 800x160x32
+
+def _require_disk_space(cache_dir: Path, grid: Grid, shards: Sequence[CoolDataShard], remaining_designs: int) -> str:
+    """Raise `OSError` when `remaining_designs` will not fit on the disk of `cache_dir`, else return a progress bar suffix.
+
+    - From `SIZE_ESTIMATE_SHARDS` full shards on: projects their mean bytes per design plus `DISK_MARGIN`,
+      returns `" · <needed> GB needed, <free> GB free"`
+    - Before: requires room for one uncompressed shard, returns `""`, compression varies from ~4x at 1x to ~13x at 2x
     """
     full_shards = [shard for shard in shards if len(shard.design_ids) == SHARD_SIZE]
-    if len(full_shards) >= SIZE_ESTIMATE_SHARDS:
+    projected = len(full_shards) >= SIZE_ESTIMATE_SHARDS
+    if projected:
         bytes_per_design = sum(shard.path.stat().st_size for shard in full_shards) / (len(full_shards) * SHARD_SIZE)
         required_bytes = bytes_per_design * remaining_designs * (1 + DISK_MARGIN)
-        estimate = f"rest of the build, projected from {len(full_shards)} shards at {bytes_per_design / 1e6:.1f} MB per design"
     else:
-        required_bytes = min(remaining_designs, SHARD_SIZE) * (len(CHANNELS) * 4 + 1) * math.prod(grid.shape)
-        estimate = f"minimum for the next uncompressed shard, total projected after {SIZE_ESTIMATE_SHARDS} full shards"
+        required_bytes = _uncompressed_shard_bytes(grid)
     available_bytes = shutil.disk_usage(cache_dir).free
-    logger.info("%.1f GB needed (%s), %.1f GB free", required_bytes / 1e9, estimate, available_bytes / 1e9)
     if required_bytes > available_bytes:
-        raise OSError(f"{required_bytes / 1e9:.1f} GB needed ({estimate}), only {available_bytes / 1e9:.1f} GB free in {cache_dir}")
+        need = "projected for the remaining designs" if projected else "for the next uncompressed shard"
+        raise OSError(f"{required_bytes / 1e9:.1f} GB needed {need}, only {available_bytes / 1e9:.1f} GB free in {cache_dir}")
+    return f" · {required_bytes / 1e9:.1f} GB needed, {available_bytes / 1e9:.1f} GB free" if projected else ""
 
 
 def cached_shards(grid: Grid) -> dict[int, tuple[CoolDataShard, int]]:
@@ -319,8 +325,12 @@ class CoolData(Dataset[FlowField]):
             logger.info("%d of %d designs uncached", uncached.height, metadata.designs.height)
             if uncached.is_empty():
                 return
+            logger.info("Voxelizing resolution: %s", "x".join(map(str, grid.shape)))
+            logger.info(
+                "%.1f GB needed per uncompressed voxelized shard (%d designs)", _uncompressed_shard_bytes(grid) / 1e9, SHARD_SIZE
+            )
             shards = list({shard.path: shard for shard, _ in locations.values()}.values())
-            _require_disk_space(cache_dir, grid, shards, uncached.height)
+            disk_status = _require_disk_space(cache_dir, grid, shards, uncached.height)
             # fork, as spawn would rerun the calling script's top level in every process
             # workers voxelize single designs and ignore Ctrl+C, the pool's exit kills them at once
             # this process writes them into shards, an interrupt loses only the shard being filled
@@ -331,11 +341,13 @@ class CoolData(Dataset[FlowField]):
                 fork.Pool(PROCESSES, initializer=signal.signal, initargs=(signal.SIGINT, signal.SIG_IGN)) as pool,
                 progress_bar() as progress,
             ):
-                voxelized = progress.track(pool.imap_unordered(voxelize_design, rows), len(rows), description="Voxelizing designs")
+                task = progress.add_task(f"Voxelizing designs{disk_status}", total=len(rows))
+                voxelized = progress.track(pool.imap_unordered(voxelize_design, rows), task_id=task)
                 for shard_start in range(0, len(rows), SHARD_SIZE):
                     shards.append(CoolDataShard.write(voxelized, min(SHARD_SIZE, len(rows) - shard_start), grid))
                     if (remaining := len(rows) - shard_start - SHARD_SIZE) > 0:
-                        _require_disk_space(cache_dir, grid, shards, remaining)
+                        disk_status = _require_disk_space(cache_dir, grid, shards, remaining)
+                        progress.update(task, description=f"Voxelizing designs{disk_status}")
 
     @property
     def design_ids(self) -> list[int]:
