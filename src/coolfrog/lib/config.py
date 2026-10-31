@@ -47,11 +47,12 @@ class DataConfig:
     grid : Grid
         Voxel grid every design is sampled onto, defaults to this machine's `HOST_CONFIG.grid`.
     source : Path | None
-        Path -> Local CoolData root with `volume/volume_design_<design_id:07d>_p.cgns`
-        None -> Hugging Face.
+        Path -> Local CoolData root holding `volume/volume_design_<design_id:07d>_p.cgns`.
+        None -> Hugging Face, each design extracted from its `runs/<run>/<batch>.zip`.
     cache : bool
-        True -> voxelize uncached designs into HDF5 shards in `CACHE_DIR` on construction, then read from disk.
-        False -> voxelize from `source` on every access, nothing written.
+        True -> voxelize uncached designs on construction into HDF5 shards in
+        `HOST_CONFIG.cache_dir / "voxels_<X>x<Y>x<Z>"`, then read from them.
+        False -> voxelize from the local `source` on every access, nothing written.
     seed : int
         Seeds `CoolData.split`.
     batch_size : int
@@ -62,7 +63,8 @@ class DataConfig:
     Examples
     --------
     >>> config = DataConfig()  # grid of `HOST_CONFIG`
-    >>> metadata = CoolMetadata.load(HOST_CONFIG.n_splits, HOST_CONFIG.idx_split).select(ranges={"V": (2.0, 5.0), "T1": (None, 60.0)})
+    >>> metadata = CoolMetadata.load(HOST_CONFIG.n_splits, HOST_CONFIG.idx_split)
+    >>> metadata = metadata.select(ranges={"V": (2.0, 5.0), "T1": (None, 60.0)})
     >>> train, val = CoolData(metadata, config).split([0.9, 0.1])  # voxelizes uncached designs first
     >>> train_loader = create_dataloader(train, config, shuffle=True)
     """
