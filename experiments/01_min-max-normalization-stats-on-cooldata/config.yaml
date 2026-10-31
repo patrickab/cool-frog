@@ -1,0 +1,17 @@
+DataConfig:
+  batch_size: 1
+  cache: true
+  grid:
+    aspect_ratio:
+    - 25
+    - 5
+    - 1
+    downsampling_factor: 16
+    extent:
+    - 0.5
+    - 0.1
+    - 0.02
+    latent_scale: 4
+  num_workers: 8
+  seed: 42
+  source: null
