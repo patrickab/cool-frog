@@ -41,6 +41,8 @@ CACHE_DIR = HOST_CONFIG.cache_dir
 SHARD_SIZE = 64
 PROCESSES = max(1, len(os.sched_getaffinity(0)) - 2)  # shards built in parallel by `build_voxel_cache`, 2 CPUs left for the system
 WALL_INSET = 1e-7  # m, `CoolDataShard.voxelize` moves grid points on the domain walls this far inside
+SIZE_ESTIMATE_SHARDS = 3  # full shards before the disk check projects from their size, they vary by ~1%
+DISK_MARGIN = 0.1  # extra share of the projected size the disk check requires
 
 HF_REVISION = "49d714f48160e3ecc788aa3b5a89c5c0c68a40e2"
 HF_DATASET = f"datasets/bgce/cooldata-v2@{HF_REVISION}"
@@ -138,10 +140,8 @@ class CoolDataShard:
         Channel.TURBULENT_KINETIC_ENERGY: "TurbulentKineticEnergy",
         Channel.TURBULENT_DISSIPATION_RATE: "TurbulentDissipationRate",
     }
-    # Lossless, about 4x smaller than raw float32 and decoded in ~12 ms per design at 400x80x16, h5py detects it when reading
+    # Lossless, ~4x smaller than raw float32 at 400x80x16 and ~13x at 800x160x32, ~12 ms decode per design at 400x80x16
     COMPRESSION: ClassVar[hdf5plugin.Blosc2] = hdf5plugin.Blosc2(cname="zstd", clevel=1, filters=hdf5plugin.Blosc2.SHUFFLE)
-    # Raw over compressed size assumed by the disk check, below the ~4x measured on real designs
-    COMPRESSION_RATIO: ClassVar[float] = 3.0
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -229,6 +229,26 @@ class CoolDataShard:
         return torch.tensor(fields, dtype=torch.float32), torch.tensor(mask, dtype=torch.bool)
 
 
+def _require_disk_space(cache_dir: Path, grid: Grid, shards: Sequence[CoolDataShard], remaining_designs: int) -> None:
+    """Raise `OSError` when `remaining_designs` will not fit on the disk of `cache_dir`.
+
+    - From `SIZE_ESTIMATE_SHARDS` full shards on: projects their mean bytes per design plus `DISK_MARGIN`
+    - Before: requires room for one uncompressed shard, compression varies from ~4x at 400x80x16 to ~13x at 800x160x32
+    """
+    full_shards = [shard for shard in shards if len(shard.design_ids) == SHARD_SIZE]
+    if len(full_shards) >= SIZE_ESTIMATE_SHARDS:
+        bytes_per_design = sum(shard.path.stat().st_size for shard in full_shards) / (len(full_shards) * SHARD_SIZE)
+        required_bytes = bytes_per_design * remaining_designs * (1 + DISK_MARGIN)
+        estimate = f"projected from {len(full_shards)} shards at {bytes_per_design / 1e6:.1f} MB per design"
+    else:
+        required_bytes = min(remaining_designs, SHARD_SIZE) * (len(CHANNELS) * 4 + 1) * math.prod(grid.resolution)
+        estimate = "one uncompressed shard, until shards exist to project from"
+    available_bytes = shutil.disk_usage(cache_dir).free
+    logger.info("%.1f GB needed (%s), %.1f GB free", required_bytes / 1e9, estimate, available_bytes / 1e9)
+    if required_bytes > available_bytes:
+        raise OSError(f"{required_bytes / 1e9:.1f} GB needed ({estimate}), only {available_bytes / 1e9:.1f} GB free in {cache_dir}")
+
+
 def cached_shards(grid: Grid) -> dict[int, tuple[CoolDataShard, int]]:
     """Shard and row of every voxelized design on `grid`, read from the shards' `design_id` datasets."""
     locations: dict[int, tuple[CoolDataShard, int]] = {}
@@ -284,7 +304,7 @@ class CoolData(Dataset[FlowField]):
 
         - Holds `build.lock` of the grid, so concurrent builds (e.g. one per GPU process) wait, then find their designs cached
         - Deletes leftover `.tmp` shards of interrupted builds
-        - Raises before downloading when the uncached designs do not fit on the cache disk
+        - Raises when the remaining designs will not fit on the cache disk, checked before and after every shard
         - A failing shard or Ctrl+C stops the build at once, finished shards stay and the next call resumes
         """
         cache_dir = CoolDataShard.cache_dir(grid)
@@ -294,21 +314,13 @@ class CoolData(Dataset[FlowField]):
             for temp_path in cache_dir.glob("*.tmp"):
                 logger.info("Deleting leftover %s", temp_path.name)
                 temp_path.unlink()
-            uncached = metadata.designs.filter(~pl.col("design_id").is_in(list(cached_shards(grid)))).sort("run", "batch", "design_id")
-            raw_bytes = uncached.height * (len(CHANNELS) * 4 + 1) * math.prod(grid.resolution)  # float32 fields + bool mask
-            required_bytes = raw_bytes / CoolDataShard.COMPRESSION_RATIO
-            available_bytes = shutil.disk_usage(cache_dir).free
-            logger.info(
-                "%d of %d designs uncached, %.1f GB needed, %.1f GB free",
-                uncached.height,
-                metadata.designs.height,
-                required_bytes / 1e9,
-                available_bytes / 1e9,
-            )
-            if required_bytes > available_bytes:
-                raise OSError(f"{required_bytes / 1e9:.1f} GB needed, only {available_bytes / 1e9:.1f} GB free in {cache_dir}")
+            locations = cached_shards(grid)
+            uncached = metadata.designs.filter(~pl.col("design_id").is_in(list(locations))).sort("run", "batch", "design_id")
+            logger.info("%d of %d designs uncached", uncached.height, metadata.designs.height)
             if uncached.is_empty():
                 return
+            shards = list({shard.path: shard for shard, _ in locations.values()}.values())
+            _require_disk_space(cache_dir, grid, shards, uncached.height)
             # fork, as spawn would rerun the calling script's top level in every process
             # workers voxelize single designs and ignore Ctrl+C, the pool's exit kills them at once
             # this process writes them into shards, an interrupt loses only the shard being filled
@@ -321,7 +333,9 @@ class CoolData(Dataset[FlowField]):
             ):
                 voxelized = progress.track(pool.imap_unordered(voxelize_design, rows), len(rows), description="Voxelizing designs")
                 for shard_start in range(0, len(rows), SHARD_SIZE):
-                    CoolDataShard.write(voxelized, min(SHARD_SIZE, len(rows) - shard_start), grid)
+                    shards.append(CoolDataShard.write(voxelized, min(SHARD_SIZE, len(rows) - shard_start), grid))
+                    if (remaining := len(rows) - shard_start - SHARD_SIZE) > 0:
+                        _require_disk_space(cache_dir, grid, shards, remaining)
 
     @property
     def design_ids(self) -> list[int]:
