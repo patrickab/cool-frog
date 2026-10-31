@@ -78,5 +78,5 @@ section-order = ["future", "standard-library", "third-party", "first-party", "lo
 [tool.ruff.format]
 
 [tool.uv.sources]
-tadpole = { git = "https://github.com/tum-pbs/Tadpole" }
+tadpole = { git = "https://github.com/tum-pbs/Tadpole", rev = "cbab649d8c428e4eb4ed4d41bea1a1e72f73a4d9" }  # matches TADPOLE_REVISION weights
 cooldata = { git = "https://github.com/peteole/flow_field_dataset" }

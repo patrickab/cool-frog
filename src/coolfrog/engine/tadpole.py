@@ -1,7 +1,9 @@
 """Tadpole autoencoder wrapper for FlowFields."""
 
 from einops import rearrange
-from huggingface_hub import hf_hub_download
+import httpx
+from huggingface_hub import HfApi, hf_hub_download
+from huggingface_hub.errors import HfHubHTTPError
 from tadpole.model.autoencoder import TadpoleAutoencoder
 import torch
 from torch import nn
@@ -9,8 +11,13 @@ import torch.nn.functional as F
 
 from coolfrog.lib.config import TadpoleConfig
 from coolfrog.lib.datatypes import FlowField, LatentFlowField
+from coolfrog.lib.log import get_logger
+
+logger = get_logger(__name__)
 
 TADPOLE_REPO = "thuerey-group/Tadpole"
+# must match the `tadpole` code rev in pyproject.toml, weight revisions change state dict keys
+TADPOLE_REVISION = "9119e886f50ff8c941955dfad0b65c18c2694d1d"
 
 
 class Tadpole(nn.Module):
@@ -19,6 +26,8 @@ class Tadpole(nn.Module):
     def __init__(self, config: TadpoleConfig) -> None:
         super().__init__()
         self.config = config
+        if config.path_weights is None:
+            _warn_if_newer_weights()
         autoencoder = TadpoleAutoencoder(
             size=config.size,
             weight_encoder=_weight_path(config, "encoder"),
@@ -87,12 +96,26 @@ class Tadpole(nn.Module):
         return torch.split(scalar_fields, self.config.max_internal_batchsize)
 
 
+def _warn_if_newer_weights() -> None:
+    """Warn when the Hugging Face weights moved past `TADPOLE_REVISION`, silent when offline."""
+    try:
+        latest_revision = HfApi().model_info(TADPOLE_REPO).sha
+    except (HfHubHTTPError, httpx.HTTPError, OSError):
+        return
+    if latest_revision != TADPOLE_REVISION:
+        logger.warning(
+            "Newer Tadpole weights on Hugging Face: %s (pinned %s). Bump TADPOLE_REVISION together with the `tadpole` rev in pyproject.toml",
+            latest_revision,
+            TADPOLE_REVISION,
+        )
+
+
 def _weight_path(config: TadpoleConfig, part: str) -> str:
     """Local or Hugging Face path of `tadpole_<size>_<part>.safetensors`."""
     filename = f"tadpole_{config.size.lower()}_{part}.safetensors"
     if config.path_weights is not None:
         return str(config.path_weights / filename)
-    return hf_hub_download(TADPOLE_REPO, filename)
+    return hf_hub_download(TADPOLE_REPO, filename, revision=TADPOLE_REVISION)
 
 
 def _to_tiles(volumes: torch.Tensor, tiles: tuple[int, int, int]) -> torch.Tensor:
