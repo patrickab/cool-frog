@@ -3,9 +3,18 @@
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
+from typing import TYPE_CHECKING
 
+import polars as pl
 from tensordict import tensorclass
 import torch
+
+from coolfrog.lib.log import track
+
+if TYPE_CHECKING:
+    from coolfrog.engine.cooldata import CoolMetadata
+    from coolfrog.lib.config import DataConfig
 
 
 class Channel(StrEnum):
@@ -105,7 +114,7 @@ class Grid:
 
 @tensorclass
 class NormalizationStats:
-    """Global per-channel fluid min and max of the training split.
+    """Global per-channel fluid min and max over a design selection.
 
     Attributes
     ----------
@@ -117,6 +126,18 @@ class NormalizationStats:
 
     channel_min: torch.Tensor
     channel_max: torch.Tensor
+
+    @classmethod
+    def compute(cls, metadata: "CoolMetadata", config: "DataConfig") -> "NormalizationStats":
+        """Fluid min and max of every `metadata` design on `config.grid`, read with `config` batching and workers.
+
+        - Voxelizes uncached designs first, like `CoolData`
+        - Same stats at another resolution need the same `metadata` on that grid
+        """
+        from coolfrog.engine.cooldata import CoolData, create_dataloader  # noqa: PLC0415, engine imports this module
+
+        loader = create_dataloader(CoolData(metadata, config), config, shuffle=False)
+        return cls.from_flowfields(track(loader, f"Normalization stats {'x'.join(map(str, config.grid.shape))}"))
 
     @classmethod
     def from_flowfields(cls, flowfields: Iterable["FlowField"]) -> "NormalizationStats":
@@ -133,6 +154,34 @@ class NormalizationStats:
         if (channel_max <= channel_min).any():
             raise ValueError(f"constant or fluid-free channel, min {channel_min.tolist()}, max {channel_max.tolist()}")
         return cls(channel_min=channel_min.view(-1, 1, 1, 1), channel_max=channel_max.view(-1, 1, 1, 1), batch_size=[])
+
+    def save(self, path: Path) -> None:
+        """Write `channel`, `min`, `max` as CSV, one row per channel."""
+        table = pl.DataFrame(
+            {
+                "channel": [channel.value for channel in CHANNELS],
+                "min": self.channel_min.flatten().tolist(),
+                "max": self.channel_max.flatten().tolist(),
+            }
+        )
+        table.write_csv(path)
+
+    @classmethod
+    def load(cls, path: Path) -> "NormalizationStats":
+        """Read a `save` CSV, ValueError unless its channels match `CHANNELS`."""
+        table = pl.read_csv(path)
+        if table["channel"].to_list() != [channel.value for channel in CHANNELS]:
+            raise ValueError(f"channels in {path} differ from CHANNELS: {table['channel'].to_list()}")
+        channel_min, channel_max = (table[column].to_torch().float().view(-1, 1, 1, 1) for column in ("min", "max"))
+        return cls(channel_min=channel_min, channel_max=channel_max, batch_size=[])
+
+    def select_channels(self, channel_index: torch.Tensor) -> "NormalizationStats":
+        """Stats of single-channel fields batched along `channel_index`, e.g. crops: (N,) -> batch [N], (N, 1, 1, 1, 1)."""
+        return NormalizationStats(
+            channel_min=self.channel_min[channel_index].unsqueeze(1),
+            channel_max=self.channel_max[channel_index].unsqueeze(1),
+            batch_size=[len(channel_index)],
+        )
 
 
 def _reduce_to_channels(fields: torch.Tensor, reduction: Callable[..., torch.Tensor]) -> torch.Tensor:
