@@ -239,10 +239,10 @@ def _require_disk_space(cache_dir: Path, grid: Grid, shards: Sequence[CoolDataSh
     if len(full_shards) >= SIZE_ESTIMATE_SHARDS:
         bytes_per_design = sum(shard.path.stat().st_size for shard in full_shards) / (len(full_shards) * SHARD_SIZE)
         required_bytes = bytes_per_design * remaining_designs * (1 + DISK_MARGIN)
-        estimate = f"projected from {len(full_shards)} shards at {bytes_per_design / 1e6:.1f} MB per design"
+        estimate = f"rest of the build, projected from {len(full_shards)} shards at {bytes_per_design / 1e6:.1f} MB per design"
     else:
         required_bytes = min(remaining_designs, SHARD_SIZE) * (len(CHANNELS) * 4 + 1) * math.prod(grid.shape)
-        estimate = "one uncompressed shard, until shards exist to project from"
+        estimate = f"minimum for the next uncompressed shard, total projected after {SIZE_ESTIMATE_SHARDS} full shards"
     available_bytes = shutil.disk_usage(cache_dir).free
     logger.info("%.1f GB needed (%s), %.1f GB free", required_bytes / 1e9, estimate, available_bytes / 1e9)
     if required_bytes > available_bytes:
