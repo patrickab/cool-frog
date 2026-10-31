@@ -3,7 +3,6 @@
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 
-import polars as pl
 import torch
 from torch import nn
 from torch.optim.lr_scheduler import LambdaLR
@@ -11,9 +10,11 @@ from torch.utils.data import DataLoader
 
 from coolfrog.engine.model_evaluation import evaluate, fluid_mse
 from coolfrog.engine.tadpole import Tadpole
+from coolfrog.engine.training_metrics import TrainingMetrics
 from coolfrog.lib.config import TrainConfig
-from coolfrog.lib.datatypes import CHANNELS, FlowField, NormalizationStats
-from coolfrog.lib.log import get_logger, track
+from coolfrog.lib.dashboard import run_dashboard
+from coolfrog.lib.datatypes import FlowField, NormalizationStats
+from coolfrog.lib.log import get_logger
 
 logger = get_logger(__name__)
 
@@ -79,18 +80,36 @@ def fine_tune_autoencoder(
     validation_loader: DataLoader[FlowField],
     stats: NormalizationStats,
     config: TrainConfig,
-) -> tuple[pl.DataFrame, pl.DataFrame]:
+) -> TrainingMetrics:
     """Accumulated bf16 updates on `train_loader` crops with periodic full-domain `evaluate`.
 
     - Update 0 is validated before training, the zero-shot baseline under LoRA
-    - Returns (train loss per update, mean validation metric per update, metric and channel)
+    - Runs under the live terminal dashboard, plainly when there is no terminal
+    - Stop key `q` in the dashboard raises KeyboardInterrupt
     """
+    metrics = TrainingMetrics(config)
+    run_dashboard(
+        metrics.tracker,
+        metrics.spec,
+        lambda: _train(model, train_loader, validation_loader, stats, metrics),
+    )
+    return metrics
+
+
+def _train(
+    model: Tadpole,
+    train_loader: DataLoader[FlowField],
+    validation_loader: DataLoader[FlowField],
+    stats: NormalizationStats,
+    metrics: TrainingMetrics,
+) -> None:
+    config = metrics.config
     device = next(model.parameters()).device
     optimizer, scheduler = create_optimizer(model.trainable_parameters().values(), config)
-    loss_rows, validation_tables = [], [_validate(model, validation_loader, stats, update=0)]
+    metrics.log_validation(0, evaluate(model, validation_loader, stats))
     batches = endless(train_loader)
     model.train()
-    for update in track(range(1, config.updates + 1), "Fine-tuning"):
+    for update in range(1, config.updates + 1):
         mse_sum, kl_sum = 0.0, 0.0
         for _ in range(config.accumulation_steps):
             crops = next(batches).to(device, non_blocking=True)
@@ -103,27 +122,7 @@ def fine_tune_autoencoder(
         optimizer.step()
         scheduler.step()
         optimizer.zero_grad(set_to_none=True)
-        loss_rows.append(
-            {
-                "update": update,
-                "mse": mse_sum / config.accumulation_steps,
-                "kl": kl_sum / config.accumulation_steps,
-                "learning_rate": learning_rate,
-            }
-        )
+        metrics.log_update(update, mse_sum / config.accumulation_steps, kl_sum / config.accumulation_steps, learning_rate)
         if update % config.validate_every == 0 or update == config.updates:
-            logger.info("update %d train MSE %.3e", update, loss_rows[-1]["mse"])
-            validation_tables.append(_validate(model, validation_loader, stats, update))
-    return pl.DataFrame(loss_rows), pl.concat(validation_tables)
-
-
-def _validate(model: Tadpole, loader: DataLoader[FlowField], stats: NormalizationStats, update: int) -> pl.DataFrame:
-    """Mean of each `evaluate` metric over the validation designs, one row per metric."""
-    channels = pl.col([channel.value for channel in CHANNELS])
-    means = [
-        per_design.select(pl.lit(update).alias("update"), pl.lit(name).alias("metric"), channels.mean())
-        for name, per_design in evaluate(model, loader, stats).items()
-    ]
-    table = pl.concat(means)
-    logger.info("update %d validation means\n%s", update, table)
-    return table
+            logger.info("update %d train MSE %.3e", update, mse_sum / config.accumulation_steps)
+            metrics.log_validation(update, evaluate(model, validation_loader, stats))

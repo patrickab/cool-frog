@@ -12,7 +12,7 @@ from coolfrog.lib.datatypes import CHANNELS, Channel, FlowField, Grid
 SOLID_COLOR = "#999999"
 
 
-def plot_slices(  # noqa: PLR0913, PLR0917
+def plot_slices(  # noqa: PLR0913
     reference: FlowField,
     prediction: FlowField,
     grid: Grid,

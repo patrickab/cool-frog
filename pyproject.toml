@@ -6,11 +6,13 @@ dependencies = [
   "cooldata",
   "h5py>=3.16.0",
   "hdf5plugin>=7.1.0",
+  "plotext>=5.3.2",
   "polars>=2.0.0",
   "pyyaml>=6",
   "rich>=15.0.0",
   "tadpole",
   "tensordict>=0.14",
+  "textual>=8.2.8",
 ]
 
 [project.optional-dependencies]
@@ -65,6 +67,9 @@ select = [
   "ANN", # type hints
   "ARG", # unused arguments
   "RUF"  # Ruff-native rules
+]
+ignore = [
+  "PLR0917", # too many positional arguments, PLR0913 still caps the total
 ]
 
 [tool.ruff.lint.isort]

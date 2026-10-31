@@ -60,9 +60,8 @@ def fine_tune(latent_scale: int) -> None:
     validation_loader = create_dataloader(validation, replace(data_config, batch_size=1), shuffle=False)
 
     model = Tadpole(tadpole_config).to(DEVICE)
-    train_loss, validation_metrics = fine_tune_autoencoder(model, train_loader, validation_loader, stats, TRAIN_CONFIG)
-    train_loss.write_csv(path_run / "train_loss.csv")
-    validation_metrics.write_csv(path_run / "validation_metrics.csv")
+    metrics = fine_tune_autoencoder(model, train_loader, validation_loader, stats, TRAIN_CONFIG)
+    metrics.write_csv(path_run / "metrics.csv")
     model.save_adapter(path_run / "adapter.pt")
 
     write_metric_tables(evaluate(model, validation_loader, stats), path_run)
