@@ -22,7 +22,7 @@ from coolfrog.lib.log import get_logger, setup_logging
 from coolfrog.lib.metrics import nrmse, spectral_loss
 
 app = FastAPI(title="Coolfrog")
-GRID = Grid((400, 80, 16))
+GRID = Grid(latent_scale=1)
 LOCAL_SOURCE = Path("data/cooldata")
 # Numeric columns the dataset explorer filters and sorts, `run` is filtered separately
 DATASET_COLUMNS = ("design_id", *PARAM_COLUMNS)
@@ -189,7 +189,7 @@ def config() -> Config:
     channels = [Channel.from_label(channel) for channel in CHANNELS]
     surface_channels = [Channel.from_label(channel) for channel in SURFACE_CHANNELS]
     return Config(
-        parameters=parameters, channels=channels, surface_channels=surface_channels, dimensions=GRID.resolution, spacing=GRID.spacing
+        parameters=parameters, channels=channels, surface_channels=surface_channels, dimensions=GRID.shape, spacing=GRID.spacing
     )
 
 
@@ -301,7 +301,7 @@ def tadpole() -> Tadpole:
 
 
 def reconstruction_path(design_id: int) -> Path:
-    voxels_x, voxels_y, voxels_z = GRID.resolution
+    voxels_x, voxels_y, voxels_z = GRID.shape
     return CACHE_DIR / f"tadpole_b_zero_shot_{voxels_x}x{voxels_y}x{voxels_z}" / f"{design_id}.pt"
 
 

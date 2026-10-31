@@ -21,7 +21,7 @@ log = get_logger("coolfrog.experiment")
 metadata = CoolMetadata.load(HOST_CONFIG.n_splits, HOST_CONFIG.idx_split)
 dataset = CoolData(metadata, DATA_CONFIG)  # downloads and voxelizes every uncached design
 loader = create_dataloader(dataset, DATA_CONFIG, shuffle=False)
-log.info("%d designs on grid %s", len(dataset), DATA_CONFIG.grid.resolution)
+log.info("%d designs on grid %s", len(dataset), DATA_CONFIG.grid.shape)
 
 stats = NormalizationStats.from_flowfields(track(loader, "Normalization stats"))
 table = pl.DataFrame(

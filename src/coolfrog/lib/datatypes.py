@@ -58,26 +58,48 @@ PARAM_UNITS: dict[str, str] = {"V": "m/s"}
 class Grid:
     """Voxel grid of the channel domain, shared by all samples.
 
+    - `latent_shape = aspect_ratio * latent_scale`, Tadpole latent cells along x, y, z
+    - `shape = latent_shape * downsampling_factor`, voxels along x, y, z
+    - Every axis is a whole number of latent cells, so reconstructions keep the input shape
+
     Attributes
     ----------
-    resolution : tuple[int, int, int]
-        Voxels along x, y, z, each a multiple of 16.
+    latent_scale : int
+        Multiplier of the smallest valid grid, 1 -> latent (25, 5, 1), voxels (400, 80, 16).
+    aspect_ratio : tuple[int, int, int]
+        Domain proportions x:y:z, matches `extent`.
+    downsampling_factor : int
+        Voxels per Tadpole latent cell along each axis, 2^4 from its four stride-2 layers.
     extent : tuple[float, float, float]
         Domain size in m along x (flow), y (width), z (height).
     """
 
-    resolution: tuple[int, int, int]
+    latent_scale: int
+    aspect_ratio: tuple[int, int, int] = (25, 5, 1)
+    downsampling_factor: int = 16
     extent: tuple[float, float, float] = (0.5, 0.1, 0.02)
 
     def __post_init__(self) -> None:
-        """Raise ValueError unless every axis is a multiple of 16."""
-        if any(voxels <= 0 or voxels % 16 for voxels in self.resolution):
-            raise ValueError(f"every resolution axis must be a positive multiple of 16, got {self.resolution}")
+        """Raise ValueError unless `latent_scale` is positive."""
+        if self.latent_scale < 1:
+            raise ValueError(f"latent_scale must be a positive integer, got {self.latent_scale}")
+
+    @property
+    def latent_shape(self) -> tuple[int, int, int]:
+        """Tadpole latent cells along x, y, z."""
+        cells_x, cells_y, cells_z = (ratio * self.latent_scale for ratio in self.aspect_ratio)
+        return cells_x, cells_y, cells_z
+
+    @property
+    def shape(self) -> tuple[int, int, int]:
+        """Voxels along x, y, z."""
+        voxels_x, voxels_y, voxels_z = (cells * self.downsampling_factor for cells in self.latent_shape)
+        return voxels_x, voxels_y, voxels_z
 
     @property
     def spacing(self) -> tuple[float, float, float]:
-        """Voxel spacing in m, `extent / (resolution - 1)` like cooldata."""
-        spacing_x, spacing_y, spacing_z = (length / (voxels - 1) for length, voxels in zip(self.extent, self.resolution, strict=True))
+        """Voxel spacing in m, `extent / (shape - 1)` like cooldata."""
+        spacing_x, spacing_y, spacing_z = (length / (voxels - 1) for length, voxels in zip(self.extent, self.shape, strict=True))
         return spacing_x, spacing_y, spacing_z
 
 

@@ -151,7 +151,7 @@ class CoolDataShard:
     @staticmethod
     def cache_dir(grid: Grid) -> Path:
         """Directory of the shards on `grid`."""
-        voxels_x, voxels_y, voxels_z = grid.resolution
+        voxels_x, voxels_y, voxels_z = grid.shape
         return CACHE_DIR / f"voxels_{voxels_x}x{voxels_y}x{voxels_z}"
 
     @staticmethod
@@ -190,7 +190,7 @@ class CoolDataShard:
         temp_path = Path(temp_name)
         with h5py.File(temp_path, "w") as file:
             design_id_dataset = file.create_dataset("design_id", (count,), dtype="int64")
-            design_shape, mask_shape = (len(CHANNELS), *grid.resolution), grid.resolution
+            design_shape, mask_shape = (len(CHANNELS), *grid.shape), grid.shape
             fields_dataset = file.create_dataset(
                 "fields", (count, *design_shape), "float32", chunks=(1, *design_shape), **cls.COMPRESSION
             )
@@ -219,13 +219,13 @@ class CoolDataShard:
         """
         axes = [
             np.clip(np.linspace(0.0, length, voxels), WALL_INSET, length - WALL_INSET)
-            for length, voxels in zip(grid.extent, grid.resolution, strict=True)
+            for length, voxels in zip(grid.extent, grid.shape, strict=True)
         ]
         with pv.vtk_verbosity("error"):  # silences "Skipping BC_t node" warnings, only cell and face data are read
             volume = pv.read(volume_path)[0][0][0].triangulate()
         sampled = pv.StructuredGrid(*np.meshgrid(*axes, indexing="ij")).sample(volume)
-        fields = np.stack([sampled[cls.CGNS_ARRAYS[channel]].reshape(grid.resolution, order="F") for channel in CHANNELS])
-        mask = sampled["vtkValidPointMask"].reshape(grid.resolution, order="F")
+        fields = np.stack([sampled[cls.CGNS_ARRAYS[channel]].reshape(grid.shape, order="F") for channel in CHANNELS])
+        mask = sampled["vtkValidPointMask"].reshape(grid.shape, order="F")
         return torch.tensor(fields, dtype=torch.float32), torch.tensor(mask, dtype=torch.bool)
 
 
@@ -241,7 +241,7 @@ def _require_disk_space(cache_dir: Path, grid: Grid, shards: Sequence[CoolDataSh
         required_bytes = bytes_per_design * remaining_designs * (1 + DISK_MARGIN)
         estimate = f"projected from {len(full_shards)} shards at {bytes_per_design / 1e6:.1f} MB per design"
     else:
-        required_bytes = min(remaining_designs, SHARD_SIZE) * (len(CHANNELS) * 4 + 1) * math.prod(grid.resolution)
+        required_bytes = min(remaining_designs, SHARD_SIZE) * (len(CHANNELS) * 4 + 1) * math.prod(grid.shape)
         estimate = "one uncompressed shard, until shards exist to project from"
     available_bytes = shutil.disk_usage(cache_dir).free
     logger.info("%.1f GB needed (%s), %.1f GB free", required_bytes / 1e9, estimate, available_bytes / 1e9)

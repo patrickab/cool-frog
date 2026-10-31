@@ -31,10 +31,8 @@ class HostConfig:
     idx_split: int
 
 
-DEFAULT_HOST_CONFIG = HostConfig(cache_dir=Path.cwd() / ".cache", grid=Grid(resolution=(400, 80, 16)), n_splits=10, idx_split=0)
-CUBE1_HOST_CONFIG = HostConfig(
-    cache_dir=Path("/mnt/data/bitzer/.cache"), grid=Grid(resolution=(800, 160, 32)), n_splits=1, idx_split=0
-)
+DEFAULT_HOST_CONFIG = HostConfig(cache_dir=Path.cwd() / ".cache", grid=Grid(latent_scale=1), n_splits=10, idx_split=0)
+CUBE1_HOST_CONFIG = HostConfig(cache_dir=Path("/mnt/data/bitzer/.cache"), grid=Grid(latent_scale=2), n_splits=1, idx_split=0)
 HOST_CONFIG = CUBE1_HOST_CONFIG if socket.gethostname() == "cube1" else DEFAULT_HOST_CONFIG
 
 

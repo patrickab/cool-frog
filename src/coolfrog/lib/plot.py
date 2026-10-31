@@ -21,7 +21,7 @@ def plot_slices(  # noqa: PLR0913, PLR0917
     channels: Sequence[Channel] = CHANNELS,
 ) -> "Figure":
     """Top-view slices of reference, prediction and |error| per channel, `z_index=None` = half height."""
-    z_index = grid.resolution[2] // 2 if z_index is None else z_index
+    z_index = grid.shape[2] // 2 if z_index is None else z_index
     extent_mm = (0.0, 1000 * grid.extent[0], 0.0, 1000 * grid.extent[1])
     reference_volumes, prediction_volumes, fluid = _sample_volumes(reference, prediction, sample_index)
     figure = Figure(figsize=(15, 1.3 * len(channels)), layout="constrained")
@@ -68,7 +68,7 @@ def plot_volume(
     plotter = pv.Plotter(shape=(1, 3))
     for column, (title, volume, colormap, limits) in enumerate(panels):
         label = f"{title} {channel.value}"
-        image = pv.ImageData(dimensions=grid.resolution, spacing=grid.spacing)
+        image = pv.ImageData(dimensions=grid.shape, spacing=grid.spacing)
         image.point_data[label] = np.where(fluid, volume, np.nan).ravel(order="F")
         plotter.subplot(0, column)
         plotter.add_mesh(image.slice_orthogonal(), scalars=label, cmap=colormap, clim=limits, nan_color=SOLID_COLOR)
