@@ -100,3 +100,38 @@ class TadpoleConfig:
     decoder_state: FinetuneState = "frozen"
     encoder_crop_size: int | None = None
     max_internal_batchsize: int | None = None
+
+
+@dataclass(frozen=True)
+class TrainConfig:
+    """Autoencoding fine-tuning on random single-channel crops, defaults from Tadpole Appendix C.3.
+
+    - Crop edge is `TadpoleConfig.encoder_crop_size`, so training crops equal validation tiles
+
+    Attributes
+    ----------
+    updates : int
+        Optimizer steps, each over `crops_per_step * accumulation_steps` crops.
+    crops_per_step : int
+        Crops per forward/backward pass, bounded by VRAM (8 at 64³ on 12 GB).
+    accumulation_steps : int
+        Passes summed into one update, effective batch = `crops_per_step * accumulation_steps`.
+    learning_rate, weight_decay : float
+        AdamW, linear warmup over `warmup_updates`, constant afterwards.
+    kl_weight : float
+        Weight of the mean elementwise KL term next to the fluid-voxel MSE.
+    validate_every : int
+        Updates between validation runs, update 0 = zero-shot.
+    n_validation_designs : int
+        Held-out designs, never cropped for training.
+    """
+
+    updates: int = 14_000
+    crops_per_step: int = 8
+    accumulation_steps: int = 4
+    learning_rate: float = 5e-5
+    warmup_updates: int = 1000
+    weight_decay: float = 1e-15
+    kl_weight: float = 1e-6
+    validate_every: int = 1000
+    n_validation_designs: int = 64

@@ -1,6 +1,6 @@
 """CoolData design catalogue, voxel dataset and UI surface meshes, all cached in `CACHE_DIR`."""
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 import copy
 from dataclasses import dataclass
 import fcntl
@@ -379,14 +379,19 @@ class CoolData(Dataset[FlowField]):
         return subset
 
 
-def create_dataloader(dataset: CoolData, config: DataConfig, shuffle: bool) -> DataLoader[FlowField]:
-    """DataLoader of stacked FlowField batches, batch size and workers from `config`."""
+def create_dataloader(
+    dataset: CoolData,
+    config: DataConfig,
+    shuffle: bool,
+    collate_fn: Callable[[list[FlowField]], FlowField] = torch.stack,
+) -> DataLoader[FlowField]:
+    """DataLoader of FlowField batches, batch size and workers from `config`, `collate_fn` runs inside the worker processes."""
     return DataLoader(
         dataset,
         batch_size=config.batch_size,
         shuffle=shuffle,
         num_workers=config.num_workers,
-        collate_fn=torch.stack,
+        collate_fn=collate_fn,
         pin_memory=torch.cuda.is_available(),
         persistent_workers=config.num_workers > 0,
     )

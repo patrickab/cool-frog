@@ -60,6 +60,13 @@ def render_readme(title: str, goal: str | None, hypothesis: str | None) -> str:
     return "\n\n".join(sections)
 
 
+def write_configs(configs: Sequence["DataclassInstance"], path: Path) -> None:
+    """Write `configs` as yaml keyed by class name, e.g. one `config.yaml` per run of a multi-run experiment."""
+    # json round trip turns Path and tuple into yaml-safe types
+    config_dict = {type(config).__name__: asdict(config) for config in configs}
+    path.write_text(yaml.safe_dump(json.loads(json.dumps(config_dict, default=str))))
+
+
 def create_experiment(
     title: str,
     goal: str | None = None,
@@ -81,9 +88,7 @@ def create_experiment(
     path_results.mkdir(parents=True, exist_ok=True)
     archive_script(script, folder)
 
-    # json round trip turns Path and tuple into yaml-safe types
-    config_dict = {type(config).__name__: asdict(config) for config in configs}
-    (folder / "config.yaml").write_text(yaml.safe_dump(json.loads(json.dumps(config_dict, default=str))))
+    write_configs(configs, folder / "config.yaml")
 
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=PATH_EXPERIMENTS.parent, text=True).strip()
     meta = {"commit": commit, "date": datetime.now(UTC).isoformat(timespec="seconds")}
