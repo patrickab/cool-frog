@@ -43,10 +43,30 @@ def is_experiment_folder(folder: Path) -> bool:
     return folder.parent == PATH_EXPERIMENTS.resolve() and re.fullmatch(r"\d{2}_.+", folder.name) is not None
 
 
+def find_folder(title: str) -> Path | None:
+    """Return the existing `experiments/<NN>_<kebab-title>/` folder, None if the experiment is new."""
+    return next(PATH_EXPERIMENTS.glob(f"[0-9][0-9]_{kebab_case_slug(title)}"), None)
+
+
 def archive_script(script: Path, folder: Path) -> None:
-    """Move `script` into `folder`, keeping its file name."""
+    """Copy `script` into `folder`, keeping its file name and leaving the original in place."""
     if script.parent != folder:
-        shutil.move(script, folder / script.name)
+        shutil.copy(script, folder / script.name)
+
+
+def archive_previous_run(folder: Path) -> None:
+    """Move `config.yaml`, `meta.json` and `results/` into `history/<date>_<commit>/`, copy `README.md`."""
+    path_meta = folder / "meta.json"
+    if not path_meta.exists():
+        return
+    meta = json.loads(path_meta.read_text())
+    path_run = folder / "history" / f"{meta['date'][:16].replace(':', '-')}_{meta['commit'][:7]}"
+    path_run.mkdir(parents=True)
+    for name in ("config.yaml", "meta.json", "results"):
+        if (folder / name).exists():
+            shutil.move(folder / name, path_run / name)
+    if (folder / "README.md").exists():
+        shutil.copy(folder / "README.md", path_run / "README.md")
 
 
 def render_readme(title: str, goal: str | None, hypothesis: str | None) -> str:
@@ -75,15 +95,21 @@ def create_experiment(
 ) -> Path:
     """Create the experiment folder of the calling script and return its `results/` directory.
 
-    - Script outside `experiments/<NN>_*/` -> new `experiments/<NN>_<kebab-title>/`, script moved into it
-    - Script inside one (rerun) -> that folder is reused, `config.yaml`, `meta.json` and results are overwritten
+    - Script anywhere, experiment slug not yet in `experiments/` -> new `experiments/<NN>_<kebab-title>/`
+    - Script inside `experiments/<NN>_*/` or slug already exists (rerun) -> that folder is reused, previous `config.yaml`, `meta.json`, `results/` and a copy of `README.md` move to `history/<date>_<commit>/`
+    - The script is copied into the folder, the original stays where it is (e.g. `experiments/` root for easy execution)
     - `config.yaml` holds all `configs` keyed by class name
     - `meta.json` holds the commit and date
-    - `README.md` is pre-filled with title, goal and hypothesis, never overwritten
+    - `README.md` is pre-filled with title, goal and hypothesis, never overwritten (update Result and Conclusion after a rerun)
     """
     script = calling_script()
-    is_rerun = is_experiment_folder(script.parent)
-    folder = script.parent if is_rerun else PATH_EXPERIMENTS / f"{next_index():02d}_{kebab_case_slug(title)}"
+    folder = script.parent if is_experiment_folder(script.parent) else find_folder(title)
+    is_rerun = folder is not None
+    if folder is None:
+        folder = PATH_EXPERIMENTS / f"{next_index():02d}_{kebab_case_slug(title)}"
+    if is_rerun:
+        archive_previous_run(folder)
+        print(f"Archived previous run to {folder / 'history'}, update Result and Conclusion in {folder / 'README.md'}")
     path_results = folder / "results"
     path_results.mkdir(parents=True, exist_ok=True)
     archive_script(script, folder)
