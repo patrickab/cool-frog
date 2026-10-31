@@ -5,8 +5,17 @@ import logging
 from pathlib import Path
 
 from rich.console import Console
+from rich.highlighter import NullHighlighter
 from rich.logging import RichHandler
-from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn, TimeRemainingColumn
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    ProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
 
 PACKAGE_LOGGER_NAME = "coolfrog"
 FILE_FORMAT = "%(asctime)s %(levelname)-8s %(name)s: %(message)s"
@@ -21,7 +30,7 @@ def get_logger(name: str) -> logging.Logger:
 def setup_logging(level: int | str = "INFO", log_file: Path | None = None) -> logging.Logger:
     """Configure the `coolfrog` logger, safe to call repeatedly.
 
-    - Console: Rich, message only, colors off when not on a TTY (pipes, CI)
+    - Console: Rich, plain message only, no number highlighting, colors off when not on a TTY (pipes, CI)
     - `log_file`: plain text with timestamps
     """
     package_logger = logging.getLogger(PACKAGE_LOGGER_NAME)
@@ -32,7 +41,10 @@ def setup_logging(level: int | str = "INFO", log_file: Path | None = None) -> lo
         package_logger.removeHandler(existing_handler)
         existing_handler.close()
 
-    package_logger.addHandler(RichHandler(console=CONSOLE, show_time=False, show_level=False, show_path=False, rich_tracebacks=True))
+    handler = RichHandler(
+        console=CONSOLE, show_time=False, show_level=False, show_path=False, highlighter=NullHighlighter(), rich_tracebacks=True
+    )
+    package_logger.addHandler(handler)
 
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -43,12 +55,12 @@ def setup_logging(level: int | str = "INFO", log_file: Path | None = None) -> lo
     return package_logger
 
 
-def progress_bar() -> Progress:
-    """Rich progress bar: description, bar, done/total, percent, elapsed and remaining time.
+def progress_bar(*extra_columns: ProgressColumn) -> Progress:
+    """Rich progress bar: description, bar, done/total, percent, elapsed and remaining time, then `extra_columns`.
 
-    >>> with progress_bar() as progress:
-    ...     task = progress.add_task("Voxelizing designs", total=100)
-    ...     progress.advance(task, 64)
+    >>> with progress_bar(TextColumn("{task.fields[status]}")) as progress:
+    ...     task = progress.add_task("Voxelizing designs", total=100, status="")
+    ...     progress.update(task, advance=64, status="3 shards written")
     """
     return Progress(
         TextColumn("[bold cyan]{task.description}"),
@@ -57,6 +69,7 @@ def progress_bar() -> Progress:
         TextColumn("({task.percentage:.0f}%)"),
         TimeElapsedColumn(),
         TimeRemainingColumn(),
+        *extra_columns,
         console=CONSOLE,
     )
 

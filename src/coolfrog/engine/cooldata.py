@@ -22,6 +22,7 @@ from huggingface_hub import HfFileSystem
 import numpy as np
 import polars as pl
 import pyvista as pv
+from rich.progress import TextColumn
 import torch
 from torch.utils.data import DataLoader, Dataset, random_split
 
@@ -235,10 +236,10 @@ def _uncompressed_shard_bytes(grid: Grid) -> int:
 
 
 def _require_disk_space(cache_dir: Path, grid: Grid, shards: Sequence[CoolDataShard], remaining_designs: int) -> str:
-    """Raise `OSError` when `remaining_designs` will not fit on the disk of `cache_dir`, else return a progress bar suffix.
+    """Raise `OSError` when `remaining_designs` will not fit on the disk of `cache_dir`, else return a progress bar status.
 
     - From `SIZE_ESTIMATE_SHARDS` full shards on: projects their mean bytes per design plus `DISK_MARGIN`,
-      returns `" · <needed> GB needed, <free> GB free"`
+      returns `"<needed> GB needed · <free> GB free"`
     - Before: requires room for one uncompressed shard, returns `""`, compression varies from ~4x at 1x to ~13x at 2x
     """
     full_shards = [shard for shard in shards if len(shard.design_ids) == SHARD_SIZE]
@@ -252,7 +253,7 @@ def _require_disk_space(cache_dir: Path, grid: Grid, shards: Sequence[CoolDataSh
     if required_bytes > available_bytes:
         need = "projected for the remaining designs" if projected else "for the next uncompressed shard"
         raise OSError(f"{required_bytes / 1e9:.1f} GB needed {need}, only {available_bytes / 1e9:.1f} GB free in {cache_dir}")
-    return f" · {required_bytes / 1e9:.1f} GB needed, {available_bytes / 1e9:.1f} GB free" if projected else ""
+    return f"{required_bytes / 1e9:.1f} GB needed · {available_bytes / 1e9:.1f} GB free" if projected else ""
 
 
 def cached_shards(grid: Grid) -> dict[int, tuple[CoolDataShard, int]]:
@@ -339,15 +340,14 @@ class CoolData(Dataset[FlowField]):
             fork = multiprocessing.get_context("fork")
             with (
                 fork.Pool(PROCESSES, initializer=signal.signal, initargs=(signal.SIGINT, signal.SIG_IGN)) as pool,
-                progress_bar() as progress,
+                progress_bar(TextColumn("{task.fields[disk]}", style="dim")) as progress,
             ):
-                task = progress.add_task(f"Voxelizing designs{disk_status}", total=len(rows))
+                task = progress.add_task("Voxelizing designs", total=len(rows), disk=disk_status)
                 voxelized = progress.track(pool.imap_unordered(voxelize_design, rows), task_id=task)
                 for shard_start in range(0, len(rows), SHARD_SIZE):
                     shards.append(CoolDataShard.write(voxelized, min(SHARD_SIZE, len(rows) - shard_start), grid))
                     if (remaining := len(rows) - shard_start - SHARD_SIZE) > 0:
-                        disk_status = _require_disk_space(cache_dir, grid, shards, remaining)
-                        progress.update(task, description=f"Voxelizing designs{disk_status}")
+                        progress.update(task, disk=_require_disk_space(cache_dir, grid, shards, remaining))
 
     @property
     def design_ids(self) -> list[int]:
