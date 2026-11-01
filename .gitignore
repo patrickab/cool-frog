@@ -15,4 +15,4 @@ data/
 node_modules/
 *.tsbuildinfo
 
-experiments/*/results/histograms.npz
+experiments/**/results/histograms.npz
