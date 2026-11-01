@@ -6,8 +6,8 @@ import torch
 from torch.utils.data import DataLoader
 
 from coolfrog.engine.cooldata import CoolData, CoolMetadata
-from coolfrog.lib.config import HOST_CONFIG, DataConfig
-from coolfrog.lib.datatypes import CHANNELS, Channel, FlowField, Grid, NormalizationStats
+from coolfrog.lib.config import HOST_CONFIG, DataConfig, Grid
+from coolfrog.lib.datatypes import CHANNELS, Channel, FlowField, NormalizationStats
 from coolfrog.lib.experiment import run_experiment
 from coolfrog.lib.huggingface import HuggingFaceHub
 from coolfrog.lib.log import get_logger, setup_logging, track
@@ -26,7 +26,7 @@ QUANTILES = (1e-4, 1e-3, 1e-2, 0.5, 0.99, 0.999, 0.9999)
 MAX_VELOCITY = 100.0  # m/s, per component
 TEMPERATURE_RANGE = (250.0, 600.0)  # K
 # Normalization of the curated designs: these quantiles map to [-1, 1], log10 first for `LOG_CHANNELS`
-NORMALIZATION_QUANTILES = (1e-4, 0.9999)
+NORMALIZATION_QUANTILES = (1e-3, 0.999)
 LOG_CHANNELS = (Channel.TURBULENT_KINETIC_ENERGY, Channel.TURBULENT_DISSIPATION_RATE)
 # Bins are uniform in asinh((value - offset) / scale): linear within `scale` of `offset`, logarithmic beyond
 # (offset, scale, low, high) per channel, bounds wider than every value seen, values outside land in the edge bins

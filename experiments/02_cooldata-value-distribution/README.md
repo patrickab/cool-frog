@@ -32,24 +32,42 @@ All 5692 designs at 1600x320x64, 2 h 10 min sweep. Analysis and plots: [`noteboo
 
 Without them the tails collapse, e.g. q0.9999 of T 3862 → 344 K, of k 266 → 70 m²/s².
 
-Normalization of the 5666 curated designs: q0.0001 → -1, q0.9999 → 1, log10 for k and ε, nothing clipped. Curated extremes after normalization:
+Candidate normalizations of the 5666 curated designs, log10 for k and ε, nothing clipped:
 
-| channel | transform | low | high | normalized min | normalized max |
+- **qlow / qhigh**: quantiles mapped to -1 and 1
+- **voxels beyond ±1**: share of curated voxels outside [-1, 1]
+- **spread**: normalized width of the central 50 % of voxels (q0.25 to q0.75), larger resolves the bulk better
+- **peak**: largest |normalized value| of any curated voxel, smaller keeps outliers closer to the training range
+
+| qlow / qhigh | voxels beyond ±1 | spread Vx / Vy / Vz / p | spread T / k / ε | peak Vx / Vy / Vz / p | peak T / k / ε |
 |---|---|---|---|---|---|
-| Vx | linear | -7.98 m/s | 43.1 m/s | -2.2 | 2.8 |
-| Vy | linear | -10.9 m/s | 11.0 m/s | -7.0 | 7.4 |
-| Vz | linear | -4.86 m/s | 8.68 m/s | -4.5 | 14.3 |
-| p | linear | -314 Pa | 2408 Pa | -2.6 | 13.3 |
-| T | linear | 293.12 K | 343.99 K | -1.7 | 1.4 |
-| k | log10 | 9.0e-7 m²/s² | 69.6 m²/s² | -2.0 | 1.3 |
-| ε | log10 | 4.7e-5 m²/s³ | 2.3e5 m²/s³ | -2.2 | 1.5 |
+| 1e-4 / 0.9999 | 0.02 % | 0.149 / 0.012 / 0.006 / 0.001 | 0.24 / 0.33 / 0.40 | 2.8 / 7.4 / 14.3 / 13.3 | 1.7 / 2.0 / 2.2 |
+| 1e-3 / 0.999 | 0.2 % | 0.254 / 0.024 / 0.015 / 0.002 | 0.30 / 0.42 / 0.46 | 5.2 / 15.1 / 35.0 / 28.4 | 2.1 / 2.6 / 2.5 |
+| 1e-2 / 0.99 | 2 % | 0.472 / 0.067 / 0.054 / 0.010 | 0.58 / 0.57 / 0.56 | 10.2 / 42.1 / 123.9 / 140.9 | 4.9 / 3.8 / 3.0 |
+
+[`results/normalization_stats.csv`](results/normalization_stats.csv) holds q0.001 / q0.999, derived from `histograms.npz` with `NORMALIZATION_QUANTILES = (1e-3, 0.999)` after the sweep (`run.log` still lists the q1e-4 / q0.9999 stats of the sweep itself):
+
+| channel | transform | low | high |
+|---|---|---|---|
+| Vx | linear | -3.82 m/s | 26.2 m/s |
+| Vy | linear | -5.36 m/s | 5.36 m/s |
+| Vz | linear | -2.11 m/s | 3.51 m/s |
+| p | linear | -136 Pa | 1175 Pa |
+| T | linear | 293.15 K | 332.80 K |
+| k | log10 | 1.4e-5 m²/s² | 28.4 m²/s² |
+| ε | log10 | 1.6e-4 m²/s³ | 4.2e4 m²/s³ |
 
 ## Conclusion
 
 - Exclude the 26 flagged designs (0.5 % of the data) as physically implausible, likely diverged simulations.
 - Put k and ε on a log scale: they span ~8 to 10 decades between q0.0001 and q0.9999 of the curated set, which no linear [-1, 1] scale resolves.
-- Normalize the remaining channels by quantiles of the curated set, not min-max. p keeps a minor bump around 1e4 Pa from unflagged designs.
-- Heavy tails remain after normalization (Vz up to 14.3, p 13.3, Vy 7.4) and are left unclipped for now.
+- Normalize every channel by quantiles of the curated set, not min-max, and leave values beyond ±1 unclipped.
+- Choose q0.001 / q0.999 as the trade-off between bulk resolution and peaks:
+  - Narrower quantiles resolve the bulk better: the spread of Vy, Vz and p grows 5 to 10× from q1e-4 to q0.01.
+  - They also grow the peaks: q0.01 / q0.99 puts Vz and p voxels at 124 and 141, and under MSE one such voxel outweighs ~10⁴ bulk voxels.
+  - q0.001 / q0.999 roughly doubles the bulk spread of q1e-4 / q0.9999 and keeps peaks at 35 and below, 0.2 % of voxels beyond ±1.
+  - k, ε and T stay within ±2.6 under this choice, the log scale already tames k and ε.
+- The bulk of Vy, Vz and p stays narrow under every choice (spread ≤ 0.067 even at q0.01): most fluid is nearly at rest, and a few jets and pressure peaks set the scale.
 - Training uses the normalization stats and exclusion list of this 1600x320x64 run. The 400x80x16 run (in `history/`) agrees except for one design.
 
 ## Open questions
