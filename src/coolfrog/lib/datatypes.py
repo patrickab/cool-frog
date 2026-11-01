@@ -59,16 +59,18 @@ PARAM_UNITS: dict[str, str] = {"V": "m/s"}
 # Floor of k and ε in CoolData, log-normalized channels are clamped to it before log10, solids hold 0
 LOG_FLOOR = 1e-10
 
+# Voxels per Tadpole latent cell per axis, 2 conv + 2 transformer stride-2 layers, identical for every Tadpole size
+TADPOLE_DOWNSAMPLING_FACTOR = 16
+
 
 @dataclass(frozen=True)
 class Grid:
     """Voxel grid of the channel domain, shared by all samples.
 
     - `latent_shape = aspect_ratio * latent_scale`, Tadpole latent cells along x, y, z
-    - `shape = latent_shape * downsampling_factor`, voxels along x, y, z
+    - `shape = latent_shape * TADPOLE_DOWNSAMPLING_FACTOR`, voxels along x, y, z
     - Every axis is a whole number of latent cells, so reconstructions keep the input shape
-    - `aspect_ratio` and `extent` are fixed by the CoolData domain, `downsampling_factor` by Tadpole, class constants
-      kept out of saved configs
+    - `aspect_ratio` and `extent` are fixed by the CoolData domain, class constants kept out of saved configs
 
     Attributes
     ----------
@@ -78,8 +80,6 @@ class Grid:
 
     aspect_ratio: ClassVar[tuple[int, int, int]] = (25, 5, 1)  # domain proportions x:y:z, matches `extent`
     extent: ClassVar[tuple[float, float, float]] = (0.5, 0.1, 0.02)  # domain size in m along x (flow), y (width), z (height)
-    # voxels per latent cell per axis, 2 conv + 2 transformer stride-2 layers, identical for every Tadpole size
-    downsampling_factor: ClassVar[int] = 16
 
     latent_scale: int
 
@@ -97,7 +97,7 @@ class Grid:
     @property
     def shape(self) -> tuple[int, int, int]:
         """Voxels along x, y, z."""
-        voxels_x, voxels_y, voxels_z = (cells * self.downsampling_factor for cells in self.latent_shape)
+        voxels_x, voxels_y, voxels_z = (cells * TADPOLE_DOWNSAMPLING_FACTOR for cells in self.latent_shape)
         return voxels_x, voxels_y, voxels_z
 
     @property
