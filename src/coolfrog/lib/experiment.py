@@ -125,12 +125,15 @@ def markdown_table(dataframe: pl.DataFrame, significant_digits: int = 3) -> str:
         return str(formatted)
 
 
-def inject_table(path_readme: Path, name: str, dataframe: pl.DataFrame) -> None:
-    """Replace the `<!-- table: name -->` block of the README with `markdown_table(dataframe)`, append it if missing.
+def inject_table(path_results: Path, name: str, dataframe: pl.DataFrame) -> None:
+    """Write `dataframe` to `results/<name>.csv` at full precision and inject it rounded into the run's README.
 
+    - Replaces the `<!-- table: name -->` block of the README, appends it if missing
     - Text outside the blocks is never touched, move an appended block once by hand, later runs update it in place
     - Call it as the last step of the script, so only completed runs update the README
     """
+    dataframe.write_csv(path_results / f"{name}.csv")
+    path_readme = path_results.parent / "README.md"
     block = f"<!-- table: {name} -->\n{markdown_table(dataframe)}\n<!-- /table -->"
     pattern = re.compile(rf"<!-- table: {re.escape(name)} -->\n.*?<!-- /table -->", re.DOTALL)
     readme, n_replaced = pattern.subn(lambda _: block, path_readme.read_text())
