@@ -6,7 +6,7 @@ Measure the global per-channel fluid min and max over every CoolData design at 1
 
 ## Result
 
-Global fluid min and max over all 5692 designs at 1600x320x64: [`results/normalization_stats.csv`](results/normalization_stats.csv), 56 min sweep.
+Global fluid min and max over all 5692 designs at 1600x320x64: [`results/normalization_stats.csv`](results/normalization_stats.csv), 56 min sweep. Visualized in [`notebooks/01_min_max_normalization_stats.ipynb`](../../notebooks/01_min_max_normalization_stats.ipynb).
 
 | channel | min | max |
 |---|---|---|
