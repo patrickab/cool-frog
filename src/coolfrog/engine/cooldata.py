@@ -25,7 +25,7 @@ import pyvista as pv
 import torch
 from torch.utils.data import DataLoader, Dataset, random_split
 
-from coolfrog.lib.config import HOST_CONFIG, DataConfig, Grid, Range
+from coolfrog.lib.config import HOST_CONFIG, SEED, DataConfig, Grid, Range
 from coolfrog.lib.datatypes import CHANNELS, PARAM_COLUMNS, SURFACE_CHANNELS, Channel, FlowField, SurfaceChannel
 from coolfrog.lib.log import get_logger, progress_bar
 
@@ -83,7 +83,7 @@ class CoolMetadata:
         )
         return cls(designs)
 
-    def select(self, *, ranges: Mapping[str, Range], n_samples: int | None = None, seed: int = 0) -> "CoolMetadata":
+    def select(self, *, ranges: Mapping[str, Range], n_samples: int | None = None, seed: int = SEED) -> "CoolMetadata":
         """Designs inside all `ranges`, sorted by `design_id`, then a seeded sample of `n_samples`, None = all."""
         selected = self.designs.filter(
             pl.lit(True),
@@ -347,8 +347,8 @@ class CoolData(Dataset[FlowField]):
         return self._designs["design_id"].to_list()
 
     def split(self, fractions: Sequence[float]) -> list["CoolData"]:
-        """Disjoint random subsets by design, seeded by `config.seed`, sharing the cache: `train, val = dataset.split([0.9, 0.1])`."""
-        generator = torch.Generator().manual_seed(self.config.seed)
+        """Disjoint random subsets by design, seeded by `SEED`, sharing the cache: `train, val = dataset.split([0.9, 0.1])`."""
+        generator = torch.Generator().manual_seed(SEED)
         return [self._subset(sorted(subset.indices)) for subset in random_split(range(len(self)), fractions, generator)]
 
     def __len__(self) -> int:

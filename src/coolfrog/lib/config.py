@@ -2,14 +2,28 @@
 
 from dataclasses import dataclass
 from pathlib import Path
+import random
 import socket
 from typing import ClassVar, Literal
+
+import numpy as np
+import torch
 
 Range = tuple[float | None, float | None]  # inclusive (min, max), None = open side
 FinetuneState = Literal["frozen", "FPFT"] | int  # frozen, full-parameter fine-tuning, or LoRA rank
 
 # Voxels per Tadpole latent cell per axis, 2 conv + 2 transformer stride-2 layers, identical for every Tadpole size
 TADPOLE_DOWNSAMPLING_FACTOR = 16
+
+# Single seed of the application: python, numpy and torch RNGs, dataset splits and samples
+SEED = 42
+
+
+def seed_everything(seed: int = SEED) -> None:
+    """Seed python, numpy and torch on CPU and every GPU, loader workers derive their seeds from torch."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
 
 
 @dataclass(frozen=True)
@@ -96,8 +110,6 @@ class DataConfig:
         True -> voxelize uncached designs on construction into HDF5 shards in
         `HOST_CONFIG.cache_dir / "voxels_<X>x<Y>x<Z>"`, then read from them.
         False -> voxelize from the local `source` on every access, nothing written.
-    seed : int
-        Seeds `CoolData.split`.
     batch_size : int
         Designs per batch.
     num_workers : int
@@ -115,7 +127,6 @@ class DataConfig:
     grid: Grid = HOST_CONFIG.grid
     source: Path | None = None
     cache: bool = True
-    seed: int = 42
     batch_size: int = 32
     num_workers: int = 0
 
@@ -179,4 +190,4 @@ class TrainConfig:
     weight_decay: float = 1e-15
     kl_weight: float = 1e-6
     validate_every: int = 1000
-    n_validation_designs: int = 64
+    n_validation_designs: int = 128

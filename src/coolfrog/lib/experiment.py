@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 import yaml
 
+from coolfrog.lib.config import SEED, seed_everything
 from coolfrog.lib.huggingface import HubFile, HuggingFaceHub
 
 if TYPE_CHECKING:
@@ -272,6 +273,7 @@ def start_run(title: str, goal: str | None, hypothesis: str | None, configs: Seq
         "commit_hash_git": commit_hash_git,
         "script": str(script.relative_to(PATH_EXPERIMENTS.parent.resolve())),
         "date": datetime.now(UTC).isoformat(timespec="seconds"),
+        "seed": SEED,
     }
     (folder / "meta.json").write_text(json.dumps(meta, indent=2))
 
@@ -291,6 +293,7 @@ def run_experiment(
 ) -> Iterator[Path]:
     """Start a run, yield its `results/` directory and finish the run by how the block exits.
 
+    - Seeds python, numpy and torch with `SEED` before the block runs
     - Success -> `push_experiment` when `hub` is given
     - Exception -> everything stays for debugging, logs included, nothing pushed, the error propagates
     - KeyboardInterrupt (Ctrl+C, also `agent-proc stop`) -> `undo_run`, then the interrupt propagates
@@ -303,6 +306,7 @@ def run_experiment(
     ...     ...  # write results
     """
     run = start_run(title, goal, hypothesis, configs)
+    seed_everything()
     try:
         yield run.path_results
     except KeyboardInterrupt:
