@@ -1,0 +1,88 @@
+"""Shared setup of the autoencoding experiments 03 (zero-shot) and 04 (LoRA): data, model, validation split, metric tables.
+
+- Both evaluate the same curated validation designs with the same tiling, so 03 is the baseline of 04
+- Imported by the experiment scripts, not an experiment itself
+"""
+
+from dataclasses import replace
+
+import polars as pl
+from torch.utils.data import DataLoader
+
+from coolfrog.engine.cooldata import CoolData, CoolMetadata, create_dataloader
+from coolfrog.lib.config import HOST_CONFIG, DataConfig, FinetuneState, Grid, TadpoleConfig, TrainConfig
+from coolfrog.lib.datatypes import CHANNELS, FlowField, NormalizationStats
+from coolfrog.lib.experiment import PATH_EXPERIMENTS
+
+LATENT_SCALES = (2, 4)  # 800x160x32 with 32³ tiles first, then 1600x320x64 with 64³ tiles
+PATH_VALUE_DISTRIBUTION = PATH_EXPERIMENTS / "02_cooldata-value-distribution" / "results"
+TRAIN_CONFIG = TrainConfig()
+MEDIAN = 0.5
+
+
+def load_stats() -> NormalizationStats:
+    """Quantile normalization of experiment 02."""
+    return NormalizationStats.load(PATH_VALUE_DISTRIBUTION / "normalization_stats.csv")
+
+
+def curated_metadata() -> CoolMetadata:
+    """All designs without the implausible ones excluded in experiment 02."""
+    excluded = pl.read_csv(PATH_VALUE_DISTRIBUTION / "excluded_designs.csv")["design_id"]
+    designs = CoolMetadata.load(HOST_CONFIG.n_splits, HOST_CONFIG.idx_split).designs
+    return CoolMetadata(designs.filter(~pl.col("design_id").is_in(excluded)))
+
+
+def data_config(latent_scale: int) -> DataConfig:
+    """Grid of `latent_scale`, 2 designs per training pass."""
+    return DataConfig(grid=Grid(latent_scale=latent_scale), batch_size=2, num_workers=6)
+
+
+def tadpole_config(latent_scale: int, finetune_state: FinetuneState) -> TadpoleConfig:
+    """Tadpole-B with tiles and training crops spanning the full channel height of the grid."""
+    return TadpoleConfig(
+        size="B",
+        encoder_state=finetune_state,
+        decoder_state=finetune_state,
+        encoder_crop_size=Grid(latent_scale=latent_scale).shape[2],
+        max_internal_batchsize=16,  # tiles per encoder/decoder call
+    )
+
+
+def train_validation_split(metadata: CoolMetadata, config: DataConfig) -> tuple[CoolData, CoolData]:
+    """Seeded split holding out `TRAIN_CONFIG.n_validation_designs`, identical at every latent scale."""
+    dataset = CoolData(metadata, config)
+    n_validation = TRAIN_CONFIG.n_validation_designs
+    train, validation = dataset.split([len(dataset) - n_validation, n_validation])
+    return train, validation
+
+
+def validation_loader(validation: CoolData, config: DataConfig) -> DataLoader[FlowField]:
+    """One design per batch, fixed order."""
+    return create_dataloader(validation, replace(config, batch_size=1), shuffle=False)
+
+
+def per_design_frame(tables: dict[str, pl.DataFrame], latent_scale: int, model: str) -> pl.DataFrame:
+    """Long table of `evaluate` output: `latent_scale`, `model`, `metric`, `design_id`, one column per channel."""
+    return pl.concat(
+        table.select(
+            pl.lit(latent_scale).alias("latent_scale"), pl.lit(model).alias("model"), pl.lit(metric).alias("metric"), pl.all()
+        )
+        for metric, table in tables.items()
+    )
+
+
+def statistic_name(quantile: float) -> str:
+    """Row label of a quantile, `median` for 0.5."""
+    return "median" if quantile == MEDIAN else f"q{quantile:g}"
+
+
+def quantile_table(per_design: pl.DataFrame, metric: str, quantiles: tuple[float, ...]) -> pl.DataFrame:
+    """Quantiles over designs per channel, one row per latent scale, model and quantile, linear like `Series.median`."""
+    channels = [channel.value for channel in CHANNELS]
+    rows = [
+        per_design.filter(pl.col("metric") == metric)
+        .group_by("latent_scale", "model", maintain_order=True)
+        .agg(pl.lit(statistic_name(quantile)).alias("statistic"), pl.col(channels).quantile(quantile, interpolation="linear"))
+        for quantile in quantiles
+    ]
+    return pl.concat(rows).sort("latent_scale", "model", maintain_order=True)
