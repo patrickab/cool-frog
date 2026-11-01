@@ -1,0 +1,5 @@
+{
+  "commit_hash_git": "11a3a4041d1011343b2d15559443c2bd9363cd6c",
+  "script": "experiments/zero_shot_reconstruction.py",
+  "date": "2026-11-01T18:43:30+00:00"
+}
