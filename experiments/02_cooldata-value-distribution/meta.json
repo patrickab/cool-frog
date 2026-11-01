@@ -1,5 +1,13 @@
 {
-  "commit": "67d1dd64fde6fb12a1463feda86d385e75570f6c",
+  "commit_hash_git": "67d1dd64fde6fb12a1463feda86d385e75570f6c",
   "script": "experiments/value_distribution.py",
-  "date": "2026-11-01T10:30:35+00:00"
+  "date": "2026-11-01T10:30:35+00:00",
+  "hub": {
+    "repo_id": "the-fruit-dude/cool-frog",
+    "commit_hash_hub": "b7da4457d491f78fbc33b3c75d47a4b4097603bc",
+    "run_root": "experiments/02_cooldata-value-distribution",
+    "files": [
+      "results/histograms.npz"
+    ]
+  }
 }

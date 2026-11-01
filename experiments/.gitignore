@@ -1,0 +1,5 @@
+# Large experiment files: ignored by git, pushed to Hugging Face by coolfrog.lib.experiment.push_experiment.
+# Read by coolfrog.lib.experiment.large_file_patterns: one basename glob per line, no `/` and no `!`.
+*.npz
+*.pt
+*.safetensors

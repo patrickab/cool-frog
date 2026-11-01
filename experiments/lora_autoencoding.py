@@ -11,7 +11,8 @@ from coolfrog.engine.tadpole import Tadpole
 from coolfrog.engine.training import RandomCrops, fine_tune_autoencoder
 from coolfrog.lib.config import HOST_CONFIG, DataConfig, TadpoleConfig, TrainConfig
 from coolfrog.lib.datatypes import Grid, NormalizationStats
-from coolfrog.lib.experiment import PATH_EXPERIMENTS, create_experiment, write_configs
+from coolfrog.lib.experiment import PATH_EXPERIMENTS, run_experiment, write_configs
+from coolfrog.lib.huggingface import HuggingFaceHub
 from coolfrog.lib.log import get_logger, setup_logging
 from coolfrog.lib.plot import plot_slices
 
@@ -29,16 +30,6 @@ LATENT_SCALES = (2, 4)  # 800x160x32 with 32³ crops, 1600x320x64 with 64³ crop
 PATH_STATS = PATH_EXPERIMENTS / "02_cooldata-value-distribution" / "results" / "normalization_stats.csv"
 TRAIN_CONFIG = TrainConfig()
 DEVICE = "cuda"
-
-path_results = create_experiment(TITLE, GOAL, HYPOTHESIS, [TRAIN_CONFIG])
-setup_logging(log_file=path_results / "run.log")
-log = get_logger("coolfrog.experiment")
-stats = NormalizationStats.load(PATH_STATS)
-stats.save(path_results / "normalization_stats.csv")
-excluded = pl.read_csv(PATH_STATS.with_name("excluded_designs.csv"))["design_id"]
-metadata = CoolMetadata(
-    CoolMetadata.load(HOST_CONFIG.n_splits, HOST_CONFIG.idx_split).designs.filter(~pl.col("design_id").is_in(excluded))
-)
 
 
 def fine_tune(latent_scale: int) -> None:
@@ -76,6 +67,15 @@ def fine_tune(latent_scale: int) -> None:
     plot_slices(reference, prediction, grid).savefig(path_run / "slices_first_validation_design.png", dpi=150)
 
 
-for latent_scale in LATENT_SCALES:
-    fine_tune(latent_scale)
-    torch.cuda.empty_cache()
+with run_experiment(TITLE, GOAL, HYPOTHESIS, [TRAIN_CONFIG], hub=HuggingFaceHub()) as path_results:
+    setup_logging(log_file=path_results / "run.log")
+    log = get_logger("coolfrog.experiment")
+    stats = NormalizationStats.load(PATH_STATS)
+    stats.save(path_results / "normalization_stats.csv")
+    excluded = pl.read_csv(PATH_STATS.with_name("excluded_designs.csv"))["design_id"]
+    metadata = CoolMetadata(
+        CoolMetadata.load(HOST_CONFIG.n_splits, HOST_CONFIG.idx_split).designs.filter(~pl.col("design_id").is_in(excluded))
+    )
+    for latent_scale in LATENT_SCALES:
+        fine_tune(latent_scale)
+        torch.cuda.empty_cache()

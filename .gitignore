@@ -14,5 +14,3 @@ build/
 data/
 node_modules/
 *.tsbuildinfo
-
-experiments/**/results/histograms.npz
