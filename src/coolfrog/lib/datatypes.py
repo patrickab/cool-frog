@@ -4,6 +4,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import ClassVar
 
 import polars as pl
 from tensordict import tensorclass
@@ -66,23 +67,21 @@ class Grid:
     - `latent_shape = aspect_ratio * latent_scale`, Tadpole latent cells along x, y, z
     - `shape = latent_shape * downsampling_factor`, voxels along x, y, z
     - Every axis is a whole number of latent cells, so reconstructions keep the input shape
+    - `aspect_ratio` and `extent` are fixed by the CoolData domain, class constants kept out of saved configs
 
     Attributes
     ----------
     latent_scale : int
         Multiplier of the smallest valid grid, 1 -> latent (25, 5, 1), voxels (400, 80, 16).
-    aspect_ratio : tuple[int, int, int]
-        Domain proportions x:y:z, matches `extent`.
     downsampling_factor : int
         Voxels per Tadpole latent cell along each axis, 2^4 from its four stride-2 layers.
-    extent : tuple[float, float, float]
-        Domain size in m along x (flow), y (width), z (height).
     """
 
+    aspect_ratio: ClassVar[tuple[int, int, int]] = (25, 5, 1)  # domain proportions x:y:z, matches `extent`
+    extent: ClassVar[tuple[float, float, float]] = (0.5, 0.1, 0.02)  # domain size in m along x (flow), y (width), z (height)
+
     latent_scale: int
-    aspect_ratio: tuple[int, int, int] = (25, 5, 1)
     downsampling_factor: int = 16
-    extent: tuple[float, float, float] = (0.5, 0.1, 0.02)
 
     def __post_init__(self) -> None:
         """Raise ValueError unless `latent_scale` is positive."""
