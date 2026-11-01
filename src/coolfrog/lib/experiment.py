@@ -13,6 +13,7 @@ import subprocess
 import sys
 from typing import TYPE_CHECKING, Any
 
+import polars as pl
 import yaml
 
 from coolfrog.lib.huggingface import HubFile, HuggingFaceHub
@@ -105,6 +106,37 @@ def write_configs(configs: Sequence["DataclassInstance"], path: Path) -> None:
     # json round trip turns Path and tuple into yaml-safe types
     config_dict = {type(config).__name__: asdict(config) for config in configs}
     path.write_text(yaml.safe_dump(json.loads(json.dumps(config_dict, default=str))))
+
+
+def markdown_table(dataframe: pl.DataFrame, significant_digits: int = 3) -> str:
+    """Render `dataframe` with column names as a markdown table, floats rounded to `significant_digits`, nulls empty."""
+    formatted = dataframe.with_columns(
+        pl.col(pl.Float32, pl.Float64).map_elements(lambda value: f"{value:.{significant_digits}g}", return_dtype=pl.String)
+    ).with_columns(pl.all().cast(pl.String).str.replace_all("|", r"\|", literal=True).fill_null(""))
+    with pl.Config(
+        tbl_formatting="MARKDOWN",
+        tbl_hide_column_data_types=True,
+        tbl_hide_dataframe_shape=True,
+        tbl_rows=-1,
+        tbl_cols=-1,
+        tbl_width_chars=10_000,
+        fmt_str_lengths=10_000,
+    ):
+        return str(formatted)
+
+
+def inject_table(path_readme: Path, name: str, dataframe: pl.DataFrame) -> None:
+    """Replace the `<!-- table: name -->` block of the README with `markdown_table(dataframe)`, append it if missing.
+
+    - Text outside the blocks is never touched, move an appended block once by hand, later runs update it in place
+    - Call it as the last step of the script, so only completed runs update the README
+    """
+    block = f"<!-- table: {name} -->\n{markdown_table(dataframe)}\n<!-- /table -->"
+    pattern = re.compile(rf"<!-- table: {re.escape(name)} -->\n.*?<!-- /table -->", re.DOTALL)
+    readme, n_replaced = pattern.subn(lambda _: block, path_readme.read_text())
+    if n_replaced == 0:
+        readme = f"{readme.rstrip()}\n\n{block}\n"
+    path_readme.write_text(readme)
 
 
 def large_file_patterns(path: Path = PATH_LARGE_FILE_PATTERNS) -> tuple[str, ...]:
