@@ -1,0 +1,2 @@
+# Notebooks embed plot outputs as base64 and would dominate GitHub's byte-based language stats
+*.ipynb linguist-documentation
