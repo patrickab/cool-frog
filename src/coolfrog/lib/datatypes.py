@@ -67,21 +67,21 @@ class Grid:
     - `latent_shape = aspect_ratio * latent_scale`, Tadpole latent cells along x, y, z
     - `shape = latent_shape * downsampling_factor`, voxels along x, y, z
     - Every axis is a whole number of latent cells, so reconstructions keep the input shape
-    - `aspect_ratio` and `extent` are fixed by the CoolData domain, class constants kept out of saved configs
+    - `aspect_ratio` and `extent` are fixed by the CoolData domain, `downsampling_factor` by Tadpole, class constants
+      kept out of saved configs
 
     Attributes
     ----------
     latent_scale : int
         Multiplier of the smallest valid grid, 1 -> latent (25, 5, 1), voxels (400, 80, 16).
-    downsampling_factor : int
-        Voxels per Tadpole latent cell along each axis, 2^4 from its four stride-2 layers.
     """
 
     aspect_ratio: ClassVar[tuple[int, int, int]] = (25, 5, 1)  # domain proportions x:y:z, matches `extent`
     extent: ClassVar[tuple[float, float, float]] = (0.5, 0.1, 0.02)  # domain size in m along x (flow), y (width), z (height)
+    # voxels per latent cell per axis, 2 conv + 2 transformer stride-2 layers, identical for every Tadpole size
+    downsampling_factor: ClassVar[int] = 16
 
     latent_scale: int
-    downsampling_factor: int = 16
 
     def __post_init__(self) -> None:
         """Raise ValueError unless `latent_scale` is positive."""
