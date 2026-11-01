@@ -3,8 +3,8 @@
 import polars as pl
 
 from coolfrog.engine.cooldata import CoolData, CoolMetadata, create_dataloader
-from coolfrog.lib.config import HOST_CONFIG, DataConfig
-from coolfrog.lib.datatypes import CHANNELS, Grid, NormalizationStats
+from coolfrog.lib.config import HOST_CONFIG, DataConfig, Grid
+from coolfrog.lib.datatypes import CHANNELS, NormalizationStats
 from coolfrog.lib.experiment import run_experiment
 from coolfrog.lib.log import get_logger, setup_logging, track
 

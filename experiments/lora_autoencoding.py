@@ -9,8 +9,8 @@ from coolfrog.engine.cooldata import CoolData, CoolMetadata, create_dataloader
 from coolfrog.engine.model_evaluation import evaluate, write_metric_tables
 from coolfrog.engine.tadpole import Tadpole
 from coolfrog.engine.training import RandomCrops, fine_tune_autoencoder
-from coolfrog.lib.config import HOST_CONFIG, DataConfig, TadpoleConfig, TrainConfig
-from coolfrog.lib.datatypes import Grid, NormalizationStats
+from coolfrog.lib.config import HOST_CONFIG, DataConfig, Grid, TadpoleConfig, TrainConfig
+from coolfrog.lib.datatypes import NormalizationStats
 from coolfrog.lib.experiment import PATH_EXPERIMENTS, run_experiment, write_configs
 from coolfrog.lib.huggingface import HuggingFaceHub
 from coolfrog.lib.log import get_logger, setup_logging
