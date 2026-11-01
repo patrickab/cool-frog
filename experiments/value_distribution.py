@@ -18,7 +18,7 @@ GOAL = (
 )
 HYPOTHESIS = None
 
-DATA_CONFIG = DataConfig(grid=Grid(latent_scale=1), batch_size=1, num_workers=8)
+DATA_CONFIG = DataConfig(grid=Grid(latent_scale=4), batch_size=1, num_workers=8)  # ~3.3 GB peak per worker
 N_BINS = 2048
 QUANTILES = (1e-4, 1e-3, 1e-2, 0.5, 0.99, 0.999, 0.9999)
 # Outlier rule: a design is excluded when any fluid voxel breaks it
@@ -60,20 +60,21 @@ BIN_CENTERS = from_bin_space(BIN_LOW + (torch.arange(N_BINS) + 0.5) * BIN_WIDTH)
 
 
 def design_summary(batch: list[FlowField]) -> dict[str, torch.Tensor]:
-    """Histogram (C, N_BINS) and exact min, max, sum, squared sum (C,) of one design's fluid voxels, runs in the workers."""
+    """Histogram (C, N_BINS) and exact min, max, sum, squared sum (C,) of one design's fluid voxels, runs in the workers.
+
+    - One channel at a time in float64, ~0.2 GB per channel at 1600x320x64 instead of ~1.5 GB for all
+    """
     (flowfield,) = batch
-    fluid = flowfield.fields[:, flowfield.mask].double()  # (C, n_fluid)
-    bin_index = ((to_bin_space(fluid) - BIN_LOW) / BIN_WIDTH).long().clamp(0, N_BINS - 1)
     counts = torch.zeros(len(CHANNELS), N_BINS, dtype=torch.int32)
-    counts.scatter_add_(1, bin_index, torch.ones_like(bin_index, dtype=torch.int32))
-    return {
-        "design_id": flowfield.design_id,
-        "counts": counts,
-        "min": fluid.amin(1),
-        "max": fluid.amax(1),
-        "sum": fluid.sum(1),
-        "sum_squares": fluid.square().sum(1),
-    }
+    summary = {name: torch.empty(len(CHANNELS), dtype=torch.float64) for name in ("min", "max", "sum", "sum_squares")}
+    for channel in range(len(CHANNELS)):
+        fluid = flowfield.fields[channel][flowfield.mask].double()  # (n_fluid,)
+        binned = torch.asinh((fluid - OFFSET[channel]) / SCALE[channel])  # `to_bin_space` of one channel
+        bin_index = ((binned - BIN_LOW[channel]) / BIN_WIDTH[channel]).long().clamp(0, N_BINS - 1)
+        counts[channel] = torch.bincount(bin_index, minlength=N_BINS)
+        summary["min"][channel], summary["max"][channel] = fluid.min(), fluid.max()
+        summary["sum"][channel], summary["sum_squares"][channel] = fluid.sum(), fluid.square().sum()
+    return {"design_id": flowfield.design_id, "counts": counts, **summary}
 
 
 def histogram_quantiles(counts: np.ndarray, quantiles: tuple[float, ...] = QUANTILES) -> np.ndarray:
