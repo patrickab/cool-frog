@@ -15,6 +15,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 import os
 from pathlib import Path
+import warnings
 
 from huggingface_hub import CommitOperationAdd, CommitOperationCopy, CommitOperationDelete, HfApi, hf_hub_download
 
@@ -74,4 +75,6 @@ class HuggingFaceHub:
         copies = [CommitOperationCopy(source, destination) for source, destination in moves.items()]
         deletes = [CommitOperationDelete(source) for source in moves if source not in uploads]
         adds = [CommitOperationAdd(path_in_repo, local_path) for path_in_repo, local_path in uploads.items()]
-        return self.api.create_commit(self.repo_id, copies + deletes + adds, commit_message=message, revision=HEAD).oid
+        with warnings.catch_warnings():  # parquet in a model repository is intended, one repository for all artifacts
+            warnings.filterwarnings("ignore", message="It seems that you are about to commit a data file")
+            return self.api.create_commit(self.repo_id, copies + deletes + adds, commit_message=message, revision=HEAD).oid
