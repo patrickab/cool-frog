@@ -25,16 +25,8 @@ import pyvista as pv
 import torch
 from torch.utils.data import DataLoader, Dataset, random_split
 
-from coolfrog.lib.config import HOST_CONFIG, DataConfig, Range
-from coolfrog.lib.datatypes import (
-    CHANNELS,
-    PARAM_COLUMNS,
-    SURFACE_CHANNELS,
-    Channel,
-    FlowField,
-    Grid,
-    SurfaceChannel,
-)
+from coolfrog.lib.config import HOST_CONFIG, DataConfig, Grid, Range
+from coolfrog.lib.datatypes import CHANNELS, PARAM_COLUMNS, SURFACE_CHANNELS, Channel, FlowField, SurfaceChannel
 from coolfrog.lib.log import get_logger, progress_bar
 
 CACHE_DIR = HOST_CONFIG.cache_dir

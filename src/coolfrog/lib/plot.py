@@ -7,7 +7,8 @@ from matplotlib.figure import Figure
 import numpy as np
 import pyvista as pv
 
-from coolfrog.lib.datatypes import CHANNELS, Channel, FlowField, Grid
+from coolfrog.lib.config import Grid
+from coolfrog.lib.datatypes import CHANNELS, Channel, FlowField
 
 SOLID_COLOR = "#999999"
 

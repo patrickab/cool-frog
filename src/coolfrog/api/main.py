@@ -17,8 +17,8 @@ import torch
 from coolfrog.engine.cooldata import CACHE_DIR, CoolData, CoolMetadata, SurfaceMesh, UnknownDesignError
 from coolfrog.engine.model_evaluation import nrmse, spectral_loss
 from coolfrog.engine.tadpole import Tadpole
-from coolfrog.lib.config import TadpoleConfig
-from coolfrog.lib.datatypes import CHANNELS, PARAM_COLUMNS, PARAM_UNITS, SURFACE_CHANNELS, FlowField, Grid, NormalizationStats
+from coolfrog.lib.config import Grid, TadpoleConfig
+from coolfrog.lib.datatypes import CHANNELS, PARAM_COLUMNS, PARAM_UNITS, SURFACE_CHANNELS, FlowField, NormalizationStats
 from coolfrog.lib.log import get_logger, setup_logging
 
 app = FastAPI(title="Coolfrog")
