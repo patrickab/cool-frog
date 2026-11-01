@@ -8,7 +8,7 @@ from torch import nn
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 
-from coolfrog.engine.model_evaluation import evaluate, fluid_mse
+from coolfrog.engine.model_evaluation import evaluate, fluid_mse, spectral_distance
 from coolfrog.engine.tadpole import Tadpole
 from coolfrog.engine.training_metrics import TrainingMetrics
 from coolfrog.lib.config import TrainConfig
@@ -84,6 +84,7 @@ def fine_tune_autoencoder(
     """Accumulated bf16 updates on `train_loader` crops with periodic full-domain `evaluate`.
 
     - Update 0 is validated before training, the zero-shot baseline under LoRA
+    - Logs the spectral loss of the training crops next to the MSE they are trained on
     - Runs under the live terminal dashboard, plainly when there is no terminal
     - Stop key `q` in the dashboard raises KeyboardInterrupt
     """
@@ -110,19 +111,22 @@ def _train(
     batches = endless(train_loader)
     model.train()
     for update in range(1, config.updates + 1):
-        mse_sum, kl_sum = 0.0, 0.0
+        mse_sum, spectral_sum, kl_sum = 0.0, 0.0, 0.0
         for _ in range(config.accumulation_steps):
             crops = next(batches).to(device, non_blocking=True)
             with torch.autocast(device.type, dtype=torch.bfloat16):
                 prediction, latent = model(crops)
             mse, kl = fluid_mse(prediction, crops), latent.kl_divergence().mean()
             ((mse + config.kl_weight * kl) / config.accumulation_steps).backward()  # gradient = mean over all passes
-            mse_sum, kl_sum = mse_sum + mse.item(), kl_sum + kl.item()
+            with torch.no_grad():  # monitored only, the loss stays fluid MSE
+                spectral = spectral_distance(prediction.detach(), crops).mean()
+            mse_sum, spectral_sum, kl_sum = mse_sum + mse.item(), spectral_sum + spectral.item(), kl_sum + kl.item()
         learning_rate = optimizer.param_groups[0]["lr"]  # used by this update, the scheduler then sets the next
         optimizer.step()
         scheduler.step()
         optimizer.zero_grad(set_to_none=True)
-        metrics.log_update(update, mse_sum / config.accumulation_steps, kl_sum / config.accumulation_steps, learning_rate)
+        steps = config.accumulation_steps
+        metrics.log_update(update, mse_sum / steps, spectral_sum / steps, kl_sum / steps, learning_rate)
         if update % config.validate_every == 0 or update == config.updates:
-            logger.info("update %d train MSE %.3e", update, mse_sum / config.accumulation_steps)
+            logger.info("update %d train MSE %.3e", update, mse_sum / steps)
             metrics.log_validation(update, evaluate(model, validation_loader, stats))

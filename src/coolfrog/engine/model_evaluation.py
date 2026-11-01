@@ -1,7 +1,6 @@
 """Reconstruction metrics as polars tables, one row per design and one column per channel, plus the fluid training loss."""
 
-from collections.abc import Iterable, Mapping
-from pathlib import Path
+from collections.abc import Iterable
 
 import polars as pl
 import torch
@@ -22,12 +21,17 @@ def nrmse(prediction: FlowField, reference: FlowField) -> pl.DataFrame:
     return _per_channel_table(100 * (mean_squared_error / reference_variance).sqrt().squeeze(SPATIAL_DIMS), reference)
 
 
-def spectral_loss(prediction: FlowField, reference: FlowField) -> pl.DataFrame:
-    """Mean L1 distance of log1p FFT amplitudes over the full grid, solids zeroed in both."""
+def spectral_distance(prediction: FlowField, reference: FlowField) -> torch.Tensor:
+    """(B, C) mean L1 distance of log1p FFT amplitudes over the full grid, solids zeroed in both, float32."""
     fluid = reference.mask.unsqueeze(-4)
-    prediction_amplitude = torch.fft.rfftn(prediction.fields * fluid, dim=SPATIAL_DIMS).abs().log1p()
-    reference_amplitude = torch.fft.rfftn(reference.fields * fluid, dim=SPATIAL_DIMS).abs().log1p()
-    return _per_channel_table((prediction_amplitude - reference_amplitude).abs().mean(dim=SPATIAL_DIMS), reference)
+    prediction_amplitude = torch.fft.rfftn(prediction.fields.float() * fluid, dim=SPATIAL_DIMS).abs().log1p()
+    reference_amplitude = torch.fft.rfftn(reference.fields.float() * fluid, dim=SPATIAL_DIMS).abs().log1p()
+    return (prediction_amplitude - reference_amplitude).abs().mean(dim=SPATIAL_DIMS)
+
+
+def spectral_loss(prediction: FlowField, reference: FlowField) -> pl.DataFrame:
+    """`spectral_distance` per design and channel."""
+    return _per_channel_table(spectral_distance(prediction, reference), reference)
 
 
 def fluid_mse(prediction: FlowField, reference: FlowField) -> torch.Tensor:
@@ -51,20 +55,6 @@ def evaluate(model: Tadpole, flowfields: Iterable[FlowField], stats: Normalizati
             spectral_tables.append(spectral_loss(prediction, reference))  # in normalized units
     model.train(was_training)
     return {"nrmse": pl.concat(nrmse_tables), "spectral_loss": pl.concat(spectral_tables)}
-
-
-def summarize(per_design: pl.DataFrame) -> pl.DataFrame:
-    """Mean, median and max per channel, one row per statistic."""
-    channels = pl.col([channel.value for channel in CHANNELS])
-    statistics = {"mean": channels.mean(), "median": channels.median(), "max": channels.max()}
-    return pl.concat([per_design.select(pl.lit(name).alias("statistic"), values) for name, values in statistics.items()])
-
-
-def write_metric_tables(tables: Mapping[str, pl.DataFrame], path_results: Path) -> None:
-    """Write `<name>_per_design.csv` and `<name>_summary.csv` per metric."""
-    for name, per_design in tables.items():
-        per_design.write_csv(path_results / f"{name}_per_design.csv")
-        summarize(per_design).write_csv(path_results / f"{name}_summary.csv")
 
 
 def _fluid_sum(values: torch.Tensor, fluid: torch.Tensor) -> torch.Tensor:

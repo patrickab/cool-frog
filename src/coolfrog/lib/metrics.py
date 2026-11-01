@@ -1,9 +1,8 @@
-"""Generic metric logging: named scalar series over steps, shared by training loops, dashboards and CSV export."""
+"""Generic metric logging: named scalar series over steps, shared by training loops, dashboards and table export."""
 
 from bisect import bisect_left
 from collections import defaultdict
 from collections.abc import Mapping
-from pathlib import Path
 import threading
 
 import polars as pl
@@ -107,10 +106,6 @@ class MetricTracker:
         for other in frames[1:]:
             frame = frame.join(other, on="step", how="full", coalesce=True)
         return frame.sort("step")
-
-    def write_csv(self, path: Path) -> None:
-        """Write `to_frame` as CSV."""
-        self.to_frame().write_csv(path)
 
 
 class WindowMean:

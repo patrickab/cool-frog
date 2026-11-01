@@ -1,8 +1,7 @@
-"""Metrics of one fine-tuning run: windowed training means, validation tables, dashboard layout and CSV export."""
+"""Metrics of one fine-tuning run: windowed training means, validation medians, dashboard layout and table export."""
 
 from collections.abc import Mapping
 from itertools import cycle
-from pathlib import Path
 import time
 
 import polars as pl
@@ -15,7 +14,8 @@ from coolfrog.lib.metrics import MetricTracker, WindowMean
 
 logger = get_logger(__name__)
 
-MSE, KL, LEARNING_RATE, SECONDS_PER_UPDATE = "train/mse", "train/kl", "train/learning_rate", "train/seconds_per_update"
+MSE, SPECTRAL, KL = "train/mse", "train/spectral_loss", "train/kl"
+LEARNING_RATE, SECONDS_PER_UPDATE = "train/learning_rate", "train/seconds_per_update"
 NRMSE, SPECTRAL_LOSS = "nrmse", "spectral_loss"  # keys of `evaluate`
 
 
@@ -28,14 +28,14 @@ class TrainingMetrics:
     """Logging, display and export of one `fine_tune_autoencoder` run, keyed by update.
 
     - Train values are averaged over `log_every` updates, plus the final one
-    - Validation logs per-channel means over the validation designs and their channel mean
+    - Validation logs per-channel medians over the validation designs and their channel mean
     - `tracker` holds everything, `spec` tells `run_dashboard` how to show it
 
     Examples
     --------
     >>> metrics = TrainingMetrics(TrainConfig(updates=100))
-    >>> metrics.log_update(1, mse=0.1, kl=3.0, learning_rate=5e-5)
-    >>> metrics.write_csv(path_run / "metrics.csv")
+    >>> metrics.log_update(1, mse=0.1, spectral=0.4, kl=3.0, learning_rate=5e-5)
+    >>> metrics.to_frame().write_parquet(path_run / "metrics.parquet")
     """
 
     def __init__(self, config: TrainConfig, title: str = "Fine-tuning", log_every: int = 10) -> None:
@@ -46,22 +46,26 @@ class TrainingMetrics:
         self._window = WindowMean()
         self._tick = time.perf_counter()
 
-    def log_update(self, update: int, mse: float, kl: float, learning_rate: float) -> None:
+    def log_update(self, update: int, mse: float, spectral: float, kl: float, learning_rate: float) -> None:
         """Record one optimizer update, KeyboardInterrupt when the dashboard asked to stop."""
         self.tracker.raise_if_stopped()
         now = time.perf_counter()
-        self._window.add({MSE: mse, KL: kl, LEARNING_RATE: learning_rate, SECONDS_PER_UPDATE: now - self._tick})
+        self._window.add({MSE: mse, SPECTRAL: spectral, KL: kl, LEARNING_RATE: learning_rate, SECONDS_PER_UPDATE: now - self._tick})
         self._tick = now
         if update % self.log_every == 0 or update == self.config.updates:
             self.tracker.log(update, self._window.flush())
 
     def log_validation(self, update: int, per_design_tables: Mapping[str, pl.DataFrame]) -> None:
-        """Record the mean per channel and over channels of each `evaluate` table, resets the update timer."""
+        """Record the median over designs per channel and its mean over channels of each `evaluate` table.
+
+        - Median, as a few designs dominate the mean, e.g. p NRMSE of designs with nearly constant pressure
+        - Resets the update timer, validation time does not count as update time
+        """
         values: dict[str, float] = {}
         for metric, per_design in per_design_tables.items():
-            channel_means = {channel.value: per_design[channel.value].mean() for channel in CHANNELS}
-            values[validation_name(metric)] = sum(channel_means.values()) / len(channel_means)
-            values |= {validation_name(metric, channel): mean for channel, mean in channel_means.items()}
+            channel_medians = {channel.value: per_design[channel.value].median() for channel in CHANNELS}
+            values[validation_name(metric)] = sum(channel_medians.values()) / len(channel_medians)
+            values |= {validation_name(metric, channel): median for channel, median in channel_medians.items()}
         self.tracker.log(update, values)
         logger.info(
             "update %d validation NRMSE %.3f %% spectral loss %.3e",
@@ -71,9 +75,9 @@ class TrainingMetrics:
         )
         self._tick = time.perf_counter()
 
-    def write_csv(self, path: Path) -> None:
-        """Write all series, one row per update, empty where a series skipped it."""
-        self.tracker.write_csv(path)
+    def to_frame(self) -> pl.DataFrame:
+        """All series, one row per update, null where a series skipped it."""
+        return self.tracker.to_frame().rename({"step": "update"})
 
     def _create_spec(self, title: str) -> DashboardSpec:
         config = self.config
@@ -88,15 +92,16 @@ class TrainingMetrics:
             title=title,
             charts=(
                 ChartSpec(
-                    "Train MSE and learning rate",
-                    (SeriesSpec(MSE, "mse", PALETTE[0]), SeriesSpec(LEARNING_RATE, "lr", PALETTE[2], side="right")),
+                    "Train MSE and spectral loss",
+                    (SeriesSpec(MSE, "mse", PALETTE[0]), SeriesSpec(SPECTRAL, "spectral", PALETTE[2], side="right")),
                     y_label="mse",
                 ),
-                ChartSpec("Validation NRMSE [%]", channel_lines(NRMSE), y_label="nrmse"),
-                ChartSpec("Validation spectral loss", channel_lines(SPECTRAL_LOSS), y_label="spectral"),
+                ChartSpec("Validation NRMSE [%], median", channel_lines(NRMSE), y_label="nrmse"),
+                ChartSpec("Validation spectral loss, median", channel_lines(SPECTRAL_LOSS), y_label="spectral"),
             ),
             columns=(
                 ColumnSpec("Train MSE", MSE, "magenta"),
+                ColumnSpec("Train spectral", SPECTRAL, "magenta"),
                 ColumnSpec("KL", KL, "magenta"),
                 ColumnSpec("LR", LEARNING_RATE, "yellow"),
                 ColumnSpec("Val NRMSE %", validation_name(NRMSE), "green", "{:.3f}"),
