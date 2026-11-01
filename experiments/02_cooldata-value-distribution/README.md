@@ -48,4 +48,9 @@ Normalization of the 5667 curated designs: q0.0001 → -1, q0.9999 → 1, log10 
 - Exclude the 25 flagged designs (0.4 % of the data) as physically implausible, likely diverged simulations.
 - Put k and ε on a log scale: they span ~9 to 10 decades between q0.0001 and q0.9999, which no linear [-1, 1] scale resolves.
 - Normalize the remaining channels by quantiles of the curated set, not min-max. p keeps a minor bump around 1e4 Pa from unflagged designs.
+- Heavy tails remain after normalization (Vz up to 14.5, p 13.3, Vy 7.5) and are left unclipped for now.
 - Next: rerun at 1600x320x64 to confirm the distribution and the outlier list at training resolution.
+
+## Open questions
+
+- MSE in log10 space weighs relative errors of k and ε in quiescent regions as much as in turbulent ones: keep it, or weight the loss?
