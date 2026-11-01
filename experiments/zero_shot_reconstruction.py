@@ -29,7 +29,7 @@ loader = create_dataloader(dataset, DATA_CONFIG, shuffle=False)
 log.info("%d designs on grid %s", len(dataset), DATA_CONFIG.grid.shape)
 
 # no training split in zero-shot, so global per-channel min/max over all designs
-stats = NormalizationStats.compute(metadata, DATA_CONFIG)
+stats = NormalizationStats.from_flowfields(track(loader, "Normalization stats"))
 model = Tadpole(TADPOLE_CONFIG).to(DEVICE).eval()
 
 tables = evaluate(model, track(loader, "Reconstructing"), stats)

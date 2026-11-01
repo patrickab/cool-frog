@@ -4,17 +4,10 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import polars as pl
 from tensordict import tensorclass
 import torch
-
-from coolfrog.lib.log import track
-
-if TYPE_CHECKING:
-    from coolfrog.engine.cooldata import CoolMetadata
-    from coolfrog.lib.config import DataConfig
 
 
 class Channel(StrEnum):
@@ -61,6 +54,9 @@ PARAM_COLUMNS: tuple[str, ...] = (
 
 # Units of `PARAM_COLUMNS` where known, others are unitless or undocumented upstream
 PARAM_UNITS: dict[str, str] = {"V": "m/s"}
+
+# Floor of k and ε in CoolData, log-normalized channels are clamped to it before log10, solids hold 0
+LOG_FLOOR = 1e-10
 
 
 @dataclass(frozen=True)
@@ -114,34 +110,28 @@ class Grid:
 
 @tensorclass
 class NormalizationStats:
-    """Global per-channel fluid min and max over a design selection.
+    """Per-channel value range mapped to [-1, 1], in log10 space for log channels.
+
+    - Values outside [low, high] map outside [-1, 1], nothing is clipped
+    - Log channels are floored at `LOG_FLOOR` first, solids hold 0
 
     Attributes
     ----------
-    channel_min : torch.Tensor
-        (..., C, 1, 1, 1)
-    channel_max : torch.Tensor
-        (..., C, 1, 1, 1)
+    low : torch.Tensor
+        (..., C, 1, 1, 1) maps to -1, log10 value for log channels.
+    high : torch.Tensor
+        (..., C, 1, 1, 1) maps to 1, log10 value for log channels.
+    is_log : torch.Tensor
+        (..., C, 1, 1, 1) bool, True = normalize log10 of the values.
     """
 
-    channel_min: torch.Tensor
-    channel_max: torch.Tensor
-
-    @classmethod
-    def compute(cls, metadata: "CoolMetadata", config: "DataConfig") -> "NormalizationStats":
-        """Fluid min and max of every `metadata` design on `config.grid`, read with `config` batching and workers.
-
-        - Voxelizes uncached designs first, like `CoolData`
-        - Same stats at another resolution need the same `metadata` on that grid
-        """
-        from coolfrog.engine.cooldata import CoolData, create_dataloader  # noqa: PLC0415, engine imports this module
-
-        loader = create_dataloader(CoolData(metadata, config), config, shuffle=False)
-        return cls.from_flowfields(track(loader, f"Normalization stats {'x'.join(map(str, config.grid.shape))}"))
+    low: torch.Tensor
+    high: torch.Tensor
+    is_log: torch.Tensor
 
     @classmethod
     def from_flowfields(cls, flowfields: Iterable["FlowField"]) -> "NormalizationStats":
-        """Per-channel fluid min and max over physical flow fields, reduced batch by batch, ValueError for a constant channel."""
+        """Linear per-channel fluid min and max over physical flow fields, batch by batch, ValueError for a constant channel."""
         channel_min, channel_max = None, None
         for flowfield in flowfields:
             fluid = flowfield.mask.unsqueeze(-4)
@@ -153,15 +143,17 @@ class NormalizationStats:
             raise ValueError("no flow fields to reduce")
         if (channel_max <= channel_min).any():
             raise ValueError(f"constant or fluid-free channel, min {channel_min.tolist()}, max {channel_max.tolist()}")
-        return cls(channel_min=channel_min.view(-1, 1, 1, 1), channel_max=channel_max.view(-1, 1, 1, 1), batch_size=[])
+        low, high = channel_min.view(-1, 1, 1, 1), channel_max.view(-1, 1, 1, 1)
+        return cls(low=low, high=high, is_log=torch.zeros_like(low, dtype=torch.bool), batch_size=[])
 
     def save(self, path: Path) -> None:
-        """Write `channel`, `min`, `max` as CSV, one row per channel."""
+        """Write `channel`, `transform` (linear | log10), `low`, `high` as CSV, one row per channel."""
         table = pl.DataFrame(
             {
                 "channel": [channel.value for channel in CHANNELS],
-                "min": self.channel_min.flatten().tolist(),
-                "max": self.channel_max.flatten().tolist(),
+                "transform": ["log10" if is_log else "linear" for is_log in self.is_log.flatten().tolist()],
+                "low": self.low.flatten().tolist(),
+                "high": self.high.flatten().tolist(),
             }
         )
         table.write_csv(path)
@@ -172,16 +164,26 @@ class NormalizationStats:
         table = pl.read_csv(path)
         if table["channel"].to_list() != [channel.value for channel in CHANNELS]:
             raise ValueError(f"channels in {path} differ from CHANNELS: {table['channel'].to_list()}")
-        channel_min, channel_max = (table[column].to_torch().float().view(-1, 1, 1, 1) for column in ("min", "max"))
-        return cls(channel_min=channel_min, channel_max=channel_max, batch_size=[])
+        low, high = (table[column].to_torch().float().view(-1, 1, 1, 1) for column in ("low", "high"))
+        is_log = (table["transform"] == "log10").to_torch().view(-1, 1, 1, 1)
+        return cls(low=low, high=high, is_log=is_log, batch_size=[])
 
     def select_channels(self, channel_index: torch.Tensor) -> "NormalizationStats":
         """Stats of single-channel fields batched along `channel_index`, e.g. crops: (N,) -> batch [N], (N, 1, 1, 1, 1)."""
         return NormalizationStats(
-            channel_min=self.channel_min[channel_index].unsqueeze(1),
-            channel_max=self.channel_max[channel_index].unsqueeze(1),
+            low=self.low[channel_index].unsqueeze(1),
+            high=self.high[channel_index].unsqueeze(1),
+            is_log=self.is_log[channel_index].unsqueeze(1),
             batch_size=[len(channel_index)],
         )
+
+    def transform(self, fields: torch.Tensor) -> torch.Tensor:
+        """Physical values -> the space `low` and `high` live in."""
+        return torch.where(self.is_log, fields.clamp(min=LOG_FLOOR).log10(), fields)
+
+    def inverse_transform(self, fields: torch.Tensor) -> torch.Tensor:
+        """Inverse of `transform`, log channels come back floored at `LOG_FLOOR`."""
+        return torch.where(self.is_log, 10**fields, fields)
 
 
 def _reduce_to_channels(fields: torch.Tensor, reduction: Callable[..., torch.Tensor]) -> torch.Tensor:
@@ -214,18 +216,18 @@ class FlowField:
     stats: NormalizationStats | None = None
 
     def normalize(self, stats: NormalizationStats) -> "FlowField":
-        """Scale fields to [-1, 1] and attach `stats`, one broadcast over the whole batch."""
+        """Map [low, high] of the transformed fields to [-1, 1] and attach `stats`, one broadcast over the whole batch."""
         if self.stats is not None:
             raise ValueError("flow field is already normalized")
         stats = stats.to(self.fields.device).expand(self.batch_size)
-        fields = 2 * (self.fields - stats.channel_min) / (stats.channel_max - stats.channel_min) - 1
+        fields = 2 * (stats.transform(self.fields) - stats.low) / (stats.high - stats.low) - 1
         return self.replace(fields=fields, stats=stats)
 
     def denormalize(self) -> "FlowField":
         """Restore physical units and drop `stats`."""
         if self.stats is None:
             raise ValueError("flow field is not normalized")
-        fields = (self.fields + 1) * (self.stats.channel_max - self.stats.channel_min) / 2 + self.stats.channel_min
+        fields = self.stats.inverse_transform((self.fields + 1) * (self.stats.high - self.stats.low) / 2 + self.stats.low)
         return self.replace(fields=fields, stats=None)
 
 

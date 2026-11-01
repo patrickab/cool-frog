@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 
+import polars as pl
 import torch
 
 from coolfrog.engine.cooldata import CoolData, CoolMetadata, create_dataloader
@@ -25,7 +26,7 @@ HYPOTHESIS = (
 )
 
 LATENT_SCALES = (2, 4)  # 800x160x32 with 32³ crops, 1600x320x64 with 64³ crops
-PATH_STATS = PATH_EXPERIMENTS / "01_min-max-normalization-stats-on-cooldata" / "results" / "normalization_stats.csv"  # 1600x320x64
+PATH_STATS = PATH_EXPERIMENTS / "02_cooldata-value-distribution" / "results" / "normalization_stats.csv"
 TRAIN_CONFIG = TrainConfig()
 DEVICE = "cuda"
 
@@ -34,7 +35,10 @@ setup_logging(log_file=path_results / "run.log")
 log = get_logger("coolfrog.experiment")
 stats = NormalizationStats.load(PATH_STATS)
 stats.save(path_results / "normalization_stats.csv")
-metadata = CoolMetadata.load(HOST_CONFIG.n_splits, HOST_CONFIG.idx_split)
+excluded = pl.read_csv(PATH_STATS.with_name("excluded_designs.csv"))["design_id"]
+metadata = CoolMetadata(
+    CoolMetadata.load(HOST_CONFIG.n_splits, HOST_CONFIG.idx_split).designs.filter(~pl.col("design_id").is_in(excluded))
+)
 
 
 def fine_tune(latent_scale: int) -> None:

@@ -47,7 +47,7 @@ def evaluate(model: Tadpole, flowfields: Iterable[FlowField], stats: Normalizati
         for flowfield in flowfields:
             reference = flowfield.to(device).normalize(stats)
             prediction = model.decode(model.encode(reference))
-            nrmse_tables.append(nrmse(prediction, reference))  # scale-invariant, equals physical-unit NRMSE
+            nrmse_tables.append(nrmse(prediction, reference))  # scale-invariant: physical units, log10 space for log channels
             spectral_tables.append(spectral_loss(prediction, reference))  # in normalized units
     model.train(was_training)
     return {"nrmse": pl.concat(nrmse_tables), "spectral_loss": pl.concat(spectral_tables)}
