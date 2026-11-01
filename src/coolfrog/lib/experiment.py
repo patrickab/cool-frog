@@ -1,4 +1,4 @@
-"""Create experiment folders under `experiments/` and archive the calling script into them."""
+"""Create experiment folders under `experiments/` for the results of the calling script."""
 
 from collections.abc import Sequence
 from dataclasses import asdict
@@ -48,12 +48,6 @@ def find_folder(title: str) -> Path | None:
     return next(PATH_EXPERIMENTS.glob(f"[0-9][0-9]_{kebab_case_slug(title)}"), None)
 
 
-def archive_script(script: Path, folder: Path) -> None:
-    """Copy `script` into `folder`, keeping its file name and leaving the original in place."""
-    if script.parent != folder:
-        shutil.copy(script, folder / script.name)
-
-
 def archive_previous_run(folder: Path) -> None:
     """Move `config.yaml`, `meta.json` and `results/` into `history/<date>_<commit>/`, copy `README.md`."""
     path_meta = folder / "meta.json"
@@ -96,10 +90,10 @@ def create_experiment(
     """Create the experiment folder of the calling script and return its `results/` directory.
 
     - Script anywhere, experiment slug not yet in `experiments/` -> new `experiments/<NN>_<kebab-title>/`
-    - Script inside `experiments/<NN>_*/` or slug already exists (rerun) -> that folder is reused, previous `config.yaml`, `meta.json`, `results/` and a copy of `README.md` move to `history/<date>_<commit>/`
-    - The script is copied into the folder, the original stays where it is (e.g. `experiments/` root for easy execution)
+    - Slug already exists (rerun) -> that folder is reused
+      - previous `config.yaml`, `meta.json`, `results/` and a copy of `README.md` move to `history/<date>_<commit>/`
+    - The script is not copied, `meta.json` records its path and the commit
     - `config.yaml` holds all `configs` keyed by class name
-    - `meta.json` holds the commit and date
     - `README.md` is pre-filled with title, goal and hypothesis, never overwritten (update Result and Conclusion after a rerun)
     """
     script = calling_script()
@@ -112,12 +106,15 @@ def create_experiment(
         print(f"Archived previous run to {folder / 'history'}, update Result and Conclusion in {folder / 'README.md'}")
     path_results = folder / "results"
     path_results.mkdir(parents=True, exist_ok=True)
-    archive_script(script, folder)
 
     write_configs(configs, folder / "config.yaml")
 
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=PATH_EXPERIMENTS.parent, text=True).strip()
-    meta = {"commit": commit, "date": datetime.now(UTC).isoformat(timespec="seconds")}
+    meta = {
+        "commit": commit,
+        "script": str(script.relative_to(PATH_EXPERIMENTS.parent.resolve())),
+        "date": datetime.now(UTC).isoformat(timespec="seconds"),
+    }
     (folder / "meta.json").write_text(json.dumps(meta, indent=2))
 
     path_readme = folder / "README.md"
