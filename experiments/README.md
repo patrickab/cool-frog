@@ -15,7 +15,7 @@ Experiment scripts live in `experiments/` (e.g. `experiments/my_experiment.py`),
 
 ## Large files on Hugging Face
 
-Files matching `experiments/.gitignore` (`*.npz`, `*.pt`, `*.safetensors`, basename globs only) stay out of git and go to the private repo `the-fruit-dude/cool-frog` under the same paths. `HF_TOKEN` must be set when `hub` is given.
+Bulk data matching `experiments/.gitignore` (`*.npz`, `*.parquet`, `*.pt`, `*.safetensors`, basename globs only) stays out of git and goes to the private repo `the-fruit-dude/cool-frog` under the same paths. Human-readable summaries (CSV, logs, configs, plots) stay in git, a CSV too large to read belongs in parquet. `HF_TOKEN` must be set when `hub` is given.
 
 | run ends with | local | Hugging Face |
 |---|---|---|
@@ -26,6 +26,16 @@ Files matching `experiments/.gitignore` (`*.npz`, `*.pt`, `*.safetensors`, basen
 - Push failed or crashed run with useful results: `push_experiment(HuggingFaceHub(), folder)` by hand
 - Fresh clone: `pull_experiment(HuggingFaceHub(), folder)` restores the large files of a live or archived run
 - Load weights pinned to their run: `hub.download(HubEntry.from_dict(meta["hub"]).file("results/adapter.pt"))`
+
+## Tables in the README
+
+Result tables are generated, never typed: `inject_table(path_results, name, dataframe)` as the last step of the script.
+
+- Writes `results/<name>.csv` at full precision, tracked in git
+- Renders column names and values into the README as markdown, floats to 3 significant digits, nulls empty
+- Replaces the block between `<!-- table: name -->` and `<!-- /table -->`, text around it stays untouched
+- First run appends the block at the end of the README, move it once to where it belongs, later runs update it in place
+- Put units in column names (`max [m/s]`) so cells stay numeric
 
 ## README template
 
