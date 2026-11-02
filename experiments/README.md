@@ -31,7 +31,7 @@ Bulk data matching `experiments/.gitignore` (`*.npz`, `*.parquet`, `*.pt`, `*.sa
 
 `meta.json["status"]` is `running` while the script runs (also after a killed process), `complete` after success and `failed` after an exception.
 
-- `run_experiment(..., resume=True)` continues an unfinished live run in its folder instead of archiving it, configs must be identical. Scripts take it as `--resume`, e.g. `python experiments/lora_autoencoding.py --resume`. Each resume is appended to `meta.json["resumed"]`. Ctrl+C on a resumed run only restores its `meta.json`, results stay.
+- `run_experiment(..., resume=True)` continues an unfinished live run in its folder instead of archiving it, configs must be identical. Scripts take it as `--resume`, e.g. `python experiments/finetune_autoencoder.py --resume`. Each resume is appended to `meta.json["resumed"]`. Ctrl+C on a resumed run only restores its `meta.json`, results stay.
 - `Stage(folder)` makes a step resumable, e.g. one latent scale: `stage.save({"metrics.parquet": df, "adapter.pt": model.adapter(), "curves.png": figure})` writes the outputs by suffix, then `stage.json` last. A resumed run skips stages with a `stage.json` and reads their outputs with `stage.load(name)`.
 
 ```python

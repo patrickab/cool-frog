@@ -1,0 +1,10 @@
+TrainConfig:
+  accumulation_steps: 4
+  crops_per_step: 8
+  kl_weight: 1.0e-06
+  learning_rate: 5.0e-05
+  n_validation_designs: 128
+  updates: 14000
+  validate_every: 1000
+  warmup_updates: 1000
+  weight_decay: 1.0e-15

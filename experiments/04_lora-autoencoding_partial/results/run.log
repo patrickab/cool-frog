@@ -1,0 +1,38 @@
+2026-11-02 08:38:51,366 INFO     coolfrog.engine.cooldata: 0 of 5666 designs uncached
+2026-11-02 08:38:51,386 INFO     coolfrog.experiment: 5538 train and 128 validation designs on grid (800, 160, 32)
+2026-11-02 08:49:18,030 INFO     coolfrog.engine.training_metrics: update 0 validation NRMSE 41.418 % spectral loss 4.781e-01
+2026-11-02 08:55:24,604 INFO     coolfrog.engine.training: update 1000 train MSE 5.417e-04
+2026-11-02 09:05:51,321 INFO     coolfrog.engine.training_metrics: update 1000 validation NRMSE 17.444 % spectral loss 4.503e-01
+2026-11-02 09:11:56,891 INFO     coolfrog.engine.training: update 2000 train MSE 4.523e-04
+2026-11-02 09:22:24,250 INFO     coolfrog.engine.training_metrics: update 2000 validation NRMSE 18.407 % spectral loss 4.479e-01
+2026-11-02 09:28:32,883 INFO     coolfrog.engine.training: update 3000 train MSE 5.241e-04
+2026-11-02 09:39:00,540 INFO     coolfrog.engine.training_metrics: update 3000 validation NRMSE 14.911 % spectral loss 4.510e-01
+2026-11-02 09:45:06,937 INFO     coolfrog.engine.training: update 4000 train MSE 3.899e-04
+2026-11-02 09:55:34,992 INFO     coolfrog.engine.training_metrics: update 4000 validation NRMSE 14.992 % spectral loss 4.466e-01
+2026-11-02 10:01:45,666 INFO     coolfrog.engine.training: update 5000 train MSE 1.680e-04
+2026-11-02 10:12:13,429 INFO     coolfrog.engine.training_metrics: update 5000 validation NRMSE 13.331 % spectral loss 4.461e-01
+2026-11-02 10:18:23,382 INFO     coolfrog.engine.training: update 6000 train MSE 3.081e-04
+2026-11-02 10:28:51,178 INFO     coolfrog.engine.training_metrics: update 6000 validation NRMSE 13.222 % spectral loss 4.428e-01
+2026-11-02 10:35:01,660 INFO     coolfrog.engine.training: update 7000 train MSE 3.375e-04
+2026-11-02 10:45:30,288 INFO     coolfrog.engine.training_metrics: update 7000 validation NRMSE 12.955 % spectral loss 4.407e-01
+2026-11-02 10:51:40,592 INFO     coolfrog.engine.training: update 8000 train MSE 3.105e-04
+2026-11-02 11:02:08,922 INFO     coolfrog.engine.training_metrics: update 8000 validation NRMSE 13.199 % spectral loss 4.465e-01
+2026-11-02 11:08:20,042 INFO     coolfrog.engine.training: update 9000 train MSE 1.145e-03
+2026-11-02 11:18:48,990 INFO     coolfrog.engine.training_metrics: update 9000 validation NRMSE 13.364 % spectral loss 4.412e-01
+2026-11-02 11:24:59,634 INFO     coolfrog.engine.training: update 10000 train MSE 6.605e-04
+2026-11-02 11:35:28,427 INFO     coolfrog.engine.training_metrics: update 10000 validation NRMSE 13.323 % spectral loss 4.402e-01
+2026-11-02 11:41:39,203 INFO     coolfrog.engine.training: update 11000 train MSE 2.606e-04
+2026-11-02 11:52:08,231 INFO     coolfrog.engine.training_metrics: update 11000 validation NRMSE 13.205 % spectral loss 4.404e-01
+2026-11-02 11:58:19,183 INFO     coolfrog.engine.training: update 12000 train MSE 1.047e-04
+2026-11-02 12:08:47,759 INFO     coolfrog.engine.training_metrics: update 12000 validation NRMSE 13.101 % spectral loss 4.396e-01
+2026-11-02 12:14:58,144 INFO     coolfrog.engine.training: update 13000 train MSE 1.303e-04
+2026-11-02 12:25:27,044 INFO     coolfrog.engine.training_metrics: update 13000 validation NRMSE 13.040 % spectral loss 4.393e-01
+2026-11-02 12:31:37,975 INFO     coolfrog.engine.training: update 14000 train MSE 4.424e-04
+2026-11-02 12:42:06,391 INFO     coolfrog.engine.training_metrics: update 14000 validation NRMSE 12.259 % spectral loss 4.372e-01
+2026-11-02 12:52:40,761 INFO     coolfrog.engine.cooldata: 0 of 5666 designs uncached
+2026-11-02 12:52:40,781 INFO     coolfrog.experiment: 5538 train and 128 validation designs on grid (1600, 320, 64)
+2026-11-02 22:38:07,252 INFO     coolfrog.lib.experiment: Resumed run in /home/noob/git/cool-frog/experiments/04_lora-autoencoding at commit f238fa6, started 2026-11-02T07:38:51+00:00, status was running
+2026-11-02 22:38:07,325 INFO     coolfrog.experiment: Latent scale 2: stage complete, loading its results from /home/noob/git/cool-frog/experiments/04_lora-autoencoding/results/latent_scale_2
+2026-11-02 22:38:07,397 INFO     coolfrog.experiment: Latent scale 4: training
+2026-11-02 22:38:07,433 INFO     coolfrog.engine.cooldata: 0 of 5666 designs uncached
+2026-11-02 22:38:07,453 INFO     coolfrog.experiment: 5538 train and 128 validation designs on grid (1600, 320, 64)

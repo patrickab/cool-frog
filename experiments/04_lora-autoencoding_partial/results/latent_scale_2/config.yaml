@@ -1,0 +1,14 @@
+DataConfig:
+  batch_size: 2
+  cache: true
+  grid:
+    latent_scale: 2
+  num_workers: 6
+  source: null
+TadpoleConfig:
+  decoder_state: 32
+  encoder_crop_size: 32
+  encoder_state: 32
+  max_internal_batchsize: 16
+  path_weights: null
+  size: B

@@ -1,4 +1,4 @@
-"""LoRA-32 fine-tuning of Tadpole-B on the curated designs at 2x, then 4x, compared to zero-shot on the same validation designs.
+"""LoRA-32 fine-tuning of the Tadpole-B autoencoder on the curated designs at 2x, then 4x, compared to zero-shot on the same validation designs.
 
 Run from the repo root, `--resume` continues an unfinished run. One `Stage` per latent scale, `results/latent_scale_<n>/`:
 
@@ -40,7 +40,7 @@ from coolfrog.lib.huggingface import HuggingFaceHub
 from coolfrog.lib.log import get_logger
 from coolfrog.lib.plot import plot_slices
 
-TITLE = "LoRA autoencoding"
+TITLE = "Autoencoder fine-tuning with LoRA"
 GOAL = (
     "Fine-tune Tadpole-B with rank-32 LoRA on crops spanning the full channel height at 800x160x32 (32³, unlike the 64³ "
     "pre-training crops) and 1600x320x64 (64³), and compare both to zero-shot on the same validation designs."

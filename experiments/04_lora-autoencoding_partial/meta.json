@@ -1,0 +1,6 @@
+{
+  "commit_hash_git": "0fccad5816dc886a21d02603e13c57a38a752f45",
+  "script": "experiments/lora_autoencoding.py",
+  "date": "2026-11-02T07:38:51+00:00",
+  "seed": 42
+}
