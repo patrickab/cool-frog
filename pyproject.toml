@@ -6,7 +6,7 @@ dependencies = [
   "cooldata",
   "h5py>=3.16.0",
   "hdf5plugin>=7.1.0",
-  "plotext>=5.3.2",
+  "plotext>=6.1.0",
   "polars>=2.0.0",
   "pyyaml>=6",
   "rich>=15.0.0",

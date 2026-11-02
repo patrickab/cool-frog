@@ -9,6 +9,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 import logging
 import math
+import re
 import sys
 import threading
 from typing import Literal
@@ -21,10 +22,10 @@ from rich.table import Table
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container
+from textual.containers import Container, Horizontal
 from textual.content import Content
 from textual.geometry import Size
-from textual.widgets import Footer, Header, ProgressBar, RichLog, Static
+from textual.widgets import Footer, Header, Label, ProgressBar, RichLog, Static
 
 from coolfrog.lib.log import CONSOLE, NUMBER_HIGHLIGHTER, PACKAGE_LOGGER_NAME
 from coolfrog.lib.metrics import MetricTracker
@@ -37,6 +38,9 @@ MAX_TICKS = 6
 MAX_LINEAR_TICKS = 5
 TABLE_CHROME_ROWS = 4  # top border, header, header rule, bottom border
 PLOTEXT_LOCK = threading.Lock()  # plotext keeps one global figure
+# Background and 256-color foreground codes of the plotext theme: stripped, so axes inherit the terminal colors,
+# series keep their 24-bit colors
+THEME_COLORS = re.compile(r"\x1b\[(?:48;[\d;]+|38;5;\d+)m")
 
 PALETTE = ("#00d7ff", "#5fd75f", "#ffaf00", "#ff5faf", "#af87ff", "#ff5f5f", "#d7d75f")  # distinct on dark and light terminals
 
@@ -85,17 +89,17 @@ class DashboardSpec:
         Table columns, a row per step at which any column's series was logged.
     step_header : str
         Header of the step column.
-    total_steps : int | None
-        Last step, None hides the progress bar's total.
+    progress_bars : tuple[str, ...]
+        Labels of the bars shown on top, fed by `MetricTracker.set_progress`, e.g. ("Training", "Validation").
     summary : str
-        Rich markup shown under the progress bar, e.g. the key hyperparameters.
+        Rich markup shown under the progress bars, e.g. the key hyperparameters.
     """
 
     title: str
     charts: tuple[ChartSpec, ...]
     columns: tuple[ColumnSpec, ...]
     step_header: str = "Step"
-    total_steps: int | None = None
+    progress_bars: tuple[str, ...] = ()
     summary: str = ""
 
 
@@ -111,17 +115,18 @@ def render_chart(tracker: MetricTracker, spec: ChartSpec, size: Size) -> Text:
     lines = [(line, *tracker.series(line.name)) for line in spec.series]
     if not any(steps for _, steps, _ in lines):
         return Text("waiting for data", style="dim")
+    figure = plotext.figure  # one global figure, hence the lock
     with PLOTEXT_LOCK:
         try:
-            plotext.clf()
-            plotext.plotsize(size.width, size.height)
-            plotext.theme("pro")  # default background and foreground, inherits the terminal colors
-            _draw(spec, lines)
-            return Text.from_ansi(plotext.build().rstrip("\n"))
+            figure.clear.all()
+            figure.plot_size(size.width, size.height)
+            figure.theme("dark")
+            _draw(figure, spec, lines)
+            return Text.from_ansi(THEME_COLORS.sub("", figure.build().string()).rstrip("\n"))
         except Exception as exception:  # a chart bug must never kill a training run
             return Text(f"chart unavailable: {exception!r}", style="dim")
         finally:
-            plotext.clf()
+            figure.clear.all()
 
 
 def chart_legend(spec: ChartSpec) -> Content:
@@ -148,8 +153,11 @@ def _format(value: float | None, pattern: str) -> str:
     return "-" if value is None else pattern.format(value)
 
 
-def _draw(spec: ChartSpec, lines: list[tuple[SeriesSpec, list[int], list[float]]]) -> None:
-    """Draw `lines` into the global plotext figure."""
+def _draw(figure: "plotext.figure", spec: ChartSpec, lines: list[tuple[SeriesSpec, list[int], list[float]]]) -> None:
+    """Draw `lines` into `figure`, log axes as log10 values on a linear axis with round 1-2-5 tick labels.
+
+    - plotext's own log scale drops the signal once custom ticks are set
+    """
     values_per_side: dict[str, list[float]] = {"left": [], "right": []}
     steps: list[int] = []
     for line, line_steps, line_values in lines:
@@ -157,20 +165,21 @@ def _draw(spec: ChartSpec, lines: list[tuple[SeriesSpec, list[int], list[float]]
         if not keep:
             continue
         kept_steps, kept_values = [line_steps[i] for i in keep], [line_values[i] for i in keep]
-        plotext.plot(kept_steps, kept_values, marker="braille", color=_rgb(line.color), yside=line.side)
+        plotted = [math.log10(value) for value in kept_values] if spec.log_y else kept_values
+        signal = figure.signal(kept_steps, plotted, marker=plotext.marker("braille", _rgb(line.color)), yside=line.side)
+        signal.lines()
+        figure.draw(signal)
         steps += kept_steps
         values_per_side[line.side] += kept_values
     for side, values in values_per_side.items():
-        if not values:
-            continue
-        if spec.log_y:
-            plotext.yscale("log", yside=side)
-            plotext.yticks(*log_ticks(values), yside=side)
+        if values and spec.log_y:
+            ticks, labels = log_ticks(values)
+            figure.ruler("y", side).ticks([math.log10(tick) for tick in ticks], labels)
     if steps:
-        plotext.xticks(*linear_ticks(steps))
-    plotext.xlabel("step")
+        figure.ruler("x").ticks(*linear_ticks(steps))
+    figure.label("step", "x")
     if spec.y_label:
-        plotext.ylabel(spec.y_label)
+        figure.label(spec.y_label, "y")
 
 
 def _rgb(color: str) -> tuple[int, int, int]:
@@ -263,6 +272,8 @@ class DashboardApp(App[None]):
         Binding("q", "stop", "Stop"),
     ]
     CSS = """
+    .progress-row { height: 1; padding: 0 1; }
+    .progress-label { width: 12; }
     #summary { height: auto; padding: 0 1; }
     #grid { layout: grid; grid-size: 2; height: 1fr; }
     .pane { height: 100%; border: round $primary; padding: 0 1; }
@@ -277,10 +288,14 @@ class DashboardApp(App[None]):
         self.error: BaseException | None = None
         self._ui_thread = threading.get_ident()
         self._panes: list[LivePane] = []
+        self._work_thread: threading.Thread | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield ProgressBar(total=self.spec.total_steps, show_eta=True)
+        for index, label in enumerate(self.spec.progress_bars):
+            yield Horizontal(
+                Label(label, classes="progress-label"), ProgressBar(id=f"progress-{index}", show_eta=True), classes="progress-row"
+            )
         yield Static(self.spec.summary, id="summary")
         self._panes = [TablePane(self.tracker, self.spec), *(ChartPane(self.tracker, chart) for chart in self.spec.charts)]
         yield Container(*self._panes, id="grid")
@@ -291,7 +306,8 @@ class DashboardApp(App[None]):
         self.title = self.spec.title
         self.query_one("#grid").styles.grid_size_rows = math.ceil(len(self._panes) / GRID_COLUMNS)
         self.set_interval(REFRESH_SECONDS, self._refresh)
-        threading.Thread(target=self._run_work, name="dashboard-work", daemon=True).start()
+        self._work_thread = threading.Thread(target=self._run_work, name="dashboard-work", daemon=True)
+        self._work_thread.start()
 
     def _run_work(self) -> None:
         try:
@@ -302,11 +318,35 @@ class DashboardApp(App[None]):
             with suppress(RuntimeError):  # app already closed after a forced quit
                 self.call_from_thread(self.exit)
 
+    @property
+    def is_working(self) -> bool:
+        """Whether `work` is still running."""
+        return self._work_thread is not None and self._work_thread.is_alive()
+
+    def wait_for_work(self) -> None:
+        """Block until `work` ends, Ctrl+C asks it to stop at its next `log` or `set_progress` and waits for that."""
+        try:
+            while self.is_working:
+                self._work_thread.join(timeout=1.0)
+        except KeyboardInterrupt:
+            self.tracker.request_stop()
+            while self.is_working:
+                self._work_thread.join(timeout=1.0)
+            raise
+
     def _refresh(self) -> None:
         step = self.tracker.last_step
         if step is not None:
-            self.query_one(ProgressBar).update(progress=step)
-            self.sub_title = f"step {step}" + (f"/{self.spec.total_steps}" if self.spec.total_steps else "")
+            self.sub_title = f"step {step}"
+        for index, label in enumerate(self.spec.progress_bars):
+            progress = self.tracker.progress(label)
+            if progress is None:
+                continue
+            completed, total = progress
+            bar = self.query_one(f"#progress-{index}", ProgressBar)
+            if bar.progress is not None and completed < bar.progress:  # a new pass, e.g. the next validation
+                bar.update(total=None)  # resets the ETA estimate
+            bar.update(total=total, progress=completed)
         for pane in self._panes:
             pane.redraw()
 
@@ -352,7 +392,8 @@ def run_dashboard[T](tracker: MetricTracker, spec: DashboardSpec, work: Callable
     - Without a terminal (pipes, CI) or `enabled=False` -> `work` runs plainly, logging unchanged
     - Console log handlers move into the app's log pane meanwhile, file handlers stay
     - Last table rows stay in the scrollback afterwards
-    - `q` stops at the next `tracker.log` as `KeyboardInterrupt`
+    - `q` stops at the next `tracker.log` or `tracker.set_progress` as `KeyboardInterrupt`
+    - The dashboard crashing never ends `work` early: it runs on with plain logging until done
     """
     if not enabled or not (sys.stdout.isatty() and sys.stderr.isatty()):
         return work()
@@ -370,9 +411,12 @@ def run_dashboard[T](tracker: MetricTracker, spec: DashboardSpec, work: Callable
         package_logger.removeHandler(app_handler)
         for handler in console_handlers:
             package_logger.addHandler(handler)
+    if app.tracker.stop_requested:
+        raise KeyboardInterrupt("stopped from the dashboard")
+    if app.is_working:  # the UI ended on its own, e.g. a rendering error: keep the work, finish without the dashboard
+        logging.getLogger(__name__).warning("Dashboard closed, the work continues with plain logging, Ctrl+C stops it")
+        app.wait_for_work()
     CONSOLE.print(render_table(tracker, spec, max_rows=20))
     if app.error is not None:
         raise app.error
-    if app.tracker.stop_requested:
-        raise KeyboardInterrupt("stopped from the dashboard")
     return app.result
