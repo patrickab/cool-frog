@@ -37,7 +37,7 @@ from coolfrog.engine.training_metrics import KL, MSE, NRMSE, SECONDS_PER_UPDATE,
 from coolfrog.lib.datatypes import CHANNELS
 from coolfrog.lib.experiment import Stage, inject_table, run_experiment, write_configs
 from coolfrog.lib.huggingface import HuggingFaceHub
-from coolfrog.lib.log import get_logger, setup_logging
+from coolfrog.lib.log import get_logger
 from coolfrog.lib.plot import plot_slices
 
 TITLE = "LoRA autoencoding"
@@ -139,7 +139,8 @@ def fine_tune(latent_scale: int, path_stage: Path) -> dict[str, object]:
     loader = validation_loader(validation, config)
 
     model = Tadpole(model_config).to(DEVICE)
-    metrics = fine_tune_autoencoder(model, train_loader, loader, stats, TRAIN_CONFIG).to_frame()
+    title = f"{MODEL} · latent scale {latent_scale} · {'x'.join(map(str, config.grid.shape))}"
+    metrics = fine_tune_autoencoder(model, train_loader, loader, stats, TRAIN_CONFIG, title).to_frame()
     per_design = per_design_frame(evaluate(model, loader, stats), latent_scale, MODEL)
     model.eval()
     with torch.no_grad():
@@ -155,7 +156,6 @@ def fine_tune(latent_scale: int, path_stage: Path) -> dict[str, object]:
 
 
 with run_experiment(TITLE, GOAL, HYPOTHESIS, [TRAIN_CONFIG], hub=HuggingFaceHub(), resume=RESUME) as path_results:
-    setup_logging(log_file=path_results / "run.log")
     log = get_logger("coolfrog.experiment")
     stats = load_stats()
     metadata = curated_metadata()
@@ -164,8 +164,9 @@ with run_experiment(TITLE, GOAL, HYPOTHESIS, [TRAIN_CONFIG], hub=HuggingFaceHub(
     for latent_scale in LATENT_SCALES:
         stage = Stage(path_results / f"latent_scale_{latent_scale}")
         if stage.is_complete():
-            log.info("latent scale %d complete in %s, loading its results", latent_scale, stage.folder)
+            log.info("Latent scale %d: stage complete, loading its results from %s", latent_scale, stage.folder)
         else:
+            log.info("Latent scale %d: training", latent_scale)
             stage.save(fine_tune(latent_scale, stage.folder))
             torch.cuda.empty_cache()
         metrics = stage.load("metrics.parquet")

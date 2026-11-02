@@ -74,21 +74,22 @@ def endless(loader: DataLoader[FlowField]) -> Iterator[FlowField]:
         yield from loader
 
 
-def fine_tune_autoencoder(
+def fine_tune_autoencoder(  # noqa: PLR0913, model, data, stats, config and the dashboard title
     model: Tadpole,
     train_loader: DataLoader[FlowField],
     validation_loader: DataLoader[FlowField],
     stats: NormalizationStats,
     config: TrainConfig,
+    title: str = "Fine-tuning",
 ) -> TrainingMetrics:
     """Accumulated bf16 updates on `train_loader` crops with periodic full-domain `evaluate`.
 
     - Update 0 is validated before training, the zero-shot baseline under LoRA
     - Logs the spectral loss of the training crops next to the MSE they are trained on
-    - Runs under the live terminal dashboard, plainly when there is no terminal
+    - Runs under the live terminal dashboard titled `title`, plainly when there is no terminal
     - Stop key `q` in the dashboard raises KeyboardInterrupt
     """
-    metrics = TrainingMetrics(config)
+    metrics = TrainingMetrics(config, title)
     run_dashboard(
         metrics.tracker,
         metrics.spec,
