@@ -68,9 +68,17 @@ def find_folder(title: str) -> Path | None:
     return next(PATH_EXPERIMENTS.glob(f"[0-9][0-9]_{kebab_case_slug(title)}"), None)
 
 
+RUN_FOLDER_CHANGE = re.compile(r"\"?experiments/\d{2}_[^/]+/")  # porcelain path inside a run folder, quoted when unusual
+
+
 def uncommitted_changes() -> str:
-    """`git status --porcelain` of the repository, empty when the working tree matches HEAD."""
-    return subprocess.check_output(["git", "status", "--porcelain"], cwd=PATH_EXPERIMENTS.parent, text=True).strip()
+    """`git status --porcelain` without experiment run folders, empty when the code matches HEAD.
+
+    - Run folders (`experiments/<NN>_<name>/`) hold results, not code, a resumed run's own outputs must not count
+    """
+    status = subprocess.check_output(["git", "status", "--porcelain"], cwd=PATH_EXPERIMENTS.parent, text=True)
+    changes = [line for line in status.splitlines() if not RUN_FOLDER_CHANGE.match(line[3:])]
+    return "\n".join(changes)
 
 
 def confirm_uncommitted_changes() -> None:
