@@ -4,8 +4,8 @@
   "date": "2026-11-01T10:30:35+00:00",
   "hub": {
     "repo_id": "the-fruit-dude/cool-frog",
-    "commit_hash_hub": "e93c3528fe5d5805fb30f7e9e65b8c567b5c4c4c",
-    "run_root": "experiments/02_cooldata-value-distribution",
+    "commit_hash_hub": "11bb9fa73234f52faaeeec270aa3a4bb2bfea713",
+    "run_root": "experiments/02_cooldata-value-distribution_partial",
     "files": [
       "results/design_stats.parquet",
       "results/histograms.npz"
