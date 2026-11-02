@@ -4,6 +4,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from fnmatch import fnmatchcase
 import json
 from pathlib import Path
@@ -25,6 +26,14 @@ if TYPE_CHECKING:
 PATH_EXPERIMENTS = Path(__file__).parents[3] / "experiments"
 PATH_LARGE_FILE_PATTERNS = PATH_EXPERIMENTS / ".gitignore"
 RUN_FILES = ("config.yaml", "meta.json", "results")  # what one run writes, moved into history/ by the next run
+
+
+class RunStatus(StrEnum):
+    """`meta.json["status"]` of an experiment run."""
+
+    RUNNING = "running"  # started or resumed, also left behind by a killed process
+    COMPLETE = "complete"  # block finished, pushed when a hub was given
+    FAILED = "failed"  # exception, results kept for debugging
 
 
 def kebab_case_slug(title: str) -> str:
@@ -230,11 +239,15 @@ class ExperimentRun:
         None -> no previous run
     is_new_folder : bool
         True -> `folder` was created by this run, an interrupt removes it entirely.
+    meta_before_resume : str | None
+        str -> `meta.json` text before `resume_run`, an interrupt restores it and keeps the results
+        None -> a new run
     """
 
     folder: Path
     path_archived_run: Path | None
     is_new_folder: bool
+    meta_before_resume: str | None = None
 
     @property
     def path_results(self) -> Path:
@@ -268,12 +281,12 @@ def start_run(title: str, goal: str | None, hypothesis: str | None, configs: Seq
 
     write_configs(configs, folder / "config.yaml")
 
-    commit_hash_git = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=PATH_EXPERIMENTS.parent, text=True).strip()
     meta = {
-        "commit_hash_git": commit_hash_git,
+        "commit_hash_git": current_commit(),
         "script": str(script.relative_to(PATH_EXPERIMENTS.parent.resolve())),
         "date": datetime.now(UTC).isoformat(timespec="seconds"),
         "seed": SEED,
+        "status": RunStatus.RUNNING,
     }
     (folder / "meta.json").write_text(json.dumps(meta, indent=2))
 
@@ -284,46 +297,87 @@ def start_run(title: str, goal: str | None, hypothesis: str | None, configs: Seq
 
 
 @contextmanager
-def run_experiment(
+def run_experiment(  # noqa: PLR0913, the public entry point of every experiment script
     title: str,
     goal: str | None = None,
     hypothesis: str | None = None,
     configs: Sequence["DataclassInstance"] = (),
     hub: HuggingFaceHub | None = None,
+    resume: bool = False,
 ) -> Iterator[Path]:
-    """Start a run, yield its `results/` directory and finish the run by how the block exits.
+    """Start or resume a run, yield its `results/` directory and finish the run by how the block exits.
 
     - Seeds python, numpy and torch with `SEED` before the block runs
-    - Success -> `push_experiment` when `hub` is given
-    - Exception -> everything stays for debugging, logs included, nothing pushed, the error propagates
+    - `resume=True` and an unfinished live run -> continues in its folder, see `resume_run`, else starts a new run
+    - Success -> `push_experiment` when `hub` is given, status `complete`
+    - Exception -> everything stays for debugging, logs included, nothing pushed, status `failed`, the error propagates
     - KeyboardInterrupt (Ctrl+C, also `agent-proc stop`) -> `undo_run`, then the interrupt propagates
-    - Killed process (SIGKILL, closed tmux window) -> no cleanup runs, same state as an exception
+    - Killed process (SIGKILL, closed tmux window) -> no cleanup runs, status stays `running`
 
     Examples
     --------
-    >>> with run_experiment(TITLE, GOAL, HYPOTHESIS, [DATA_CONFIG], hub=HuggingFaceHub()) as path_results:
+    >>> with run_experiment(TITLE, GOAL, HYPOTHESIS, [DATA_CONFIG], hub=HuggingFaceHub(), resume=True) as path_results:
     ...     setup_logging(log_file=path_results / "run.log")
-    ...     ...  # write results
+    ...     ...  # write results, skip stages whose outputs already exist
     """
-    run = start_run(title, goal, hypothesis, configs)
+    run = resume_run(title, configs) if resume else None
+    if run is None:
+        run = start_run(title, goal, hypothesis, configs)
     seed_everything()
     try:
         yield run.path_results
     except KeyboardInterrupt:
         undo_run(run)
         raise
+    except BaseException:
+        update_meta(run.folder, status=RunStatus.FAILED)
+        raise
     if hub is not None:
         push_experiment(hub, run.folder)
+    update_meta(run.folder, status=RunStatus.COMPLETE)
+
+
+def resume_run(title: str, configs: Sequence["DataclassInstance"]) -> ExperimentRun | None:
+    """Continue the live run of the calling script's experiment unless it is complete, None when there is none.
+
+    - Reuses its folder and results, nothing moves into `history/`
+    - ValueError when `configs` differ from its `config.yaml`
+    - Appends the current commit and date to `meta.json["resumed"]`, sets the status back to `running`
+    """
+    script = calling_script()
+    folder = script.parent if is_experiment_folder(script.parent) else find_folder(title)
+    if folder is None or not (folder / "meta.json").exists():
+        return None
+    meta_before_resume = (folder / "meta.json").read_text()
+    if json.loads(meta_before_resume).get("status") == RunStatus.COMPLETE:
+        print(f"Live run in {folder} is complete, starting a new run instead of resuming")
+        return None
+    path_config = folder / "config.yaml"
+    previous_config = path_config.read_text()
+    write_configs(configs, path_config)
+    if path_config.read_text() != previous_config:
+        path_config.write_text(previous_config)
+        raise ValueError(f"configs differ from {path_config}, resume needs identical configs, rerun without resume")
+    confirm_uncommitted_changes()
+    meta = json.loads(meta_before_resume)
+    resumed = {"commit_hash_git": current_commit(), "date": datetime.now(UTC).isoformat(timespec="seconds")}
+    update_meta(folder, status=RunStatus.RUNNING, resumed=[*meta.get("resumed", []), resumed])
+    print(f"Resuming the run in {folder}")
+    return ExperimentRun(folder, path_archived_run=None, is_new_folder=False, meta_before_resume=meta_before_resume)
 
 
 def undo_run(run: ExperimentRun) -> None:
-    """Remove an interrupted run as if it never started.
+    """Remove an interrupted run as if it never started, or for a resumed run, as if it was never resumed.
 
-    - Deletes its `RUN_FILES`
-    - Moves the previous run back out of `run.path_archived_run` and deletes that history folder
-    - Deletes the whole experiment folder when `run.is_new_folder`
+    - New run: deletes its `RUN_FILES`, moves the previous run back out of `run.path_archived_run` and deletes that
+      history folder, deletes the whole experiment folder when `run.is_new_folder`
+    - Resumed run: restores its `meta.json` from before the resume, results stay, a later resume continues from them
     - The Hub stays untouched, interrupted runs never push
     """
+    if run.meta_before_resume is not None:
+        print(f"Interrupted, restoring the run in {run.folder} to its state before resuming")
+        (run.folder / "meta.json").write_text(run.meta_before_resume)
+        return
     print(f"Interrupted, removing the run from {run.folder}")
     if run.is_new_folder:
         shutil.rmtree(run.folder)
@@ -341,6 +395,17 @@ def undo_run(run: ExperimentRun) -> None:
     shutil.rmtree(run.path_archived_run)
     if not any(run.path_archived_run.parent.iterdir()):
         run.path_archived_run.parent.rmdir()
+
+
+def update_meta(folder: Path, **fields: object) -> None:
+    """Set `fields` in the run's `meta.json`, keeping all others."""
+    path_meta = folder / "meta.json"
+    path_meta.write_text(json.dumps(json.loads(path_meta.read_text()) | fields, indent=2))
+
+
+def current_commit() -> str:
+    """Full hash of the repository's HEAD."""
+    return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=PATH_EXPERIMENTS.parent, text=True).strip()
 
 
 def repository_path(folder: Path) -> str:
