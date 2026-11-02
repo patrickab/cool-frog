@@ -72,26 +72,28 @@ class Grid:
 
 @dataclass(frozen=True)
 class HostConfig:
-    """Per-machine cache location, voxel grid and dataset split.
+    """Per-machine cache location and share of the dataset.
 
     Attributes
     ----------
     cache_dir : Path
         Root of every cache: metadata, voxel shards, surfaces.
-    grid : Grid
-        Default voxel grid of `DataConfig`.
     n_splits, idx_split : int
-        This machine voxelizes split `idx_split` of `n_splits`, passed to `CoolMetadata.load`.
+        This machine uses split `idx_split` of `n_splits`, passed to `CoolMetadata.load`, 1 split = the full dataset.
     """
 
     cache_dir: Path
-    grid: Grid
     n_splits: int
     idx_split: int
 
+    @property
+    def is_partial(self) -> bool:
+        """Whether this machine uses only part of the dataset, its experiments get the `_partial` folder suffix."""
+        return self.n_splits > 1
 
-DEFAULT_HOST_CONFIG = HostConfig(cache_dir=Path.cwd() / ".cache", grid=Grid(latent_scale=1), n_splits=10, idx_split=0)
-CUBE1_HOST_CONFIG = HostConfig(cache_dir=Path("/mnt/data/bitzer/.cache"), grid=Grid(latent_scale=2), n_splits=1, idx_split=0)
+
+DEFAULT_HOST_CONFIG = HostConfig(cache_dir=Path.cwd() / ".cache", n_splits=10, idx_split=0)
+CUBE1_HOST_CONFIG = HostConfig(cache_dir=Path("/mnt/data/bitzer/.cache"), n_splits=1, idx_split=0)
 HOST_CONFIG = CUBE1_HOST_CONFIG if socket.gethostname() == "cube1" else DEFAULT_HOST_CONFIG
 
 
@@ -102,7 +104,7 @@ class DataConfig:
     Attributes
     ----------
     grid : Grid
-        Voxel grid every design is sampled onto, defaults to this machine's `HOST_CONFIG.grid`.
+        Voxel grid every design is sampled onto.
     source : Path | None
         Path -> Local CoolData root holding `volume/volume_design_<design_id:07d>_p.cgns`.
         None -> Hugging Face, each design extracted from its `runs/<run>/<batch>.zip`.
@@ -117,14 +119,14 @@ class DataConfig:
 
     Examples
     --------
-    >>> config = DataConfig()  # grid of `HOST_CONFIG`
+    >>> config = DataConfig(grid=Grid(latent_scale=2))
     >>> metadata = CoolMetadata.load(HOST_CONFIG.n_splits, HOST_CONFIG.idx_split)
     >>> metadata = metadata.select(ranges={"V": (2.0, 5.0), "T1": (None, 60.0)})
     >>> train, val = CoolData(metadata, config).split([0.9, 0.1])  # voxelizes uncached designs first
     >>> train_loader = create_dataloader(train, config, shuffle=True)
     """
 
-    grid: Grid = HOST_CONFIG.grid
+    grid: Grid
     source: Path | None = None
     cache: bool = True
     batch_size: int = 32
