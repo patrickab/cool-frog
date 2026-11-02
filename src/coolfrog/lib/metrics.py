@@ -14,6 +14,7 @@ class MetricTracker:
     - Series are sparse: validation can log every 1000 steps next to a loss logged every step
     - `version` grows with every `log`, readers redraw only when it changed
     - `request_stop` makes the next `log` raise `KeyboardInterrupt`, the cancellation point of a training thread
+    - `set_progress` reports progress bars, e.g. updates done and validation designs done, also a cancellation point
 
     Examples
     --------
@@ -30,6 +31,7 @@ class MetricTracker:
         self._values: defaultdict[str, list[float]] = defaultdict(list)
         self._version = 0
         self._stop = threading.Event()
+        self._progress: dict[str, tuple[int, int]] = {}
 
     @property
     def version(self) -> int:
@@ -54,6 +56,17 @@ class MetricTracker:
         """KeyboardInterrupt after `request_stop`, call it in a loop that logs rarely."""
         if self._stop.is_set():
             raise KeyboardInterrupt("stop requested")
+
+    def set_progress(self, label: str, completed: int, total: int) -> None:
+        """Report `completed` of `total` for the progress bar `label`, KeyboardInterrupt after `request_stop`."""
+        self.raise_if_stopped()
+        with self._lock:
+            self._progress[label] = (completed, total)
+
+    def progress(self, label: str) -> tuple[int, int] | None:
+        """Latest `(completed, total)` of the progress bar `label`, None before its first report."""
+        with self._lock:
+            return self._progress.get(label)
 
     def log(self, step: int, values: Mapping[str, float]) -> None:
         """Append `values` at `step`, ValueError when a series would go back in steps, KeyboardInterrupt after `request_stop`."""

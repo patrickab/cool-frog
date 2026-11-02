@@ -1,6 +1,6 @@
 """Metrics of one fine-tuning run: windowed training means, validation medians, dashboard layout and table export."""
 
-from collections.abc import Mapping
+from collections.abc import Collection, Iterator, Mapping
 from itertools import cycle
 import time
 
@@ -17,6 +17,7 @@ logger = get_logger(__name__)
 MSE, SPECTRAL, KL = "train/mse", "train/spectral_loss", "train/kl"
 LEARNING_RATE, SECONDS_PER_UPDATE = "train/learning_rate", "train/seconds_per_update"
 NRMSE, SPECTRAL_LOSS = "nrmse", "spectral_loss"  # keys of `evaluate`
+TRAINING_PROGRESS, VALIDATION_PROGRESS = "Training", "Validation"  # progress bar labels
 
 
 def validation_name(metric: str, channel: str | None = None) -> str:
@@ -29,6 +30,7 @@ class TrainingMetrics:
 
     - Train values are averaged over `log_every` updates, plus the final one
     - Validation logs per-channel medians over the validation designs and their channel mean
+    - Progress bars: updates done, designs done of the running or last validation
     - `tracker` holds everything, `spec` tells `run_dashboard` how to show it
 
     Examples
@@ -42,18 +44,26 @@ class TrainingMetrics:
         self.config = config
         self.log_every = log_every
         self.tracker = MetricTracker()
+        self.tracker.set_progress(TRAINING_PROGRESS, 0, config.updates)
         self.spec = self._create_spec(title)
         self._window = WindowMean()
         self._tick = time.perf_counter()
 
     def log_update(self, update: int, mse: float, spectral: float, kl: float, learning_rate: float) -> None:
-        """Record one optimizer update, KeyboardInterrupt when the dashboard asked to stop."""
-        self.tracker.raise_if_stopped()
+        """Record one optimizer update and advance the training bar, KeyboardInterrupt when the dashboard asked to stop."""
+        self.tracker.set_progress(TRAINING_PROGRESS, update, self.config.updates)
         now = time.perf_counter()
         self._window.add({MSE: mse, SPECTRAL: spectral, KL: kl, LEARNING_RATE: learning_rate, SECONDS_PER_UPDATE: now - self._tick})
         self._tick = now
         if update % self.log_every == 0 or update == self.config.updates:
             self.tracker.log(update, self._window.flush())
+
+    def track_validation[T](self, designs: Collection[T]) -> Iterator[T]:
+        """Yield validation `designs` while advancing the validation bar, KeyboardInterrupt after a stop request."""
+        self.tracker.set_progress(VALIDATION_PROGRESS, 0, len(designs))
+        for completed, design in enumerate(designs, start=1):
+            yield design
+            self.tracker.set_progress(VALIDATION_PROGRESS, completed, len(designs))
 
     def log_validation(self, update: int, per_design_tables: Mapping[str, pl.DataFrame]) -> None:
         """Record the median over designs per channel and its mean over channels of each `evaluate` table.
@@ -109,7 +119,7 @@ class TrainingMetrics:
                 ColumnSpec("s/update", SECONDS_PER_UPDATE, "", "{:.2f}"),
             ),
             step_header="Update",
-            total_steps=config.updates,
+            progress_bars=(TRAINING_PROGRESS, VALIDATION_PROGRESS),
             summary=(
                 f"[dim]batch[/] {config.crops_per_step}x{config.accumulation_steps} crops · "
                 f"[dim]lr[/] {scientific(config.learning_rate)} ({config.warmup_updates} warmup) · "

@@ -107,7 +107,7 @@ def _train(
     config = metrics.config
     device = next(model.parameters()).device
     optimizer, scheduler = create_optimizer(model.trainable_parameters().values(), config)
-    metrics.log_validation(0, evaluate(model, validation_loader, stats))
+    metrics.log_validation(0, evaluate(model, metrics.track_validation(validation_loader), stats))
     batches = endless(train_loader)
     model.train()
     for update in range(1, config.updates + 1):
@@ -129,4 +129,4 @@ def _train(
         metrics.log_update(update, mse_sum / steps, spectral_sum / steps, kl_sum / steps, learning_rate)
         if update % config.validate_every == 0 or update == config.updates:
             logger.info("update %d train MSE %.3e", update, mse_sum / steps)
-            metrics.log_validation(update, evaluate(model, validation_loader, stats))
+            metrics.log_validation(update, evaluate(model, metrics.track_validation(validation_loader), stats))
