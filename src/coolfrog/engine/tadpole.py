@@ -156,13 +156,18 @@ def _fill_solids(flowfield: FlowField) -> FlowField:
     -----
     - Tadpole has no mask input, so solids need smooth values
     - `mask` stays unchanged, metrics still use fluid voxels only
+    - The fill front is shared by all channels and computed once, channels are filled one at a time in place:
+      peak memory ~2 full-domain fields instead of ~6, 1600x320x64 needs it
     """
-    known = flowfield.mask.unsqueeze(-4).expand_as(flowfield.fields).to(flowfield.fields.dtype)
+    known = flowfield.mask.unsqueeze(-4).to(flowfield.fields.dtype)  # (..., 1, X, Y, Z)
     values = flowfield.fields * known
     while True:
         neighbour_count = F.avg_pool3d(known, 3, 1, 1)
         newly_filled = (known == 0) & (neighbour_count > 0)
         if not newly_filled.any():
             return flowfield.replace(fields=values)
-        values = torch.where(newly_filled, F.avg_pool3d(values, 3, 1, 1) / neighbour_count.clamp_min(1e-6), values)
+        neighbour_count = neighbour_count.clamp_min(1e-6)
+        for channel in range(values.shape[-4]):
+            channel_values = values[..., channel : channel + 1, :, :, :]
+            channel_values.copy_(torch.where(newly_filled, F.avg_pool3d(channel_values, 3, 1, 1) / neighbour_count, channel_values))
         known = torch.where(newly_filled, 1.0, known)
