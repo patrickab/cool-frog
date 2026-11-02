@@ -9,7 +9,8 @@ Run from the repo root. Results:
 - `results/nrmse.csv`, `results/spectral-loss.csv`, `results/training.csv` (README tables)
 """
 
-import time
+from pathlib import Path
+import sys
 
 from autoencoding import (
     LATENT_SCALES,
@@ -31,7 +32,7 @@ from coolfrog.engine.cooldata import create_dataloader
 from coolfrog.engine.model_evaluation import evaluate
 from coolfrog.engine.tadpole import Tadpole
 from coolfrog.engine.training import RandomCrops, fine_tune_autoencoder
-from coolfrog.engine.training_metrics import KL, MSE, NRMSE, SPECTRAL, SPECTRAL_LOSS, validation_name
+from coolfrog.engine.training_metrics import KL, MSE, NRMSE, SECONDS_PER_UPDATE, SPECTRAL, SPECTRAL_LOSS, validation_name
 from coolfrog.lib.datatypes import CHANNELS
 from coolfrog.lib.experiment import inject_table, run_experiment, write_configs
 from coolfrog.lib.huggingface import HuggingFaceHub
@@ -51,6 +52,7 @@ HYPOTHESIS = (
 LORA_RANK = 32
 MODEL = f"LoRA-{LORA_RANK}"
 DEVICE = "cuda"
+RESUME = "--resume" in sys.argv  # continue an unfinished run, trained latent scales are only evaluated again
 
 
 def plot_training_curves(metrics: pl.DataFrame, latent_scale: int) -> Figure:
@@ -101,8 +103,21 @@ def zero_shot_medians(metrics: pl.DataFrame, latent_scale: int) -> pl.DataFrame:
     )
 
 
+def is_trained(path_run: Path) -> bool:
+    """Whether a previous attempt of this run finished training this latent scale."""
+    return (path_run / "adapter.pt").exists() and (path_run / "metrics.parquet").exists()
+
+
+def training_hours(metrics: pl.DataFrame) -> float:
+    """Optimizer time without validation: mean seconds per update of each logged window times its updates."""
+    windows = (
+        metrics.select("update", SECONDS_PER_UPDATE).drop_nulls().with_columns(pl.col("update").diff().fill_null(pl.col("update")))
+    )
+    return (windows["update"] * windows[SECONDS_PER_UPDATE]).sum() / 3600
+
+
 def fine_tune(latent_scale: int) -> tuple[pl.DataFrame, pl.DataFrame, dict[str, float]]:
-    """Fine-tune and evaluate one resolution into `results/latent_scale_<n>/`.
+    """Fine-tune and evaluate one resolution into `results/latent_scale_<n>/`, training skipped when `is_trained`.
 
     Returns the final per-design table, the zero-shot medians and a row of the training table.
     """
@@ -119,12 +134,15 @@ def fine_tune(latent_scale: int) -> tuple[pl.DataFrame, pl.DataFrame, dict[str, 
     loader = validation_loader(validation, config)
 
     model = Tadpole(model_config).to(DEVICE)
-    start = time.perf_counter()
-    metrics = fine_tune_autoencoder(model, train_loader, loader, stats, TRAIN_CONFIG).to_frame()
-    hours = (time.perf_counter() - start) / 3600
-    metrics.write_parquet(path_run / "metrics.parquet")
-    model.save_adapter(path_run / "adapter.pt")
-    plot_training_curves(metrics, latent_scale).savefig(path_run / "training_curves.png", dpi=150)
+    if is_trained(path_run):  # resumed run: reuse the finished training, evaluate again
+        log.info("latent scale %d already trained, loading %s", latent_scale, path_run / "adapter.pt")
+        model.load_adapter(path_run / "adapter.pt")
+        metrics = pl.read_parquet(path_run / "metrics.parquet")
+    else:
+        metrics = fine_tune_autoencoder(model, train_loader, loader, stats, TRAIN_CONFIG).to_frame()
+        metrics.write_parquet(path_run / "metrics.parquet")
+        model.save_adapter(path_run / "adapter.pt")
+        plot_training_curves(metrics, latent_scale).savefig(path_run / "training_curves.png", dpi=150)
 
     per_design = per_design_frame(evaluate(model, loader, stats), latent_scale, MODEL)
     model.eval()
@@ -137,7 +155,7 @@ def fine_tune(latent_scale: int) -> tuple[pl.DataFrame, pl.DataFrame, dict[str, 
     training = {
         "latent_scale": latent_scale,
         "updates": TRAIN_CONFIG.updates,
-        "duration [h]": hours,
+        "training time [h]": training_hours(metrics),
         "final train MSE": last[MSE],
         "final train spectral loss": last[SPECTRAL],
         "final KL": last[KL],
@@ -145,7 +163,7 @@ def fine_tune(latent_scale: int) -> tuple[pl.DataFrame, pl.DataFrame, dict[str, 
     return per_design, zero_shot_medians(metrics, latent_scale), training
 
 
-with run_experiment(TITLE, GOAL, HYPOTHESIS, [TRAIN_CONFIG], hub=HuggingFaceHub()) as path_results:
+with run_experiment(TITLE, GOAL, HYPOTHESIS, [TRAIN_CONFIG], hub=HuggingFaceHub(), resume=RESUME) as path_results:
     setup_logging(log_file=path_results / "run.log")
     log = get_logger("coolfrog.experiment")
     stats = load_stats()
