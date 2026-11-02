@@ -40,7 +40,7 @@ class TrainingMetrics:
     >>> metrics.to_frame().write_parquet(path_run / "metrics.parquet")
     """
 
-    def __init__(self, config: TrainConfig, title: str = "Fine-tuning", log_every: int = 10) -> None:
+    def __init__(self, config: TrainConfig, title: str = "Fine-tuning", log_every: int = 50) -> None:
         self.config = config
         self.log_every = log_every
         self.tracker = MetricTracker()
@@ -59,11 +59,18 @@ class TrainingMetrics:
             self.tracker.log(update, self._window.flush())
 
     def track_validation[T](self, designs: Collection[T]) -> Iterator[T]:
-        """Yield validation `designs` while advancing the validation bar, KeyboardInterrupt after a stop request."""
-        self.tracker.set_progress(VALIDATION_PROGRESS, 0, len(designs))
-        for completed, design in enumerate(designs, start=1):
-            yield design
-            self.tracker.set_progress(VALIDATION_PROGRESS, completed, len(designs))
+        """Yield validation `designs` while advancing the validation bar, the training clock paused meanwhile.
+
+        - KeyboardInterrupt after a stop request
+        """
+        self.tracker.pause_progress(TRAINING_PROGRESS)
+        try:
+            self.tracker.set_progress(VALIDATION_PROGRESS, 0, len(designs))
+            for completed, design in enumerate(designs, start=1):
+                yield design
+                self.tracker.set_progress(VALIDATION_PROGRESS, completed, len(designs))
+        finally:
+            self.tracker.resume_progress(TRAINING_PROGRESS)
 
     def log_validation(self, update: int, per_design_tables: Mapping[str, pl.DataFrame]) -> None:
         """Record the median over designs per channel and its mean over channels of each `evaluate` table.
@@ -102,7 +109,7 @@ class TrainingMetrics:
             title=title,
             charts=(
                 ChartSpec(
-                    "Train MSE and spectral loss",
+                    f"Train MSE and spectral loss, mean over {self.log_every} updates",
                     (SeriesSpec(MSE, "mse", PALETTE[0]), SeriesSpec(SPECTRAL, "spectral", PALETTE[2], side="right")),
                     y_label="mse",
                 ),
@@ -110,10 +117,10 @@ class TrainingMetrics:
                 ChartSpec("Validation spectral loss, median", channel_lines(SPECTRAL_LOSS), y_label="spectral"),
             ),
             columns=(
-                ColumnSpec("Train MSE", MSE, "magenta"),
-                ColumnSpec("Train spectral", SPECTRAL, "magenta"),
-                ColumnSpec("KL", KL, "magenta"),
-                ColumnSpec("LR", LEARNING_RATE, "yellow"),
+                ColumnSpec("Train MSE", MSE),
+                ColumnSpec("Train spectral", SPECTRAL),
+                ColumnSpec("KL", KL),
+                ColumnSpec("LR", LEARNING_RATE, "dim"),
                 ColumnSpec("Val NRMSE %", validation_name(NRMSE), "green", "{:.3f}"),
                 ColumnSpec("Val spectral", validation_name(SPECTRAL_LOSS), "green"),
                 ColumnSpec("s/update", SECONDS_PER_UPDATE, "", "{:.2f}"),
@@ -124,6 +131,6 @@ class TrainingMetrics:
                 f"[dim]batch[/] {config.crops_per_step}x{config.accumulation_steps} crops · "
                 f"[dim]lr[/] {scientific(config.learning_rate)} ({config.warmup_updates} warmup) · "
                 f"[dim]wd[/] {scientific(config.weight_decay)} · [dim]kl weight[/] {scientific(config.kl_weight)} · "
-                f"[dim]validate every[/] {config.validate_every}"
+                f"[dim]validate every[/] {config.validate_every} · [dim]train values: mean over[/] {self.log_every} updates"
             ),
         )
