@@ -85,12 +85,12 @@ class Tadpole(nn.Module):
         """Parameters with requires_grad: LoRA matrices plus the biases GIFt leaves trainable, all under FPFT."""
         return {name: parameter for name, parameter in self.named_parameters() if parameter.requires_grad}
 
-    def save_adapter(self, path: Path) -> None:
-        """Write `trainable_parameters` only, about 11 MB at LoRA-32."""
-        torch.save({name: parameter.detach().cpu() for name, parameter in self.trainable_parameters().items()}, path)
+    def adapter(self) -> dict[str, torch.Tensor]:
+        """`trainable_parameters` detached on the CPU, about 11 MB at LoRA-32, written as `adapter.pt`."""
+        return {name: parameter.detach().cpu() for name, parameter in self.trainable_parameters().items()}
 
     def load_adapter(self, path: Path) -> None:
-        """Load `save_adapter` output into a model built with the same `TadpoleConfig`, ValueError on mismatching names or shapes."""
+        """Load an `adapter.pt` into a model built with the same `TadpoleConfig`, ValueError on mismatching names or shapes."""
         adapter = torch.load(path, map_location="cpu")
         expected_shapes = {name: parameter.shape for name, parameter in self.trainable_parameters().items()}
         if {name: tensor.shape for name, tensor in adapter.items()} != expected_shapes:

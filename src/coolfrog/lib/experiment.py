@@ -1,6 +1,6 @@
 """Experiment runs under `experiments/`: folders, metadata, history and large files on Hugging Face."""
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -15,6 +15,7 @@ import sys
 from typing import TYPE_CHECKING, Any
 
 import polars as pl
+import torch
 import yaml
 
 from coolfrog.lib.config import SEED, seed_everything
@@ -406,6 +407,67 @@ def update_meta(folder: Path, **fields: object) -> None:
 def current_commit() -> str:
     """Full hash of the repository's HEAD."""
     return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=PATH_EXPERIMENTS.parent, text=True).strip()
+
+
+class Stage:
+    """One resumable step of a run, e.g. one latent scale: a folder whose `stage.json` marks it complete.
+
+    - `save` writes every output by its suffix, then `stage.json` last: a crash mid-save leaves the stage incomplete
+    - Suffixes: `.parquet` / `.csv` <- pl.DataFrame, `.pt` <- tensors or a dict of them, `.png` <- matplotlib Figure
+    - A resumed run (`run_experiment(..., resume=True)`) skips complete stages and loads their outputs
+
+    Examples
+    --------
+    >>> stage = Stage(path_results / "latent_scale_4")
+    >>> if not stage.is_complete():
+    ...     stage.save({"metrics.parquet": metrics, "adapter.pt": model.adapter(), "curves.png": figure})
+    >>> metrics = stage.load("metrics.parquet")
+    """
+
+    def __init__(self, folder: Path) -> None:
+        self.folder = folder
+        self.path_marker = folder / "stage.json"
+
+    def is_complete(self) -> bool:
+        """Whether `save` finished for this stage."""
+        return self.path_marker.exists()
+
+    def save(self, outputs: Mapping[str, Any]) -> None:
+        """Write `outputs` (file name -> data) into the stage folder, then mark the stage complete."""
+        self.folder.mkdir(parents=True, exist_ok=True)
+        for name, data in outputs.items():
+            path = self.folder / name
+            match path.suffix:
+                case ".parquet":
+                    data.write_parquet(path)
+                case ".csv":
+                    data.write_csv(path)
+                case ".pt":
+                    torch.save(data, path)
+                case ".png":
+                    data.savefig(path, dpi=150)
+                case suffix:
+                    raise ValueError(f"no writer for {suffix!r} files, e.g. {path}")
+        marker = {
+            "status": RunStatus.COMPLETE,
+            "date": datetime.now(UTC).isoformat(timespec="seconds"),
+            "commit_hash_git": current_commit(),
+            "files": sorted(outputs),
+        }
+        self.path_marker.write_text(json.dumps(marker, indent=2))
+
+    def load(self, name: str) -> Any:  # noqa: ANN401, the type follows the suffix
+        """Read one output of a complete stage back: DataFrame for `.parquet` / `.csv`, the saved object for `.pt`."""
+        path = self.folder / name
+        match path.suffix:
+            case ".parquet":
+                return pl.read_parquet(path)
+            case ".csv":
+                return pl.read_csv(path)
+            case ".pt":
+                return torch.load(path, map_location="cpu")
+            case suffix:
+                raise ValueError(f"no reader for {suffix!r} files, e.g. {path}")
 
 
 def repository_path(folder: Path) -> str:

@@ -7,7 +7,7 @@ Experiment scripts live in `experiments/` (e.g. `experiments/my_experiment.py`),
 ```
 01_zero-shot-autoencoding/
   config.yaml       # resolved configs (DataConfig, TadpoleConfig, ...)
-  meta.json         # {"commit_hash_git": "<full sha>", "script": "experiments/<name>.py", "date": "<ISO 8601>", "hub": {...}}
+  meta.json         # {"commit_hash_git": "<full sha>", "script": "experiments/<name>.py", "date": "<ISO 8601>", "status": "complete", "hub": {...}}
   README.md         # generated from the template below
   results/          # metrics, plots, runtime logs (latest run)
   history/          # previous runs: <date>_<commit>/{config.yaml,meta.json,README.md,results/}
@@ -27,6 +27,19 @@ Bulk data matching `experiments/.gitignore` (`*.npz`, `*.parquet`, `*.pt`, `*.sa
 - Fresh clone: `pull_experiment(HuggingFaceHub(), folder)` restores the large files of a live or archived run
 - Load weights pinned to their run: `hub.download(HubEntry.from_dict(meta["hub"]).file("results/adapter.pt"))`
 
+## Status, resume and stages
+
+`meta.json["status"]` is `running` while the script runs (also after a killed process), `complete` after success and `failed` after an exception.
+
+- `run_experiment(..., resume=True)` continues an unfinished live run in its folder instead of archiving it, configs must be identical. Scripts take it as `--resume`, e.g. `python experiments/lora_autoencoding.py --resume`. Each resume is appended to `meta.json["resumed"]`. Ctrl+C on a resumed run only restores its `meta.json`, results stay.
+- `Stage(folder)` makes a step resumable, e.g. one latent scale: `stage.save({"metrics.parquet": df, "adapter.pt": model.adapter(), "curves.png": figure})` writes the outputs by suffix, then `stage.json` last. A resumed run skips stages with a `stage.json` and reads their outputs with `stage.load(name)`.
+
+```python
+stage = Stage(path_results / f"latent_scale_{latent_scale}")
+if not stage.is_complete():
+    stage.save(fine_tune(latent_scale, stage.folder))
+metrics = stage.load("metrics.parquet")
+```
 ## Tables in the README
 
 Result tables are generated, never typed: `inject_table(path_results, name, dataframe)` as the last step of the script.
