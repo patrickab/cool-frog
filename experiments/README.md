@@ -1,13 +1,13 @@
 # Experiments
 
-One folder per experiment: `experiments/<NN>_<experiment-name>`
+One folder per experiment and data share: `experiments/<NN>_<experiment-name>` on the full dataset (cube1), `experiments/<NN>_<experiment-name>_partial` on part of it (`HOST_CONFIG.n_splits > 1`, 10 % on the default host). Both share the index `<NN>` and never overwrite each other.
 
 Experiment scripts live in `experiments/` (e.g. `experiments/my_experiment.py`), wrap their body in `with run_experiment(TITLE, GOAL, HYPOTHESIS, configs, hub=HuggingFaceHub()) as path_results:` and run from the repo root. The first run creates the folder, the script stays where it is: git versions it and `meta.json` records its path and commit. With uncommitted changes, `run_experiment` lists them and asks before writing anything, since `meta.json` only records HEAD. Rerunning reuses the folder with the same slug: the previous `config.yaml`, `meta.json` and `results/` move to `history/<date>_<commit>/` together with a copy of `README.md`, and the new run becomes the top-level source of truth. The live `README.md` is never overwritten, update its Result and Conclusion after a rerun.
 
 ```
 01_zero-shot-autoencoding/
   config.yaml       # resolved configs (DataConfig, TadpoleConfig, ...)
-  meta.json         # {"commit_hash_git": "<full sha>", "script": "experiments/<name>.py", "date": "<ISO 8601>", "status": "complete", "hub": {...}}
+  meta.json         # {"commit_hash_git": "<full sha>", "script": "experiments/<name>.py", "date": "<ISO 8601>", "host": "cube1", "data_split": "0 of 1", "status": "complete", "hub": {...}}
   README.md         # generated from the template below
   results/          # metrics, plots, runtime logs (latest run)
   history/          # previous runs: <date>_<commit>/{config.yaml,meta.json,README.md,results/}

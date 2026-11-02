@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import re
 import shutil
+import socket
 import subprocess
 import sys
 from typing import TYPE_CHECKING, Any
@@ -18,7 +19,7 @@ import polars as pl
 import torch
 import yaml
 
-from coolfrog.lib.config import SEED, seed_everything
+from coolfrog.lib.config import HOST_CONFIG, SEED, seed_everything
 from coolfrog.lib.huggingface import HubFile, HuggingFaceHub
 from coolfrog.lib.log import get_logger, setup_logging
 
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
 PATH_EXPERIMENTS = Path(__file__).parents[3] / "experiments"
 PATH_LARGE_FILE_PATTERNS = PATH_EXPERIMENTS / ".gitignore"
 RUN_FILES = ("config.yaml", "meta.json", "results")  # what one run writes, moved into history/ by the next run
+PARTIAL_SUFFIX = "_partial"  # folder suffix of runs on part of the dataset, see `HostConfig.is_partial`
 logger = get_logger(__name__)
 
 
@@ -63,9 +65,22 @@ def is_experiment_folder(folder: Path) -> bool:
     return folder.parent == PATH_EXPERIMENTS.resolve() and re.fullmatch(r"\d{2}_.+", folder.name) is not None
 
 
+def folder_suffix() -> str:
+    """`_partial` on hosts using part of the dataset, nothing on the full dataset, keeps both kinds of runs apart."""
+    return PARTIAL_SUFFIX if HOST_CONFIG.is_partial else ""
+
+
 def find_folder(title: str) -> Path | None:
-    """Return the existing `experiments/<NN>_<kebab-title>/` folder, None if the experiment is new."""
-    return next(PATH_EXPERIMENTS.glob(f"[0-9][0-9]_{kebab_case_slug(title)}"), None)
+    """Return the existing `experiments/<NN>_<kebab-title>[_partial]/` folder of this host's share, None if new."""
+    return next(PATH_EXPERIMENTS.glob(f"[0-9][0-9]_{kebab_case_slug(title)}{folder_suffix()}"), None)
+
+
+def new_folder(title: str) -> Path:
+    """Folder of a new experiment, sharing the index of the same experiment on the other data share when it exists."""
+    pattern = re.compile(rf"(\d{{2}})_{re.escape(kebab_case_slug(title))}({PARTIAL_SUFFIX})?")
+    indices = [int(match[1]) for path in PATH_EXPERIMENTS.iterdir() if (match := pattern.fullmatch(path.name))]
+    index = indices[0] if indices else next_index()
+    return PATH_EXPERIMENTS / f"{index:02d}_{kebab_case_slug(title)}{folder_suffix()}"
 
 
 RUN_FOLDER_CHANGE = re.compile(r"\"?experiments/\d{2}_[^/]+/")  # porcelain path inside a run folder, quoted when unusual
@@ -198,7 +213,7 @@ class HubEntry:
     commit_hash_hub : str
         Hugging Face commit holding every file of the run.
     run_root : str
-        Path of the run in the repository at that commit, e.g. `experiments/02_cooldata-value-distribution`.
+        Path of the run in the repository at that commit, e.g. `experiments/02_cooldata-value-distribution_partial`.
     files : tuple[str, ...]
         Paths relative to `run_root` and to the local run folder, e.g. `results/histograms.npz`.
 
@@ -210,7 +225,7 @@ class HubEntry:
     {
         "repo_id": "the-fruit-dude/cool-frog",
         "commit_hash_hub": "3f2a9c1...",
-        "run_root": "experiments/02_cooldata-value-distribution",
+        "run_root": "experiments/02_cooldata-value-distribution_partial",
         "files": ["results/histograms.npz"],
     }
     >>> model.load_adapter(hub.download(entry.file("results/latent_scale_4/adapter.pt")))
@@ -269,8 +284,8 @@ class ExperimentRun:
 def start_run(title: str, goal: str | None, hypothesis: str | None, configs: Sequence["DataclassInstance"]) -> ExperimentRun:
     """Create or reuse the experiment folder of the calling script and write the run's metadata.
 
-    - Script anywhere, experiment slug not yet in `experiments/` -> new `experiments/<NN>_<kebab-title>/`
-    - Slug already exists (rerun) -> that folder is reused
+    - Script anywhere, experiment slug not yet in `experiments/` -> new `experiments/<NN>_<kebab-title>[_partial]/`
+    - Slug already exists for this host's data share (rerun) -> that folder is reused
       - previous `config.yaml`, `meta.json`, `results/` and a copy of `README.md` move to `history/<date>_<commit>/`
     - Uncommitted changes -> lists them and asks before anything is written, `meta.json` records only the commit
     - The script is not copied, `meta.json` records its path and the commit
@@ -283,7 +298,7 @@ def start_run(title: str, goal: str | None, hypothesis: str | None, configs: Seq
     folder = script.parent if is_experiment_folder(script.parent) else find_folder(title)
     is_new_folder = folder is None
     if folder is None:
-        folder = PATH_EXPERIMENTS / f"{next_index():02d}_{kebab_case_slug(title)}"
+        folder = new_folder(title)
     path_archived_run = None if is_new_folder else archive_previous_run(folder)
     if path_archived_run is not None:
         print(f"Archived previous run to {path_archived_run}, update Result and Conclusion in {folder / 'README.md'}")
@@ -297,6 +312,8 @@ def start_run(title: str, goal: str | None, hypothesis: str | None, configs: Seq
         "script": str(script.relative_to(PATH_EXPERIMENTS.parent.resolve())),
         "date": datetime.now(UTC).isoformat(timespec="seconds"),
         "seed": SEED,
+        "host": socket.gethostname(),
+        "data_split": f"{HOST_CONFIG.idx_split} of {HOST_CONFIG.n_splits}",
         "status": RunStatus.RUNNING,
     }
     (folder / "meta.json").write_text(json.dumps(meta, indent=2))
