@@ -56,6 +56,19 @@ DEVICE = "cuda"
 RESUME = "--resume" in sys.argv  # continue an unfinished run, complete latent scale stages are loaded, not rerun
 
 
+def training_row(metrics: pl.DataFrame, latent_scale: int) -> dict[str, float]:
+    """Row of the README training table."""
+    last = metrics.select(MSE, SPECTRAL, KL).drop_nulls().tail(1).row(0, named=True)
+    return {
+        "latent_scale": latent_scale,
+        "updates": TRAIN_CONFIG.updates,
+        "training time [h]": training_hours(metrics),
+        "final train MSE": last[MSE],
+        "final train spectral loss": last[SPECTRAL],
+        "final KL": last[KL],
+    }
+
+
 def plot_training_curves(metrics: pl.DataFrame, latent_scale: int) -> Figure:
     """Train MSE and spectral loss per update, validation medians of both metrics per channel and update."""
     figure = Figure(figsize=(14, 8), layout="constrained")
@@ -110,19 +123,6 @@ def training_hours(metrics: pl.DataFrame) -> float:
         metrics.select("update", SECONDS_PER_UPDATE).drop_nulls().with_columns(pl.col("update").diff().fill_null(pl.col("update")))
     )
     return (windows["update"] * windows[SECONDS_PER_UPDATE]).sum() / 3600
-
-
-def training_row(metrics: pl.DataFrame, latent_scale: int) -> dict[str, float]:
-    """Row of the README training table."""
-    last = metrics.select(MSE, SPECTRAL, KL).drop_nulls().tail(1).row(0, named=True)
-    return {
-        "latent_scale": latent_scale,
-        "updates": TRAIN_CONFIG.updates,
-        "training time [h]": training_hours(metrics),
-        "final train MSE": last[MSE],
-        "final train spectral loss": last[SPECTRAL],
-        "final KL": last[KL],
-    }
 
 
 def fine_tune(latent_scale: int, path_stage: Path) -> dict[str, object]:
