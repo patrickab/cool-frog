@@ -25,7 +25,7 @@ from coolfrog.engine.model_evaluation import evaluate
 from coolfrog.engine.tadpole import Tadpole
 from coolfrog.lib.experiment import inject_table, run_experiment, write_configs
 from coolfrog.lib.huggingface import HuggingFaceHub
-from coolfrog.lib.log import get_logger, setup_logging, track
+from coolfrog.lib.log import get_logger, track
 from coolfrog.lib.plot import plot_slices
 
 TITLE = "Zero-shot Tadpole reconstruction on CoolData"
@@ -61,7 +61,6 @@ def reconstruct(latent_scale: int) -> pl.DataFrame:
 
 
 with run_experiment(TITLE, GOAL, HYPOTHESIS, hub=HuggingFaceHub()) as path_results:
-    setup_logging(log_file=path_results / "run.log")
     log = get_logger("coolfrog.experiment")
     stats = load_stats()
     metadata = curated_metadata()

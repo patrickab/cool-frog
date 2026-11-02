@@ -6,7 +6,7 @@ from coolfrog.engine.cooldata import CoolData, CoolMetadata, create_dataloader
 from coolfrog.lib.config import HOST_CONFIG, DataConfig, Grid
 from coolfrog.lib.datatypes import CHANNELS, NormalizationStats
 from coolfrog.lib.experiment import run_experiment
-from coolfrog.lib.log import get_logger, setup_logging, track
+from coolfrog.lib.log import get_logger, track
 
 TITLE = "Min-max normalization stats on CoolData"
 GOAL = (
@@ -18,7 +18,6 @@ HYPOTHESIS = None
 DATA_CONFIG = DataConfig(grid=Grid(latent_scale=4), batch_size=1, num_workers=8)  # 0.92 GB and 1.2 s read per design
 
 with run_experiment(TITLE, GOAL, HYPOTHESIS, [DATA_CONFIG]) as path_results:
-    setup_logging(log_file=path_results / "run.log")
     log = get_logger("coolfrog.experiment")
 
     metadata = CoolMetadata.load(HOST_CONFIG.n_splits, HOST_CONFIG.idx_split)

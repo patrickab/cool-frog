@@ -10,7 +10,7 @@ from coolfrog.lib.config import HOST_CONFIG, DataConfig, Grid
 from coolfrog.lib.datatypes import CHANNELS, Channel, FlowField, NormalizationStats
 from coolfrog.lib.experiment import run_experiment
 from coolfrog.lib.huggingface import HuggingFaceHub
-from coolfrog.lib.log import get_logger, setup_logging, track
+from coolfrog.lib.log import get_logger, track
 
 TITLE = "CoolData value distribution"
 GOAL = (
@@ -133,7 +133,6 @@ def normalized(stats: NormalizationStats, values: np.ndarray) -> np.ndarray:
 
 if __name__ == "__main__":
     with run_experiment(TITLE, GOAL, HYPOTHESIS, [DATA_CONFIG], hub=HuggingFaceHub()) as path_results:
-        setup_logging(log_file=path_results / "run.log")
         log = get_logger("coolfrog.experiment")
 
         dataset = CoolData(CoolMetadata.load(HOST_CONFIG.n_splits, HOST_CONFIG.idx_split), DATA_CONFIG)

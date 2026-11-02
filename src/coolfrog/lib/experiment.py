@@ -20,6 +20,7 @@ import yaml
 
 from coolfrog.lib.config import SEED, seed_everything
 from coolfrog.lib.huggingface import HubFile, HuggingFaceHub
+from coolfrog.lib.log import get_logger, setup_logging
 
 if TYPE_CHECKING:
     from _typeshed import DataclassInstance
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
 PATH_EXPERIMENTS = Path(__file__).parents[3] / "experiments"
 PATH_LARGE_FILE_PATTERNS = PATH_EXPERIMENTS / ".gitignore"
 RUN_FILES = ("config.yaml", "meta.json", "results")  # what one run writes, moved into history/ by the next run
+logger = get_logger(__name__)
 
 
 class RunStatus(StrEnum):
@@ -314,16 +316,29 @@ def run_experiment(  # noqa: PLR0913, the public entry point of every experiment
     - Exception -> everything stays for debugging, logs included, nothing pushed, status `failed`, the error propagates
     - KeyboardInterrupt (Ctrl+C, also `agent-proc stop`) -> `undo_run`, then the interrupt propagates
     - Killed process (SIGKILL, closed tmux window) -> no cleanup runs, status stays `running`
+    - Logs to the console and `results/run.log`, use `get_logger("coolfrog.experiment")` in the script
 
     Examples
     --------
     >>> with run_experiment(TITLE, GOAL, HYPOTHESIS, [DATA_CONFIG], hub=HuggingFaceHub(), resume=True) as path_results:
-    ...     setup_logging(log_file=path_results / "run.log")
-    ...     ...  # write results, skip stages whose outputs already exist
+    ...     log = get_logger("coolfrog.experiment")
+    ...     ...  # write results, skip complete stages
     """
     run = resume_run(title, configs) if resume else None
     if run is None:
         run = start_run(title, goal, hypothesis, configs)
+    setup_logging(log_file=run.path_results / "run.log")  # appends, a resumed run continues its log
+    if run.meta_before_resume is None:
+        logger.info("Started run in %s at commit %s", run.folder, current_commit()[:7])
+    else:
+        previous = json.loads(run.meta_before_resume)
+        logger.info(
+            "Resumed run in %s at commit %s, started %s, status was %s",
+            run.folder,
+            current_commit()[:7],
+            previous["date"],
+            previous.get("status", RunStatus.RUNNING),
+        )
     seed_everything()
     try:
         yield run.path_results
@@ -363,7 +378,6 @@ def resume_run(title: str, configs: Sequence["DataclassInstance"]) -> Experiment
     meta = json.loads(meta_before_resume)
     resumed = {"commit_hash_git": current_commit(), "date": datetime.now(UTC).isoformat(timespec="seconds")}
     update_meta(folder, status=RunStatus.RUNNING, resumed=[*meta.get("resumed", []), resumed])
-    print(f"Resuming the run in {folder}")
     return ExperimentRun(folder, path_archived_run=None, is_new_folder=False, meta_before_resume=meta_before_resume)
 
 
@@ -455,6 +469,7 @@ class Stage:
             "files": sorted(outputs),
         }
         self.path_marker.write_text(json.dumps(marker, indent=2))
+        logger.info("Stage %s complete: %s", self.folder.name, ", ".join(sorted(outputs)))
 
     def load(self, name: str) -> Any:  # noqa: ANN401, the type follows the suffix
         """Read one output of a complete stage back: DataFrame for `.parquet` / `.csv`, the saved object for `.pt`."""
