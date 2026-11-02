@@ -3,9 +3,45 @@
 from bisect import bisect_left
 from collections import defaultdict
 from collections.abc import Mapping
+from dataclasses import dataclass, replace
 import threading
+import time
 
 import polars as pl
+
+
+@dataclass(frozen=True)
+class Progress:
+    """One pass of a progress bar, times from `time.monotonic`, paused time excluded.
+
+    Attributes
+    ----------
+    started : float
+        Time of the pass's first report.
+    finished : float | None
+        Time `completed` reached `total`, None while running.
+    paused_seconds : float
+        Paused time of finished pauses, e.g. validation passes inside training.
+    paused_at : float | None
+        Start of the running pause, None while not paused.
+    """
+
+    completed: int
+    total: int
+    started: float
+    finished: float | None = None
+    paused_seconds: float = 0.0
+    paused_at: float | None = None
+
+    def elapsed(self, now: float) -> float:
+        """Unpaused seconds since the pass started, frozen once it finished or while paused."""
+        return (self.finished or self.paused_at or now) - self.started - self.paused_seconds
+
+    def remaining(self, now: float) -> float | None:
+        """Unpaused seconds left at the average rate so far, None before the first completed item."""
+        if self.completed == 0:
+            return None
+        return self.elapsed(now) * (self.total - self.completed) / self.completed
 
 
 class MetricTracker:
@@ -31,7 +67,7 @@ class MetricTracker:
         self._values: defaultdict[str, list[float]] = defaultdict(list)
         self._version = 0
         self._stop = threading.Event()
-        self._progress: dict[str, tuple[int, int]] = {}
+        self._progress: dict[str, Progress] = {}
 
     @property
     def version(self) -> int:
@@ -58,13 +94,37 @@ class MetricTracker:
             raise KeyboardInterrupt("stop requested")
 
     def set_progress(self, label: str, completed: int, total: int) -> None:
-        """Report `completed` of `total` for the progress bar `label`, KeyboardInterrupt after `request_stop`."""
-        self.raise_if_stopped()
-        with self._lock:
-            self._progress[label] = (completed, total)
+        """Report `completed` of `total` for the progress bar `label`, KeyboardInterrupt after `request_stop`.
 
-    def progress(self, label: str) -> tuple[int, int] | None:
-        """Latest `(completed, total)` of the progress bar `label`, None before its first report."""
+        - A first report or `completed` going back starts a new pass, e.g. the next validation, its clock restarts
+        """
+        self.raise_if_stopped()
+        now = time.monotonic()
+        with self._lock:
+            previous = self._progress.get(label)
+            if previous is None or completed < previous.completed:
+                self._progress[label] = Progress(completed, total, started=now, finished=now if completed >= total else None)
+                return
+            finished = None if completed < total else previous.finished or now
+            self._progress[label] = replace(previous, completed=completed, total=total, finished=finished)
+
+    def pause_progress(self, label: str) -> None:
+        """Stop the clock of the progress bar `label` until `resume_progress`, e.g. training during validation."""
+        with self._lock:
+            previous = self._progress.get(label)
+            if previous is not None and previous.paused_at is None:
+                self._progress[label] = replace(previous, paused_at=time.monotonic())
+
+    def resume_progress(self, label: str) -> None:
+        """Restart the clock of the progress bar `label` after `pause_progress`."""
+        with self._lock:
+            previous = self._progress.get(label)
+            if previous is not None and previous.paused_at is not None:
+                paused_seconds = previous.paused_seconds + time.monotonic() - previous.paused_at
+                self._progress[label] = replace(previous, paused_seconds=paused_seconds, paused_at=None)
+
+    def progress(self, label: str) -> Progress | None:
+        """Latest state of the progress bar `label`, None before its first report."""
         with self._lock:
             return self._progress.get(label)
 

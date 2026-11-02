@@ -12,6 +12,7 @@ import math
 import re
 import sys
 import threading
+import time
 from typing import Literal
 
 import plotext
@@ -25,10 +26,10 @@ from textual.binding import Binding
 from textual.containers import Container, Horizontal
 from textual.content import Content
 from textual.geometry import Size
-from textual.widgets import Footer, Header, Label, ProgressBar, RichLog, Static
+from textual.widgets import DataTable, Footer, Header, Label, ProgressBar, RichLog, Static
 
 from coolfrog.lib.log import CONSOLE, NUMBER_HIGHLIGHTER, PACKAGE_LOGGER_NAME
-from coolfrog.lib.metrics import MetricTracker
+from coolfrog.lib.metrics import MetricTracker, Progress
 
 MIN_CHART_SIZE = Size(20, 6)
 REFRESH_SECONDS = 0.5
@@ -36,7 +37,7 @@ GRID_COLUMNS = 2
 MIN_TICKS = 2
 MAX_TICKS = 6
 MAX_LINEAR_TICKS = 5
-TABLE_CHROME_ROWS = 4  # top border, header, header rule, bottom border
+MIN_LOG_DECADES = 1.0  # smallest span of a log axis
 PLOTEXT_LOCK = threading.Lock()  # plotext keeps one global figure
 # Background and 256-color foreground codes of the plotext theme: stripped, so axes inherit the terminal colors,
 # series keep their 24-bit colors
@@ -121,7 +122,7 @@ def render_chart(tracker: MetricTracker, spec: ChartSpec, size: Size) -> Text:
             figure.clear.all()
             figure.plot_size(size.width, size.height)
             figure.theme("dark")
-            _draw(figure, spec, lines)
+            _draw(figure, spec, lines, tracker.last_step or 0)
             return Text.from_ansi(THEME_COLORS.sub("", figure.build().string()).rstrip("\n"))
         except Exception as exception:  # a chart bug must never kill a training run
             return Text(f"chart unavailable: {exception!r}", style="dim")
@@ -153,13 +154,13 @@ def _format(value: float | None, pattern: str) -> str:
     return "-" if value is None else pattern.format(value)
 
 
-def _draw(figure: "plotext.figure", spec: ChartSpec, lines: list[tuple[SeriesSpec, list[int], list[float]]]) -> None:
-    """Draw `lines` into `figure`, log axes as log10 values on a linear axis with round 1-2-5 tick labels.
+def _draw(figure: "plotext.figure", spec: ChartSpec, lines: list[tuple[SeriesSpec, list[int], list[float]]], last_step: int) -> None:
+    """Draw `lines` into `figure` over steps 0 to `last_step`, log axes as log10 values with round 1-2-5 tick labels.
 
     - plotext's own log scale drops the signal once custom ticks are set
     """
     values_per_side: dict[str, list[float]] = {"left": [], "right": []}
-    steps: list[int] = []
+    steps: list[int] = [last_step]
     for line, line_steps, line_values in lines:
         keep = [i for i, value in enumerate(line_values) if math.isfinite(value) and (value > 0 or not spec.log_y)]
         if not keep:
@@ -173,10 +174,14 @@ def _draw(figure: "plotext.figure", spec: ChartSpec, lines: list[tuple[SeriesSpe
         values_per_side[line.side] += kept_values
     for side, values in values_per_side.items():
         if values and spec.log_y:
-            ticks, labels = log_ticks(values)
+            low, high = log_axis_range(values)
+            figure.ruler("y", side).lim(low, high)
+            ticks, labels = log_ticks([10**low, 10**high])
             figure.ruler("y", side).ticks([math.log10(tick) for tick in ticks], labels)
-    if steps:
-        figure.ruler("x").ticks(*linear_ticks(steps))
+    last_step = max(steps, default=0)
+    if last_step > 0:  # every chart spans 0 to the tracker's last step, so validation points line up with training
+        figure.ruler("x").lim(0, last_step)
+        figure.ruler("x").ticks(*linear_ticks([0, last_step]))
     figure.label("step", "x")
     if spec.y_label:
         figure.label(spec.y_label, "y")
@@ -186,10 +191,41 @@ def _rgb(color: str) -> tuple[int, int, int]:
     return tuple(int(color[index : index + 2], 16) for index in (1, 3, 5))
 
 
+def duration(seconds: float) -> str:
+    """`h:mm:ss`, hours unbounded: `1:02:03`, `26:00:00`."""
+    minutes, secs = divmod(round(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}:{minutes:02d}:{secs:02d}"
+
+
+def progress_times(progress: Progress, now: float) -> str:
+    """Elapsed, remaining and projected total time of a pass, paused time excluded, `done in` once finished."""
+    elapsed = progress.elapsed(now)
+    if progress.finished is not None:
+        return f"done in {duration(elapsed)}"
+    remaining = progress.remaining(now)
+    times = f"{duration(elapsed)} elapsed"
+    if remaining is not None:
+        times += f" · ~{duration(remaining)} left · ~{duration(elapsed + remaining)} total"
+    return times + (" · paused" if progress.paused_at is not None else "")
+
+
 def scientific(value: float) -> str:
     """Compact scientific notation, `2e-3`, `1.5e-5`."""
     mantissa, exponent = f"{value:.1e}".split("e")
     return f"{mantissa.rstrip('0').rstrip('.')}e{int(exponent)}"
+
+
+def log_axis_range(values: list[float]) -> tuple[float, float]:
+    """log10 range covering `values` (all > 0), widened around its middle to at least `MIN_LOG_DECADES`.
+
+    - Keeps a nearly flat series from filling the chart height, its noise would look like large swings
+    """
+    low, high = math.log10(min(values)), math.log10(max(values))
+    if high - low < MIN_LOG_DECADES:
+        middle = (low + high) / 2
+        low, high = middle - MIN_LOG_DECADES / 2, middle + MIN_LOG_DECADES / 2
+    return low, high
 
 
 def log_ticks(values: list[float]) -> tuple[list[float], list[str]]:
@@ -254,14 +290,42 @@ class ChartPane(LivePane):
         return render_chart(self._tracker, self._spec, size)
 
 
-class TablePane(LivePane):
+class MetricsTable(DataTable):
+    """Scrollable table of every logged step, follows new rows unless scrolled up."""
+
     def __init__(self, tracker: MetricTracker, spec: DashboardSpec) -> None:
-        super().__init__(tracker)
-        self._spec = spec
+        super().__init__(classes="pane", cursor_type="none")
+        self._tracker, self._spec = tracker, spec
+        self._drawn_version = -1
+        self._steps: list[int] = []
         self.border_title = "Metrics"
 
-    def build(self, size: Size) -> Table:
-        return render_table(self._tracker, self._spec, size.height - TABLE_CHROME_ROWS)
+    def on_mount(self) -> None:
+        self.add_column(Text(self._spec.step_header, style="bold cyan", justify="right"), key="step")
+        for column in self._spec.columns:
+            self.add_column(Text(column.header, style="bold cyan", justify="right"), key=column.name)
+
+    def redraw(self) -> None:
+        """Append new steps and refresh the last rows, values can arrive later at a step, e.g. its validation."""
+        if self._tracker.version == self._drawn_version:
+            return
+        self._drawn_version = self._tracker.version
+        is_following = self.scroll_y >= self.max_scroll_y
+        for step in self._steps[-2:]:
+            for column in self._spec.columns:
+                self.update_cell(str(step), column.name, self._cell(column, step))
+        names = [column.name for column in self._spec.columns]
+        for step in self._tracker.recent_steps(names, count=sys.maxsize):
+            if self._steps and step <= self._steps[-1]:
+                continue
+            cells = [self._cell(column, step) for column in self._spec.columns]
+            self.add_row(Text(str(step), style="cyan", justify="right"), *cells, key=str(step))
+            self._steps.append(step)
+        if is_following:
+            self.call_after_refresh(self.scroll_end, animate=False)  # after the new rows are laid out
+
+    def _cell(self, column: ColumnSpec, step: int) -> Text:
+        return Text(_format(self._tracker.value_at(column.name, step), column.fmt), style=column.style, justify="right")
 
 
 class DashboardApp(App[None]):
@@ -274,6 +338,8 @@ class DashboardApp(App[None]):
     CSS = """
     .progress-row { height: 1; padding: 0 1; }
     .progress-label { width: 12; }
+    .progress-count { width: 17; text-align: right; padding: 0 2 0 0; }
+    .progress-time { width: auto; padding: 0 0 0 2; color: $text-muted; }
     #summary { height: auto; padding: 0 1; }
     #grid { layout: grid; grid-size: 2; height: 1fr; }
     .pane { height: 100%; border: round $primary; padding: 0 1; }
@@ -287,17 +353,21 @@ class DashboardApp(App[None]):
         self.result: object = None
         self.error: BaseException | None = None
         self._ui_thread = threading.get_ident()
-        self._panes: list[LivePane] = []
+        self._panes: list[LivePane | MetricsTable] = []
         self._work_thread: threading.Thread | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
         for index, label in enumerate(self.spec.progress_bars):
             yield Horizontal(
-                Label(label, classes="progress-label"), ProgressBar(id=f"progress-{index}", show_eta=True), classes="progress-row"
+                Label(label, classes="progress-label"),
+                Label("", id=f"progress-count-{index}", classes="progress-count"),
+                ProgressBar(id=f"progress-{index}", show_eta=False),
+                Label("", id=f"progress-time-{index}", classes="progress-time"),
+                classes="progress-row",
             )
         yield Static(self.spec.summary, id="summary")
-        self._panes = [TablePane(self.tracker, self.spec), *(ChartPane(self.tracker, chart) for chart in self.spec.charts)]
+        self._panes = [MetricsTable(self.tracker, self.spec), *(ChartPane(self.tracker, chart) for chart in self.spec.charts)]
         yield Container(*self._panes, id="grid")
         yield RichLog(id="log", markup=False, wrap=True)
         yield Footer()
@@ -338,15 +408,14 @@ class DashboardApp(App[None]):
         step = self.tracker.last_step
         if step is not None:
             self.sub_title = f"step {step}"
+        now = time.monotonic()
         for index, label in enumerate(self.spec.progress_bars):
             progress = self.tracker.progress(label)
             if progress is None:
                 continue
-            completed, total = progress
-            bar = self.query_one(f"#progress-{index}", ProgressBar)
-            if bar.progress is not None and completed < bar.progress:  # a new pass, e.g. the next validation
-                bar.update(total=None)  # resets the ETA estimate
-            bar.update(total=total, progress=completed)
+            self.query_one(f"#progress-{index}", ProgressBar).update(total=progress.total, progress=progress.completed)
+            self.query_one(f"#progress-count-{index}", Label).update(f"{progress.completed:,} / {progress.total:,}")
+            self.query_one(f"#progress-time-{index}", Label).update(progress_times(progress, now))
         for pane in self._panes:
             pane.redraw()
 
