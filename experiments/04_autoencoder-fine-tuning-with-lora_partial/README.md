@@ -1,4 +1,4 @@
-# LoRA autoencoding
+# Autoencoder fine-tuning with LoRA
 
 ## Goal
 

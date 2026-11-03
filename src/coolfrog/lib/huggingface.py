@@ -6,8 +6,8 @@
 Examples
 --------
 >>> hub = HuggingFaceHub()  # token from HF_TOKEN
->>> ADAPTER = HubFile("experiments/03_lora-autoencoding/results/latent_scale_4/adapter.pt")  # latest upload
->>> PINNED_ADAPTER = HubFile("experiments/03_lora-autoencoding/results/latent_scale_4/adapter.pt", commit_hash_hub="3f2a9c1")
+>>> ADAPTER = HubFile("experiments/04_autoencoder-fine-tuning-with-lora/results/latent_scale_4/adapter.pt")  # latest upload
+>>> PINNED_ADAPTER = HubFile("experiments/04_autoencoder-fine-tuning-with-lora/results/latent_scale_4/adapter.pt", commit_hash_hub="3f2a9c1")
 >>> model.load_adapter(hub.download(PINNED_ADAPTER))
 """
 

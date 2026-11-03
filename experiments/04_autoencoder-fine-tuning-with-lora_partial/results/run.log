@@ -36,3 +36,8 @@
 2026-11-02 22:38:07,397 INFO     coolfrog.experiment: Latent scale 4: training
 2026-11-02 22:38:07,433 INFO     coolfrog.engine.cooldata: 0 of 5666 designs uncached
 2026-11-02 22:38:07,453 INFO     coolfrog.experiment: 5538 train and 128 validation designs on grid (1600, 320, 64)
+2026-11-03 06:57:37,563 INFO     coolfrog.lib.experiment: Resumed run in /home/noob/git/cool-frog/experiments/04_autoencoder-fine-tuning-with-lora_partial at commit 41813db, started 2026-11-02T07:38:51+00:00, status was running
+2026-11-03 06:57:37,638 INFO     coolfrog.experiment: Latent scale 2: stage complete, loading its results from /home/noob/git/cool-frog/experiments/04_autoencoder-fine-tuning-with-lora_partial/results/latent_scale_2
+2026-11-03 06:57:37,708 INFO     coolfrog.experiment: Latent scale 4: training
+2026-11-03 06:57:37,781 INFO     coolfrog.engine.cooldata: 0 of 5666 designs uncached
+2026-11-03 06:57:37,799 INFO     coolfrog.experiment: 5538 train and 128 validation designs on grid (1600, 320, 64)
