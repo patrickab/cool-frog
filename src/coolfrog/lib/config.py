@@ -11,6 +11,7 @@ import torch
 
 Range = tuple[float | None, float | None]  # inclusive (min, max), None = open side
 FinetuneState = Literal["frozen", "FPFT"] | int  # frozen, full-parameter fine-tuning, or LoRA rank
+PATH_REPO = Path(__file__).parents[3]
 
 # Voxels per Tadpole latent cell per axis, 2 conv + 2 transformer stride-2 layers, identical for every Tadpole size
 TADPOLE_DOWNSAMPLING_FACTOR = 16
@@ -92,7 +93,7 @@ class HostConfig:
         return self.n_splits > 1
 
 
-DEFAULT_HOST_CONFIG = HostConfig(cache_dir=Path.cwd() / ".cache", n_splits=10, idx_split=0)
+DEFAULT_HOST_CONFIG = HostConfig(cache_dir=PATH_REPO / ".cache", n_splits=10, idx_split=0)
 CUBE1_HOST_CONFIG = HostConfig(cache_dir=Path("/mnt/data/bitzer/.cache"), n_splits=1, idx_split=0)
 HOST_CONFIG = CUBE1_HOST_CONFIG if socket.gethostname() == "cube1" else DEFAULT_HOST_CONFIG
 

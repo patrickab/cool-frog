@@ -1,13 +1,13 @@
 # Experiments
 
-One folder per experiment and data share: `experiments/<NN>_<experiment-name>` on the full dataset (cube1), `experiments/<NN>_<experiment-name>_partial` on part of it (`HOST_CONFIG.n_splits > 1`, 10 % on the default host). Both share the index `<NN>` and never overwrite each other.
+One folder per experiment and data share, results only: `experiments/<NN>_<experiment-name>` on the full dataset (cube1), `experiments/<NN>_<experiment-name>_partial` on part of it (`HOST_CONFIG.n_splits > 1`, 10 % on the default host). Both share the index `<NN>` and never overwrite each other. The scripts are code and live in the package.
 
-Experiment scripts live in `experiments/` (e.g. `experiments/my_experiment.py`), wrap their body in `with run_experiment(TITLE, GOAL, HYPOTHESIS, configs, hub=HuggingFaceHub()) as path_results:` and run from the repo root. The first run creates the folder, the script stays where it is: git versions it and `meta.json` records its path and commit. With uncommitted changes, `run_experiment` lists them and asks before writing anything, since `meta.json` only records HEAD. Rerunning reuses the folder with the same slug: the previous `config.yaml`, `meta.json` and `results/` move to `history/<date>_<commit>/` together with a copy of `README.md`, and the new run becomes the top-level source of truth. The live `README.md` is never overwritten, update its Result and Conclusion after a rerun.
+Experiment scripts live in `src/coolfrog/experiments/` (e.g. `src/coolfrog/experiments/my_experiment.py`), wrap their body in `with run_experiment(TITLE, GOAL, HYPOTHESIS, configs, hub=HuggingFaceHub()) as path_results:` and run as a module: `uv run python -m coolfrog.experiments.my_experiment`. Notebooks import their helpers like any module, e.g. `from coolfrog.experiments import value_distribution`, so a script imported elsewhere keeps its run body under `if __name__ == "__main__":`. The first run creates the folder, the script stays where it is: git versions it and `meta.json` records its path and commit. With uncommitted changes, `run_experiment` lists them and asks before writing anything, since `meta.json` only records HEAD. Rerunning reuses the folder with the same slug: the previous `config.yaml`, `meta.json` and `results/` move to `history/<date>_<commit>/` together with a copy of `README.md`, and the new run becomes the top-level source of truth. The live `README.md` is never overwritten, update its Result and Conclusion after a rerun.
 
 ```
 01_zero-shot-autoencoding/
   config.yaml       # resolved configs (DataConfig, TadpoleConfig, ...)
-  meta.json         # {"commit_hash_git": "<full sha>", "script": "experiments/<name>.py", "date": "<ISO 8601>", "host": "cube1", "data_split": "0 of 1", "status": "complete", "hub": {...}}
+  meta.json         # {"commit_hash_git": "<full sha>", "script": "src/coolfrog/experiments/<name>.py", "date": "<ISO 8601>", "host": "cube1", "data_split": "0 of 1", "status": "complete", "hub": {...}}
   README.md         # generated from the template below
   results/          # metrics, plots, runtime logs (latest run)
   history/          # previous runs: <date>_<commit>/{config.yaml,meta.json,README.md,results/}
@@ -31,7 +31,7 @@ Bulk data matching `experiments/.gitignore` (`*.npz`, `*.parquet`, `*.pt`, `*.sa
 
 `meta.json["status"]` is `running` while the script runs (also after a killed process), `complete` after success and `failed` after an exception.
 
-- `run_experiment(..., resume=True)` continues an unfinished live run in its folder instead of archiving it, configs must be identical. Scripts take it as `--resume`, e.g. `python experiments/finetune_autoencoder.py --resume`. Each resume is appended to `meta.json["resumed"]`. Ctrl+C on a resumed run only restores its `meta.json`, results stay.
+- `run_experiment(..., resume=True)` continues an unfinished live run in its folder instead of archiving it, configs must be identical. Scripts take it as `--resume`, e.g. `uv run python -m coolfrog.experiments.finetune_autoencoder --resume`. Each resume is appended to `meta.json["resumed"]`. Ctrl+C on a resumed run only restores its `meta.json`, results stay.
 - `Stage(folder)` makes a step resumable, e.g. one latent scale: `stage.save({"metrics.parquet": df, "adapter.pt": model.adapter(), "curves.png": figure})` writes the outputs by suffix, then `stage.json` last. A resumed run skips stages with a `stage.json` and reads their outputs with `stage.load(name)`.
 
 ```python

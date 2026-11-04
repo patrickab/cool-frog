@@ -1,13 +1,18 @@
 """Zero-shot Tadpole-B reconstruction of the curated validation designs at 2x and 4x, the baseline of all later experiments.
 
-Run from the repo root. Results:
+Results:
 
 - `results/per_design.parquet` (Hugging Face): NRMSE and spectral loss per latent scale, design and channel
 - `results/zero-shot-nrmse.csv`, `results/zero-shot-spectral-loss.csv` (README tables): median and q0.9 per channel
 - `results/latent_scale_<n>/slices_first_validation_design.png`
 """
 
-from autoencoding import (
+import polars as pl
+import torch
+
+from coolfrog.engine.model_evaluation import evaluate
+from coolfrog.engine.tadpole import Tadpole
+from coolfrog.experiments.autoencoding import (
     LATENT_SCALES,
     curated_metadata,
     data_config,
@@ -18,11 +23,6 @@ from autoencoding import (
     train_validation_split,
     validation_loader,
 )
-import polars as pl
-import torch
-
-from coolfrog.engine.model_evaluation import evaluate
-from coolfrog.engine.tadpole import Tadpole
 from coolfrog.lib.experiment import inject_table, run_experiment, write_configs
 from coolfrog.lib.huggingface import HuggingFaceHub
 from coolfrog.lib.log import get_logger, track

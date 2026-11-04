@@ -1,4 +1,4 @@
-"""Per-channel fluid value histograms and per-design stats over all CoolData designs, run from the repo root."""
+"""Per-channel fluid value histograms and per-design stats over all CoolData designs."""
 
 import numpy as np
 import polars as pl

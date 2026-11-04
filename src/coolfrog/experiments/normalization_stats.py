@@ -1,4 +1,4 @@
-"""Global per-channel fluid min and max over all CoolData designs at 1600x320x64, run from the repo root."""
+"""Global per-channel fluid min and max over all CoolData designs at 1600x320x64."""
 
 import polars as pl
 

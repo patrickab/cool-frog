@@ -19,14 +19,14 @@ import polars as pl
 import torch
 import yaml
 
-from coolfrog.lib.config import HOST_CONFIG, SEED, seed_everything
+from coolfrog.lib.config import HOST_CONFIG, PATH_REPO, SEED, seed_everything
 from coolfrog.lib.huggingface import HubFile, HuggingFaceHub
 from coolfrog.lib.log import get_logger, setup_logging
 
 if TYPE_CHECKING:
     from _typeshed import DataclassInstance
 
-PATH_EXPERIMENTS = Path(__file__).parents[3] / "experiments"
+PATH_EXPERIMENTS = PATH_REPO / "experiments"
 PATH_LARGE_FILE_PATTERNS = PATH_EXPERIMENTS / ".gitignore"
 RUN_FILES = ("config.yaml", "meta.json", "results")  # what one run writes, moved into history/ by the next run
 PARTIAL_SUFFIX = "_partial"  # folder suffix of runs on part of the dataset, see `HostConfig.is_partial`

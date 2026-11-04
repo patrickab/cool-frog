@@ -1,6 +1,6 @@
 """LoRA-32 fine-tuning of the Tadpole-B autoencoder on the curated designs at 2x, then 4x, compared to zero-shot on the same validation designs.
 
-Run from the repo root, `--resume` continues an unfinished run. One `Stage` per latent scale, `results/latent_scale_<n>/`:
+`--resume` continues an unfinished run. One `Stage` per latent scale, `results/latent_scale_<n>/`:
 
 - `metrics.parquet` (Hugging Face): train MSE, spectral loss and KL per update, validation medians
 - `per_design.parquet` (Hugging Face): final NRMSE and spectral loss per design and channel
@@ -13,7 +13,16 @@ README tables: `results/nrmse.csv`, `results/spectral-loss.csv`, `results/traini
 from pathlib import Path
 import sys
 
-from autoencoding import (
+from matplotlib.figure import Figure
+import polars as pl
+import torch
+
+from coolfrog.engine.cooldata import create_dataloader
+from coolfrog.engine.model_evaluation import evaluate
+from coolfrog.engine.tadpole import Tadpole
+from coolfrog.engine.training import RandomCrops, fine_tune_autoencoder
+from coolfrog.engine.training_metrics import KL, MSE, NRMSE, SECONDS_PER_UPDATE, SPECTRAL, SPECTRAL_LOSS, validation_name
+from coolfrog.experiments.autoencoding import (
     LATENT_SCALES,
     TRAIN_CONFIG,
     curated_metadata,
@@ -25,15 +34,6 @@ from autoencoding import (
     train_validation_split,
     validation_loader,
 )
-from matplotlib.figure import Figure
-import polars as pl
-import torch
-
-from coolfrog.engine.cooldata import create_dataloader
-from coolfrog.engine.model_evaluation import evaluate
-from coolfrog.engine.tadpole import Tadpole
-from coolfrog.engine.training import RandomCrops, fine_tune_autoencoder
-from coolfrog.engine.training_metrics import KL, MSE, NRMSE, SECONDS_PER_UPDATE, SPECTRAL, SPECTRAL_LOSS, validation_name
 from coolfrog.lib.datatypes import CHANNELS
 from coolfrog.lib.experiment import Stage, inject_table, run_experiment, write_configs
 from coolfrog.lib.huggingface import HuggingFaceHub
