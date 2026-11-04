@@ -41,3 +41,62 @@
 2026-11-03 06:57:37,708 INFO     coolfrog.experiment: Latent scale 4: training
 2026-11-03 06:57:37,781 INFO     coolfrog.engine.cooldata: 0 of 5666 designs uncached
 2026-11-03 06:57:37,799 INFO     coolfrog.experiment: 5538 train and 128 validation designs on grid (1600, 320, 64)
+2026-11-03 06:58:51,026 INFO     coolfrog.lib.experiment: Resumed run in /home/noob/git/cool-frog/experiments/04_autoencoder-fine-tuning-with-lora_partial at commit 0b114f5, started 2026-11-02T07:38:51+00:00, status was running
+2026-11-03 06:58:51,099 INFO     coolfrog.experiment: Latent scale 2: stage complete, loading its results from /home/noob/git/cool-frog/experiments/04_autoencoder-fine-tuning-with-lora_partial/results/latent_scale_2
+2026-11-03 06:58:51,104 INFO     coolfrog.experiment: Latent scale 4: training
+2026-11-03 06:58:51,126 INFO     coolfrog.engine.cooldata: 0 of 5666 designs uncached
+2026-11-03 06:58:51,146 INFO     coolfrog.experiment: 5538 train and 128 validation designs on grid (1600, 320, 64)
+2026-11-03 08:15:22,581 INFO     coolfrog.engine.training_metrics: update 0 validation NRMSE 14.982 % spectral loss 6.325e-01
+2026-11-03 08:55:16,451 INFO     coolfrog.engine.training: update 1000 train MSE 1.982e-04
+2026-11-03 10:11:50,909 INFO     coolfrog.engine.training_metrics: update 1000 validation NRMSE 12.736 % spectral loss 6.029e-01
+2026-11-03 10:51:44,345 INFO     coolfrog.engine.training: update 2000 train MSE 3.904e-04
+2026-11-03 12:08:22,538 INFO     coolfrog.engine.training_metrics: update 2000 validation NRMSE 27.710 % spectral loss 6.008e-01
+2026-11-03 12:48:25,858 INFO     coolfrog.engine.training: update 3000 train MSE 1.619e-04
+2026-11-03 14:05:09,423 INFO     coolfrog.engine.training_metrics: update 3000 validation NRMSE 11.433 % spectral loss 6.023e-01
+2026-11-03 14:45:11,524 INFO     coolfrog.engine.training: update 4000 train MSE 1.838e-04
+2026-11-03 16:01:56,500 INFO     coolfrog.engine.training_metrics: update 4000 validation NRMSE 10.934 % spectral loss 5.988e-01
+2026-11-03 16:41:59,993 INFO     coolfrog.engine.training: update 5000 train MSE 1.256e-04
+2026-11-03 17:58:43,583 INFO     coolfrog.engine.training_metrics: update 5000 validation NRMSE 9.950 % spectral loss 5.957e-01
+2026-11-03 18:38:41,848 INFO     coolfrog.engine.training: update 6000 train MSE 7.985e-05
+2026-11-03 19:55:30,210 INFO     coolfrog.engine.training_metrics: update 6000 validation NRMSE 12.138 % spectral loss 5.934e-01
+2026-11-03 20:35:34,248 INFO     coolfrog.engine.training: update 7000 train MSE 2.068e-04
+2026-11-03 21:52:24,298 INFO     coolfrog.engine.training_metrics: update 7000 validation NRMSE 9.378 % spectral loss 5.934e-01
+2026-11-03 22:32:27,338 INFO     coolfrog.engine.training: update 8000 train MSE 1.546e-04
+2026-11-03 23:49:16,424 INFO     coolfrog.engine.training_metrics: update 8000 validation NRMSE 9.265 % spectral loss 5.893e-01
+2026-11-04 00:29:21,555 INFO     coolfrog.engine.training: update 9000 train MSE 1.006e-04
+2026-11-04 01:46:18,580 INFO     coolfrog.engine.training_metrics: update 9000 validation NRMSE 14.432 % spectral loss 5.890e-01
+2026-11-04 02:26:24,566 INFO     coolfrog.engine.training: update 10000 train MSE 1.880e-04
+2026-11-04 03:43:21,605 INFO     coolfrog.engine.training_metrics: update 10000 validation NRMSE 11.986 % spectral loss 5.901e-01
+2026-11-04 04:23:31,303 INFO     coolfrog.engine.training: update 11000 train MSE 5.296e-05
+2026-11-04 05:40:31,668 INFO     coolfrog.engine.training_metrics: update 11000 validation NRMSE 9.548 % spectral loss 5.888e-01
+2026-11-04 06:20:47,872 INFO     coolfrog.engine.training: update 12000 train MSE 1.115e-04
+2026-11-04 07:37:45,664 INFO     coolfrog.engine.training_metrics: update 12000 validation NRMSE 9.433 % spectral loss 5.922e-01
+2026-11-04 08:17:52,063 INFO     coolfrog.engine.training: update 13000 train MSE 3.535e-05
+2026-11-04 09:34:46,435 INFO     coolfrog.engine.training_metrics: update 13000 validation NRMSE 9.824 % spectral loss 5.886e-01
+2026-11-04 10:15:00,779 INFO     coolfrog.engine.training: update 14000 train MSE 2.191e-04
+2026-11-04 11:31:59,341 INFO     coolfrog.engine.training_metrics: update 14000 validation NRMSE 9.111 % spectral loss 5.848e-01
+2026-11-04 13:05:25,004 INFO     coolfrog.lib.experiment: Stage latent_scale_4 complete: adapter.pt, metrics.parquet, per_design.parquet, slices_first_validation_design.png, training_curves.png
+2026-11-04 13:05:25,083 INFO     coolfrog.experiment: nrmse
+shape: (4, 10)
+┌──────────────┬───────────┬───────────┬───────────┬───┬────────────┬───────────┬───────────┬───────────┐
+│ latent_scale ┆ model     ┆ statistic ┆ Vx [m/s]  ┆ … ┆ p [Pa]     ┆ T [K]     ┆ k [m²/s²] ┆ ε [m²/s³] │
+│ ---          ┆ ---       ┆ ---       ┆ ---       ┆   ┆ ---        ┆ ---       ┆ ---       ┆ ---       │
+│ i64          ┆ str       ┆ str       ┆ f64       ┆   ┆ f64        ┆ f64       ┆ f64       ┆ f64       │
+╞══════════════╪═══════════╪═══════════╪═══════════╪═══╪════════════╪═══════════╪═══════════╪═══════════╡
+│ 2            ┆ zero-shot ┆ median    ┆ 19.568233 ┆ … ┆ 176.487083 ┆ 24.023785 ┆ 20.364666 ┆ 12.339661 │
+│ 2            ┆ LoRA-32   ┆ median    ┆ 6.784977  ┆ … ┆ 30.362646  ┆ 10.596349 ┆ 7.372408  ┆ 6.693287  │
+│ 4            ┆ zero-shot ┆ median    ┆ 9.066726  ┆ … ┆ 40.917267  ┆ 12.953612 ┆ 10.860187 ┆ 8.080104  │
+│ 4            ┆ LoRA-32   ┆ median    ┆ 4.907851  ┆ … ┆ 22.959226  ┆ 7.57626   ┆ 5.358495  ┆ 4.640734  │
+└──────────────┴───────────┴───────────┴───────────┴───┴────────────┴───────────┴───────────┴───────────┘
+2026-11-04 13:05:25,090 INFO     coolfrog.experiment: spectral-loss
+shape: (4, 10)
+┌──────────────┬───────────┬───────────┬──────────┬───┬──────────┬──────────┬───────────┬───────────┐
+│ latent_scale ┆ model     ┆ statistic ┆ Vx [m/s] ┆ … ┆ p [Pa]   ┆ T [K]    ┆ k [m²/s²] ┆ ε [m²/s³] │
+│ ---          ┆ ---       ┆ ---       ┆ ---      ┆   ┆ ---      ┆ ---      ┆ ---       ┆ ---       │
+│ i64          ┆ str       ┆ str       ┆ f64      ┆   ┆ f64      ┆ f64      ┆ f64       ┆ f64       │
+╞══════════════╪═══════════╪═══════════╪══════════╪═══╪══════════╪══════════╪═══════════╪═══════════╡
+│ 2            ┆ zero-shot ┆ median    ┆ 0.289949 ┆ … ┆ 0.060989 ┆ 0.573981 ┆ 0.785761  ┆ 0.588558  │
+│ 2            ┆ LoRA-32   ┆ median    ┆ 0.275857 ┆ … ┆ 0.061036 ┆ 0.512853 ┆ 0.675047  ┆ 0.547938  │
+│ 4            ┆ zero-shot ┆ median    ┆ 0.420701 ┆ … ┆ 0.055912 ┆ 0.757808 ┆ 0.970565  ┆ 0.773326  │
+│ 4            ┆ LoRA-32   ┆ median    ┆ 0.408232 ┆ … ┆ 0.071529 ┆ 0.722426 ┆ 0.836685  ┆ 0.718446  │
+└──────────────┴───────────┴───────────┴──────────┴───┴──────────┴──────────┴───────────┴───────────┘

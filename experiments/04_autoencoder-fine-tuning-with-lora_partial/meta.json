@@ -2,5 +2,25 @@
   "commit_hash_git": "0fccad5816dc886a21d02603e13c57a38a752f45",
   "script": "experiments/finetune_autoencoder.py",
   "date": "2026-11-02T07:38:51+00:00",
-  "seed": 42
+  "seed": 42,
+  "status": "complete",
+  "resumed": [
+    {
+      "commit_hash_git": "0b114f5ad202eb6fe9bbc3f18b3cb48ac5211cc2",
+      "date": "2026-11-03T05:58:51+00:00"
+    }
+  ],
+  "hub": {
+    "repo_id": "the-fruit-dude/cool-frog",
+    "commit_hash_hub": "9c3acd0d2e41d51ac79d0fc94b73aac337e7f6c1",
+    "run_root": "experiments/04_autoencoder-fine-tuning-with-lora_partial",
+    "files": [
+      "results/latent_scale_2/adapter.pt",
+      "results/latent_scale_2/metrics.parquet",
+      "results/latent_scale_2/per_design.parquet",
+      "results/latent_scale_4/adapter.pt",
+      "results/latent_scale_4/metrics.parquet",
+      "results/latent_scale_4/per_design.parquet"
+    ]
+  }
 }
