@@ -10,6 +10,7 @@ Results:
 import polars as pl
 import torch
 
+from coolfrog.engine.cooldata import CoolData
 from coolfrog.engine.model_evaluation import evaluate
 from coolfrog.engine.tadpole import Tadpole
 from coolfrog.experiments.autoencoding import (
@@ -19,8 +20,8 @@ from coolfrog.experiments.autoencoding import (
     load_stats,
     per_design_frame,
     quantile_table,
+    split_metadata,
     tadpole_config,
-    train_validation_split,
     validation_loader,
 )
 from coolfrog.lib.experiment import inject_table, run_experiment, write_configs
@@ -39,15 +40,14 @@ QUANTILES = (0.5, 0.9)
 DEVICE = "cuda"
 
 
-def reconstruct(latent_scale: int) -> pl.DataFrame:
+def reconstruct(latent_scale: int, validation: CoolData) -> pl.DataFrame:
     """Evaluate the frozen model at one resolution, write its configs and slice plot, return the per-design table."""
-    config = data_config(latent_scale)
+    config = validation.config
     model_config = tadpole_config(latent_scale, "frozen")
     path_run = path_results / f"latent_scale_{latent_scale}"
     path_run.mkdir(exist_ok=True)
     write_configs([config, model_config], path_run / "config.yaml")
 
-    _, validation = train_validation_split(metadata, config)
     loader = validation_loader(validation, config)
     log.info("%d validation designs on grid %s", len(validation), config.grid.shape)
     model = Tadpole(model_config).to(DEVICE).eval()
@@ -63,9 +63,11 @@ def reconstruct(latent_scale: int) -> pl.DataFrame:
 with run_experiment(TITLE, GOAL, HYPOTHESIS, hub=HuggingFaceHub()) as path_results:
     log = get_logger("coolfrog.experiment")
     stats = load_stats()
-    metadata = curated_metadata()
+    _, validation_metadata = split_metadata(curated_metadata())
+    # Voxelize every scale before the first model, the forked voxelizing workers hang once CUDA is initialized
+    validations = {latent_scale: CoolData(validation_metadata, data_config(latent_scale)) for latent_scale in LATENT_SCALES}
 
-    per_design = pl.concat([reconstruct(latent_scale) for latent_scale in LATENT_SCALES])
+    per_design = pl.concat([reconstruct(latent_scale, validation) for latent_scale, validation in validations.items()])
     per_design.write_parquet(path_results / "per_design.parquet")
     for metric, name in (("nrmse", "zero-shot-nrmse"), ("spectral_loss", "zero-shot-spectral-loss")):
         table = quantile_table(per_design, metric, QUANTILES).drop("model")

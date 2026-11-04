@@ -7,10 +7,11 @@
 from dataclasses import replace
 
 import polars as pl
-from torch.utils.data import DataLoader
+import torch
+from torch.utils.data import DataLoader, random_split
 
 from coolfrog.engine.cooldata import CoolData, CoolMetadata, create_dataloader
-from coolfrog.lib.config import HOST_CONFIG, DataConfig, FinetuneState, Grid, TadpoleConfig, TrainConfig
+from coolfrog.lib.config import HOST_CONFIG, SEED, DataConfig, FinetuneState, Grid, TadpoleConfig, TrainConfig
 from coolfrog.lib.datatypes import CHANNELS, FlowField, NormalizationStats
 from coolfrog.lib.experiment import PATH_EXPERIMENTS
 
@@ -49,12 +50,20 @@ def tadpole_config(latent_scale: int, finetune_state: FinetuneState) -> TadpoleC
     )
 
 
-def train_validation_split(metadata: CoolMetadata, config: DataConfig) -> tuple[CoolData, CoolData]:
-    """Seeded split holding out `TRAIN_CONFIG.n_validation_designs`, identical at every latent scale."""
-    dataset = CoolData(metadata, config)
+def split_metadata(metadata: CoolMetadata) -> tuple[CoolMetadata, CoolMetadata]:
+    """Seeded train / validation split holding out `TRAIN_CONFIG.n_validation_designs`, the indices of `CoolData.split`."""
     n_validation = TRAIN_CONFIG.n_validation_designs
-    train, validation = dataset.split([len(dataset) - n_validation, n_validation])
+    n_designs = metadata.designs.height
+    generator = torch.Generator().manual_seed(SEED)
+    subsets = random_split(range(n_designs), [n_designs - n_validation, n_validation], generator)
+    train, validation = (CoolMetadata(metadata.designs[sorted(subset.indices)]) for subset in subsets)
     return train, validation
+
+
+def train_validation_split(metadata: CoolMetadata, config: DataConfig) -> tuple[CoolData, CoolData]:
+    """`split_metadata` as datasets, identical at every latent scale."""
+    train, validation = split_metadata(metadata)
+    return CoolData(train, config), CoolData(validation, config)
 
 
 def validation_loader(validation: CoolData, config: DataConfig) -> DataLoader[FlowField]:
