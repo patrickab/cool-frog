@@ -165,14 +165,14 @@ class TadpoleConfig:
 class TrainConfig:
     """Autoencoding fine-tuning on random single-channel crops, defaults from Tadpole Appendix C.3.
 
-    - Crop edge is `TadpoleConfig.encoder_crop_size`, so training crops equal validation tiles
+    - Crop edge is `TadpoleConfig.encoder_crop_size`, so training crops equal validation tiles, None = whole domain
 
     Attributes
     ----------
     updates : int
         Optimizer steps, each over `crops_per_step * accumulation_steps` crops.
     crops_per_step : int
-        Crops per forward/backward pass, bounded by VRAM (8 at 64³ on 12 GB).
+        Single-channel crops per forward/backward pass, bounded by VRAM (8 at 64³ on 12 GB), 1 for whole domains.
     accumulation_steps : int
         Passes summed into one update, effective batch = `crops_per_step * accumulation_steps`.
     learning_rate, weight_decay : float

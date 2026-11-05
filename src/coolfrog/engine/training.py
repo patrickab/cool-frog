@@ -24,10 +24,11 @@ class RandomCrops:
     """Collate designs into `count` random, normalized single-channel crops of edge `crop_size`, inside a loader worker.
 
     - Crops before normalizing, so the full designs are never copied
+    - `crop_size=None` takes whole single-channel domains, `count=1` then backpropagates one scalar field per pass
     """
 
     stats: NormalizationStats
-    crop_size: int
+    crop_size: int | None
     count: int
 
     def __call__(self, designs: list[FlowField]) -> FlowField:
@@ -35,14 +36,15 @@ class RandomCrops:
         return crops.normalize(self.stats.select_channels(channel_index))
 
 
-def random_crops(batch: FlowField, crop_size: int, count: int) -> tuple[FlowField, torch.Tensor]:
+def random_crops(batch: FlowField, crop_size: int | None, count: int) -> tuple[FlowField, torch.Tensor]:
     """Random single-channel crops of edge `crop_size` plus each crop's channel index, axes shorter than `crop_size` kept whole.
 
     - Each crop comes from a random design, channel and position of `batch`
+    - `crop_size=None` keeps every axis whole
     - Returns (count, 1, X, Y, Z) crops and their (count,) channel indices
     """
     n_designs, n_channels, *grid_shape = batch.fields.shape
-    crop_shape = [min(crop_size, voxels) for voxels in grid_shape]
+    crop_shape = grid_shape if crop_size is None else [min(crop_size, voxels) for voxels in grid_shape]
     design_index = torch.randint(n_designs, (count,))
     channel_index = torch.randint(n_channels, (count,))
     starts = [torch.randint(voxels - crop + 1, (count,)).tolist() for voxels, crop in zip(grid_shape, crop_shape, strict=True)]
