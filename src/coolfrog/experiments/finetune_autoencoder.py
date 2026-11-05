@@ -5,6 +5,7 @@
 - `metrics.parquet` (Hugging Face): train MSE, spectral loss and KL per update, validation medians
 - `per_design.parquet` (Hugging Face): final NRMSE and spectral loss per design and channel
 - `adapter.pt` (Hugging Face): LoRA weights
+- `checkpoints/adapter_update_<update>.pt` (Hugging Face): LoRA weights after every validation
 - `training_curves.png`, `slices_first_validation_design.png`, `config.yaml`, `stage.json`
 
 README tables: `results/nrmse.csv`, `results/spectral-loss.csv`, `results/training.csv`.
@@ -161,7 +162,7 @@ def fine_tune(latent_scale: int, path_stage: Path) -> dict[str, object]:
 
     model = Tadpole(MODEL_CONFIG).to(DEVICE)
     title = f"{MODEL} · latent scale {latent_scale} · {'x'.join(map(str, config.grid.shape))}"
-    metrics = fine_tune_autoencoder(model, train_loader, loader, stats, TRAIN_CONFIG, title).to_frame()
+    metrics = fine_tune_autoencoder(model, train_loader, loader, stats, TRAIN_CONFIG, path_stage / "checkpoints", title).to_frame()
     per_design = per_design_frame(evaluate(model, loader, stats), latent_scale, MODEL)
     model.eval()
     with torch.no_grad():
