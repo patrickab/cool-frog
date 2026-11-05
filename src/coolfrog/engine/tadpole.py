@@ -1,5 +1,6 @@
 """Tadpole autoencoder wrapper for FlowFields."""
 
+from collections.abc import Callable
 from functools import partial
 from pathlib import Path
 
@@ -8,7 +9,7 @@ from GIFt.modules.lora import LoRALinearLike
 import httpx
 from huggingface_hub import HfApi, hf_hub_download
 from huggingface_hub.errors import HfHubHTTPError
-from tadpole.architecture.p3d.conv import ConditionedEncoder3D, ConditionedEncoder3DBlock
+from tadpole.architecture.p3d.conv import ConditionedDecoder3D, ConditionedEncoder3D, ConditionedEncoder3DBlock
 from tadpole.architecture.p3d.transformer import PDEDiTBlock
 from tadpole.model.autoencoder import TadpoleAutoencoder
 import torch
@@ -25,6 +26,8 @@ logger = get_logger(__name__)
 TADPOLE_REPO = "thuerey-group/Tadpole"
 # must match the `tadpole` code rev in pyproject.toml, weight revisions change state dict keys
 TADPOLE_REVISION = "9119e886f50ff8c941955dfad0b65c18c2694d1d"
+# full-resolution voxels per stem/head slab, bounds the widest feature maps, 2^21 = 0.5 GiB of 64 float32 channels
+SLAB_VOXELS = 2**21
 
 
 class Tadpole(nn.Module):
@@ -45,6 +48,7 @@ class Tadpole(nn.Module):
         )
         self.encoder = autoencoder.encoder
         self.decoder = autoencoder.decoder
+        _slab_full_resolution(self.encoder.conv_encoder, self.decoder.conv_decoder, config.activation_checkpointing)
         if config.activation_checkpointing:
             _checkpoint_blocks(self)
 
@@ -151,14 +155,12 @@ def _warn_if_newer_weights() -> None:
 
 
 def _checkpoint_blocks(model: nn.Module) -> None:
-    """Recompute each conv and attention block and the encoder stem in backward, parameter names unchanged."""
+    """Recompute each conv and attention block in backward, parameter names unchanged."""
     for module in model.modules():
         if isinstance(module, ConditionedEncoder3DBlock):
             module.forward = partial(checkpoint, partial(_conv_block_forward, module), use_reentrant=False)
         elif isinstance(module, PDEDiTBlock):
             module.forward = partial(checkpoint, module.forward, use_reentrant=False)
-        elif isinstance(module, ConditionedEncoder3D):
-            module.forward = partial(_conv_encoder_forward, module)
 
 
 def _conv_block_forward(block: ConditionedEncoder3DBlock, features: torch.Tensor) -> torch.Tensor:
@@ -174,9 +176,19 @@ def _norm_activation(norm: nn.Module, activation: nn.Module, features: torch.Ten
     return hidden.to(torch.get_autocast_dtype("cuda")) if torch.is_autocast_enabled("cuda") else hidden
 
 
-def _conv_encoder_forward(conv_encoder: ConditionedEncoder3D, field: torch.Tensor) -> torch.Tensor:
-    """`ConditionedEncoder3D.forward` with a checkpointed stem, whose full-resolution feature map is the largest saved tensor."""
-    features = checkpoint(_encoder_stem, conv_encoder, field, use_reentrant=False)
+def _slab_full_resolution(conv_encoder: ConditionedEncoder3D, conv_decoder: ConditionedDecoder3D, checkpointed: bool) -> None:
+    """Run the full-resolution encoder stem and decoder head in x-slabs, each slab recomputed in backward when `checkpointed`.
+
+    - Stem `feature_embed -> downsampling_layers[0]` and head `upsampling_layers[-1] -> decompress` hold the widest feature maps
+    - Exact: both are zero-padded convs without GroupNorm, a one-cell halo covers their reach
+    """
+    conv_encoder.forward = partial(_conv_encoder_forward, conv_encoder, checkpointed)
+    conv_decoder.forward = partial(_conv_decoder_forward, conv_decoder, checkpointed)
+
+
+def _conv_encoder_forward(conv_encoder: ConditionedEncoder3D, checkpointed: bool, field: torch.Tensor) -> torch.Tensor:
+    """`ConditionedEncoder3D.forward` with the stem in x-slabs."""
+    features = _encoder_stem_in_slabs(conv_encoder, field, checkpointed)
     for level in range(conv_encoder.num_downsampling_layers - 1):
         for repetition in range(conv_encoder.repetitions):
             features = conv_encoder.blocks[level * conv_encoder.repetitions + repetition](features)
@@ -184,8 +196,57 @@ def _conv_encoder_forward(conv_encoder: ConditionedEncoder3D, field: torch.Tenso
     return features
 
 
+def _conv_decoder_forward(conv_decoder: ConditionedDecoder3D, checkpointed: bool, features: torch.Tensor) -> torch.Tensor:
+    """`ConditionedDecoder3D.forward` with the head in x-slabs."""
+    features = conv_decoder.upsampling_layers[0](features)
+    for level in range(conv_decoder.num_upsampling_layers - 1):
+        for repetition in range(conv_decoder.repetitions):
+            features = conv_decoder.blocks[level * conv_decoder.repetitions + repetition](features)
+        if level < conv_decoder.num_upsampling_layers - 2:
+            features = conv_decoder.upsampling_layers[level + 1](features)
+    return _decoder_head_in_slabs(conv_decoder, features, checkpointed)
+
+
+def _encoder_stem_in_slabs(conv_encoder: ConditionedEncoder3D, field: torch.Tensor, checkpointed: bool) -> torch.Tensor:
+    """(N, 1, X, Y, Z) field -> (N, C, X/2, Y/2, Z/2) stem features, output cell i reads field planes 2i-2 to 2i+2."""
+    voxels_x = field.shape[-3]
+    slabs = []
+    for start, stop in _slab_ranges(voxels_x // 2, field.shape[-2] * field.shape[-1]):
+        input_start, input_stop = max(2 * start - 2, 0), min(2 * stop + 1, voxels_x)
+        features = _run(_encoder_stem, checkpointed, conv_encoder, field[..., input_start:input_stop, :, :])
+        slabs.append(features[..., start - input_start // 2 : stop - input_start // 2, :, :])
+    return torch.cat(slabs, dim=-3)
+
+
+def _decoder_head_in_slabs(conv_decoder: ConditionedDecoder3D, features: torch.Tensor, checkpointed: bool) -> torch.Tensor:
+    """(N, C, X/2, Y/2, Z/2) features -> (N, 1, X, Y, Z) field, output planes 2i and 2i+1 read feature cells i-1 to i+1."""
+    cells_x = features.shape[-3]
+    slabs = []
+    for start, stop in _slab_ranges(cells_x, 4 * features.shape[-2] * features.shape[-1]):
+        input_start, input_stop = max(start - 1, 0), min(stop + 1, cells_x)
+        field = _run(_decoder_head, checkpointed, conv_decoder, features[..., input_start:input_stop, :, :])
+        slabs.append(field[..., 2 * (start - input_start) : 2 * (stop - input_start), :, :])
+    return torch.cat(slabs, dim=-3)
+
+
 def _encoder_stem(conv_encoder: ConditionedEncoder3D, field: torch.Tensor) -> torch.Tensor:
     return conv_encoder.downsampling_layers[0](conv_encoder.feature_embed(field))
+
+
+def _decoder_head(conv_decoder: ConditionedDecoder3D, features: torch.Tensor) -> torch.Tensor:
+    return conv_decoder.decompress(conv_decoder.upsampling_layers[-1](features))
+
+
+def _slab_ranges(cells_x: int, voxels_per_plane: int) -> list[tuple[int, int]]:
+    """Half-resolution [start, stop) x-ranges of about `SLAB_VOXELS` full-resolution voxels, two planes per cell."""
+    cells_per_slab = max(1, SLAB_VOXELS // (2 * voxels_per_plane))
+    return [(start, min(start + cells_per_slab, cells_x)) for start in range(0, cells_x, cells_per_slab)]
+
+
+def _run(function: Callable[..., torch.Tensor], checkpointed: bool, *args: object) -> torch.Tensor:
+    """Call one slab, without the autocast weight cache, so slab gradients of a parameter sum in float32, not its bf16 copy."""
+    with torch.autocast("cuda", enabled=torch.is_autocast_enabled("cuda"), cache_enabled=False):
+        return checkpoint(function, *args, use_reentrant=False) if checkpointed else function(*args)
 
 
 def _weight_path(config: TadpoleConfig, part: str) -> str:
