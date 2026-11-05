@@ -1,6 +1,6 @@
-"""Shared setup of the autoencoding experiments 03 (zero-shot) and 04 (LoRA): data, model, validation split, metric tables.
+"""Shared setup of the autoencoding experiments 03 (zero-shot) and 04 (LoRA): data, validation split, metric tables.
 
-- Both evaluate the same curated validation designs with the same tiling, so 03 is the baseline of 04
+- Both evaluate the same curated validation designs, 04 sets its own data, model and training configs
 - Imported by the experiment scripts, not an experiment itself
 """
 
@@ -11,14 +11,14 @@ import torch
 from torch.utils.data import DataLoader, random_split
 
 from coolfrog.engine.cooldata import CoolData, CoolMetadata, create_dataloader
-from coolfrog.lib.config import HOST_CONFIG, SEED, DataConfig, FinetuneState, Grid, TadpoleConfig, TrainConfig
+from coolfrog.lib.config import HOST_CONFIG, SEED, DataConfig, FinetuneState, Grid, TadpoleConfig
 from coolfrog.lib.datatypes import CHANNELS, FlowField, NormalizationStats
 from coolfrog.lib.experiment import PATH_EXPERIMENTS
 
 LATENT_SCALES = (2, 4)  # 800x160x32 with 32³ tiles first, then 1600x320x64 with 64³ tiles
 # Normalization and exclusion list of experiment 02, measured on 10 % of the designs, also used on the full dataset
 PATH_VALUE_DISTRIBUTION = PATH_EXPERIMENTS / "02_cooldata-value-distribution_partial" / "results"
-TRAIN_CONFIG = TrainConfig()
+N_VALIDATION_DESIGNS = 128
 MEDIAN = 0.5
 
 
@@ -51,8 +51,8 @@ def tadpole_config(latent_scale: int, finetune_state: FinetuneState) -> TadpoleC
 
 
 def split_metadata(metadata: CoolMetadata) -> tuple[CoolMetadata, CoolMetadata]:
-    """Seeded train / validation split holding out `TRAIN_CONFIG.n_validation_designs`, the indices of `CoolData.split`."""
-    n_validation = TRAIN_CONFIG.n_validation_designs
+    """Seeded train / validation split holding out `N_VALIDATION_DESIGNS`, the indices of `CoolData.split`."""
+    n_validation = N_VALIDATION_DESIGNS
     n_designs = metadata.designs.height
     generator = torch.Generator().manual_seed(SEED)
     subsets = random_split(range(n_designs), [n_designs - n_validation, n_validation], generator)
