@@ -73,7 +73,7 @@ class Grid:
 
 @dataclass(frozen=True)
 class HostConfig:
-    """Per-machine cache location and share of the dataset.
+    """Per-machine cache location, share of the dataset and training precision.
 
     Attributes
     ----------
@@ -81,11 +81,15 @@ class HostConfig:
         Root of every cache: metadata, voxel shards, surfaces.
     n_splits, idx_split : int
         This machine uses split `idx_split` of `n_splits`, passed to `CoolMetadata.load`, 1 split = the full dataset.
+    autocast_dtype : torch.dtype | None
+        torch.dtype -> training forward passes run under autocast in this dtype, e.g. bfloat16 to halve activation memory.
+        None -> training runs in float32. Evaluation is float32 on every host.
     """
 
     cache_dir: Path
     n_splits: int
     idx_split: int
+    autocast_dtype: torch.dtype | None
 
     @property
     def is_partial(self) -> bool:
@@ -93,8 +97,8 @@ class HostConfig:
         return self.n_splits > 1
 
 
-DEFAULT_HOST_CONFIG = HostConfig(cache_dir=PATH_REPO / ".cache", n_splits=10, idx_split=0)
-CUBE1_HOST_CONFIG = HostConfig(cache_dir=Path("/mnt/data/bitzer/.cache"), n_splits=1, idx_split=0)
+DEFAULT_HOST_CONFIG = HostConfig(cache_dir=PATH_REPO / ".cache", n_splits=10, idx_split=0, autocast_dtype=torch.bfloat16)
+CUBE1_HOST_CONFIG = HostConfig(cache_dir=Path("/mnt/data/bitzer/.cache"), n_splits=1, idx_split=0, autocast_dtype=None)
 HOST_CONFIG = CUBE1_HOST_CONFIG if socket.gethostname() == "cube1" else DEFAULT_HOST_CONFIG
 
 
