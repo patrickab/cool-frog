@@ -1,15 +1,19 @@
 """Tadpole autoencoder wrapper for FlowFields."""
 
+from functools import partial
 from pathlib import Path
 
 from einops import rearrange
 import httpx
 from huggingface_hub import HfApi, hf_hub_download
 from huggingface_hub.errors import HfHubHTTPError
+from tadpole.architecture.p3d.conv import ConditionedEncoder3DBlock
+from tadpole.architecture.p3d.transformer import PDEDiTBlock
 from tadpole.model.autoencoder import TadpoleAutoencoder
 import torch
 from torch import nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 from coolfrog.lib.config import TadpoleConfig
 from coolfrog.lib.datatypes import FlowField, LatentFlowField
@@ -40,6 +44,8 @@ class Tadpole(nn.Module):
         )
         self.encoder = autoencoder.encoder
         self.decoder = autoencoder.decoder
+        if config.activation_checkpointing:
+            _checkpoint_blocks(self)
 
     def encode(self, flowfield: FlowField) -> LatentFlowField:
         """Encode a batched, normalized flow field per channel, solids filled first."""
@@ -127,6 +133,13 @@ def _warn_if_newer_weights() -> None:
             latest_revision,
             TADPOLE_REVISION,
         )
+
+
+def _checkpoint_blocks(model: nn.Module) -> None:
+    """Recompute each conv and attention block in backward instead of storing its activations, parameter names unchanged."""
+    for block in model.modules():
+        if isinstance(block, ConditionedEncoder3DBlock | PDEDiTBlock):
+            block.forward = partial(checkpoint, block.forward, use_reentrant=False)
 
 
 def _weight_path(config: TadpoleConfig, part: str) -> str:

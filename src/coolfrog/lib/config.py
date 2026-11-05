@@ -151,6 +151,8 @@ class TadpoleConfig:
         None -> sets crop size to 1e6
     max_internal_batchsize : int | None
         Scalar fields per encoder/decoder call, None = all at once.
+    activation_checkpointing : bool
+        Recompute every conv and attention block in backward, for whole-domain training at ~30% more compute.
     """
 
     size: Literal["S", "B", "L"] = "B"
@@ -159,6 +161,7 @@ class TadpoleConfig:
     decoder_state: FinetuneState = "frozen"
     encoder_crop_size: int | None = None
     max_internal_batchsize: int | None = None
+    activation_checkpointing: bool = False
 
 
 @dataclass(frozen=True)
