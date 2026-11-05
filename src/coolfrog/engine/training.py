@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 from coolfrog.engine.model_evaluation import evaluate, fluid_mse, spectral_distance
 from coolfrog.engine.tadpole import Tadpole
 from coolfrog.engine.training_metrics import TrainingMetrics
-from coolfrog.lib.config import TrainConfig
+from coolfrog.lib.config import HOST_CONFIG, TrainConfig
 from coolfrog.lib.dashboard import run_dashboard
 from coolfrog.lib.datatypes import FlowField, NormalizationStats
 from coolfrog.lib.log import get_logger
@@ -84,7 +84,7 @@ def fine_tune_autoencoder(  # noqa: PLR0913, model, data, stats, config and the 
     config: TrainConfig,
     title: str = "Fine-tuning",
 ) -> TrainingMetrics:
-    """Accumulated bf16 updates on `train_loader` crops with periodic full-domain `evaluate`.
+    """Accumulated updates on `train_loader` crops, in `HOST_CONFIG.autocast_dtype`, with periodic full-domain `evaluate`.
 
     - Update 0 is validated before training, the zero-shot baseline under LoRA
     - Logs the spectral loss of the training crops next to the MSE they are trained on
@@ -109,6 +109,8 @@ def _train(
 ) -> None:
     config = metrics.config
     device = next(model.parameters()).device
+    autocast_dtype = HOST_CONFIG.autocast_dtype
+    logger.info("Training forward passes in %s", "float32" if autocast_dtype is None else f"{autocast_dtype} autocast")
     optimizer, scheduler = create_optimizer(model.trainable_parameters().values(), config)
     metrics.log_validation(0, evaluate(model, metrics.track_validation(validation_loader), stats))
     batches = endless(train_loader)
@@ -117,7 +119,7 @@ def _train(
         mse_sum, spectral_sum, kl_sum = 0.0, 0.0, 0.0
         for _ in range(config.accumulation_steps):
             crops = next(batches).to(device, non_blocking=True)
-            with torch.autocast(device.type, dtype=torch.bfloat16):
+            with torch.autocast(device.type, dtype=autocast_dtype, enabled=autocast_dtype is not None):
                 prediction, latent = model(crops)
             mse, kl = fluid_mse(prediction, crops), latent.kl_divergence().mean()
             ((mse + config.kl_weight * kl) / config.accumulation_steps).backward()  # gradient = mean over all passes
