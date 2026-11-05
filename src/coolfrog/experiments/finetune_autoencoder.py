@@ -1,4 +1,4 @@
-"""LoRA-32 fine-tuning of the Tadpole-B autoencoder on the curated designs at 2x, then 4x, compared to zero-shot on the same validation designs.
+"""LoRA-32 fine-tuning of Tadpole-B on whole curated domains at 2x, then 4x, compared to zero-shot on the same validation designs.
 
 `--resume` continues an unfinished run. One `Stage` per latent scale, `results/latent_scale_<n>/`:
 
@@ -24,16 +24,15 @@ from coolfrog.engine.training import RandomCrops, fine_tune_autoencoder
 from coolfrog.engine.training_metrics import KL, MSE, NRMSE, SECONDS_PER_UPDATE, SPECTRAL, SPECTRAL_LOSS, validation_name
 from coolfrog.experiments.autoencoding import (
     LATENT_SCALES,
-    TRAIN_CONFIG,
+    N_VALIDATION_DESIGNS,
     curated_metadata,
-    data_config,
     load_stats,
     per_design_frame,
     quantile_table,
-    tadpole_config,
     train_validation_split,
     validation_loader,
 )
+from coolfrog.lib.config import DataConfig, Grid, TadpoleConfig, TrainConfig
 from coolfrog.lib.datatypes import CHANNELS
 from coolfrog.lib.experiment import Stage, inject_table, run_experiment, write_configs
 from coolfrog.lib.huggingface import HuggingFaceHub
@@ -42,18 +41,41 @@ from coolfrog.lib.plot import plot_slices
 
 TITLE = "Autoencoder fine-tuning with LoRA"
 GOAL = (
-    "Fine-tune Tadpole-B with rank-32 LoRA on crops spanning the full channel height at 800x160x32 (32³, unlike the 64³ "
-    "pre-training crops) and 1600x320x64 (64³), and compare both to zero-shot on the same validation designs."
+    "Fine-tune Tadpole-B with rank-32 LoRA on whole single-channel domains, no crops or tiles, at 800x160x32 and "
+    "1600x320x64, and compare both to zero-shot on the same validation designs."
 )
-HYPOTHESIS = (
-    "LoRA-32 lowers the validation NRMSE of every channel below zero-shot at both resolutions. "
-    "Zero-shot is worse on 32³ tiles, as Tadpole never saw that crop size, and fine-tuning closes most of that gap."
-)
+HYPOTHESIS = "LoRA-32 lowers the validation NRMSE of every channel below zero-shot at both resolutions."
 
 LORA_RANK = 32
 MODEL = f"LoRA-{LORA_RANK}"
 DEVICE = "cuda"
 RESUME = "--resume" in sys.argv  # continue an unfinished run, complete latent scale stages are loaded, not rerun
+
+MODEL_CONFIG = TadpoleConfig(
+    size="B",
+    path_weights=None,
+    encoder_state=LORA_RANK,
+    decoder_state=LORA_RANK,
+    encoder_crop_size=None,  # whole domains in training and validation, no tiles
+    max_internal_batchsize=1,  # one scalar field per encoder/decoder call, whole domains fill the 12 GB
+    activation_checkpointing=True,  # whole-domain backward only fits at latent scale 1 without it
+)
+TRAIN_CONFIG = TrainConfig(
+    updates=14_000,
+    crops_per_step=1,  # one whole single-channel domain per pass
+    accumulation_steps=4,
+    learning_rate=5e-5,
+    warmup_updates=1000,
+    weight_decay=1e-15,
+    kl_weight=1e-6,
+    validate_every=1000,
+    n_validation_designs=N_VALIDATION_DESIGNS,
+)
+
+
+def data_config(latent_scale: int) -> DataConfig:
+    """Grid of `latent_scale`, one design per training pass, as each pass uses a single domain."""
+    return DataConfig(grid=Grid(latent_scale=latent_scale), source=None, cache=True, batch_size=1, num_workers=6)
 
 
 def training_row(metrics: pl.DataFrame, latent_scale: int) -> dict[str, float]:
@@ -75,7 +97,7 @@ def plot_training_curves(metrics: pl.DataFrame, latent_scale: int) -> Figure:
     axes = figure.subplots(2, 2)
     for axis, series, title in (
         (axes[0, 0], MSE, "Train MSE, normalized units"),
-        (axes[0, 1], SPECTRAL, "Train spectral loss, crops"),
+        (axes[0, 1], SPECTRAL, "Train spectral loss, whole domains"),
     ):
         train = metrics.select("update", series).drop_nulls()
         axis.plot(train["update"], train[series], color="#3b5b7a", linewidth=0.8)
@@ -128,17 +150,16 @@ def training_hours(metrics: pl.DataFrame) -> float:
 def fine_tune(latent_scale: int, path_stage: Path) -> dict[str, object]:
     """Fine-tune and evaluate one resolution, return the outputs of its stage (file name -> data)."""
     config = data_config(latent_scale)
-    model_config = tadpole_config(latent_scale, LORA_RANK)
     path_stage.mkdir(exist_ok=True)
-    write_configs([config, model_config], path_stage / "config.yaml")
+    write_configs([config, MODEL_CONFIG], path_stage / "config.yaml")
 
     train, validation = train_validation_split(metadata, config)
     log.info("%d train and %d validation designs on grid %s", len(train), len(validation), config.grid.shape)
-    crops = RandomCrops(stats, model_config.encoder_crop_size, TRAIN_CONFIG.crops_per_step)
-    train_loader = create_dataloader(train, config, shuffle=True, collate_fn=crops)
+    whole_domains = RandomCrops(stats, MODEL_CONFIG.encoder_crop_size, TRAIN_CONFIG.crops_per_step)
+    train_loader = create_dataloader(train, config, shuffle=True, collate_fn=whole_domains)
     loader = validation_loader(validation, config)
 
-    model = Tadpole(model_config).to(DEVICE)
+    model = Tadpole(MODEL_CONFIG).to(DEVICE)
     title = f"{MODEL} · latent scale {latent_scale} · {'x'.join(map(str, config.grid.shape))}"
     metrics = fine_tune_autoencoder(model, train_loader, loader, stats, TRAIN_CONFIG, title).to_frame()
     per_design = per_design_frame(evaluate(model, loader, stats), latent_scale, MODEL)
@@ -155,7 +176,7 @@ def fine_tune(latent_scale: int, path_stage: Path) -> dict[str, object]:
     }
 
 
-with run_experiment(TITLE, GOAL, HYPOTHESIS, [TRAIN_CONFIG], hub=HuggingFaceHub(), resume=RESUME) as path_results:
+with run_experiment(TITLE, GOAL, HYPOTHESIS, [MODEL_CONFIG, TRAIN_CONFIG], hub=HuggingFaceHub(), resume=RESUME) as path_results:
     log = get_logger("coolfrog.experiment")
     stats = load_stats()
     metadata = curated_metadata()
