@@ -8,7 +8,7 @@ from GIFt.modules.lora import LoRALinearLike
 import httpx
 from huggingface_hub import HfApi, hf_hub_download
 from huggingface_hub.errors import HfHubHTTPError
-from tadpole.architecture.p3d.conv import ConditionedEncoder3DBlock
+from tadpole.architecture.p3d.conv import ConditionedEncoder3D, ConditionedEncoder3DBlock
 from tadpole.architecture.p3d.transformer import PDEDiTBlock
 from tadpole.model.autoencoder import TadpoleAutoencoder
 import torch
@@ -151,10 +151,26 @@ def _warn_if_newer_weights() -> None:
 
 
 def _checkpoint_blocks(model: nn.Module) -> None:
-    """Recompute each conv and attention block in backward instead of storing its activations, parameter names unchanged."""
-    for block in model.modules():
-        if isinstance(block, ConditionedEncoder3DBlock | PDEDiTBlock):
-            block.forward = partial(checkpoint, block.forward, use_reentrant=False)
+    """Recompute each conv and attention block and the encoder stem in backward, parameter names unchanged."""
+    for module in model.modules():
+        if isinstance(module, ConditionedEncoder3DBlock | PDEDiTBlock):
+            module.forward = partial(checkpoint, module.forward, use_reentrant=False)
+        elif isinstance(module, ConditionedEncoder3D):
+            module.forward = partial(_conv_encoder_forward, module)
+
+
+def _conv_encoder_forward(conv_encoder: ConditionedEncoder3D, field: torch.Tensor) -> torch.Tensor:
+    """`ConditionedEncoder3D.forward` with a checkpointed stem, whose full-resolution feature map is the largest saved tensor."""
+    features = checkpoint(_encoder_stem, conv_encoder, field, use_reentrant=False)
+    for level in range(conv_encoder.num_downsampling_layers - 1):
+        for repetition in range(conv_encoder.repetitions):
+            features = conv_encoder.blocks[level * conv_encoder.repetitions + repetition](features)
+        features = conv_encoder.downsampling_layers[level + 1](features)
+    return features
+
+
+def _encoder_stem(conv_encoder: ConditionedEncoder3D, field: torch.Tensor) -> torch.Tensor:
+    return conv_encoder.downsampling_layers[0](conv_encoder.feature_embed(field))
 
 
 def _weight_path(config: TadpoleConfig, part: str) -> str:
