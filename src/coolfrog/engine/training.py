@@ -2,6 +2,7 @@
 
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
+from pathlib import Path
 
 import torch
 from torch import nn
@@ -76,43 +77,52 @@ def endless(loader: DataLoader[FlowField]) -> Iterator[FlowField]:
         yield from loader
 
 
-def fine_tune_autoencoder(  # noqa: PLR0913, model, data, stats, config and the dashboard title
+def fine_tune_autoencoder(  # noqa: PLR0913, model, data, stats, config, checkpoint folder and the dashboard title
     model: Tadpole,
     train_loader: DataLoader[FlowField],
     validation_loader: DataLoader[FlowField],
     stats: NormalizationStats,
     config: TrainConfig,
+    path_checkpoints: Path,
     title: str = "Fine-tuning",
 ) -> TrainingMetrics:
     """Accumulated updates on `train_loader` crops, in `HOST_CONFIG.autocast_dtype`, with periodic full-domain `evaluate`.
 
     - Update 0 is validated before training, the zero-shot baseline under LoRA
+    - Writes `model.adapter()` to `path_checkpoints/adapter_update_<update>.pt` after every validation
     - Logs the spectral loss of the training crops next to the MSE they are trained on
     - Runs under the live terminal dashboard titled `title`, plainly when there is no terminal
     - Stop key `q` in the dashboard raises KeyboardInterrupt
     """
     metrics = TrainingMetrics(config, title)
+    path_checkpoints.mkdir(parents=True, exist_ok=True)
     run_dashboard(
         metrics.tracker,
         metrics.spec,
-        lambda: _train(model, train_loader, validation_loader, stats, metrics),
+        lambda: _train(model, train_loader, validation_loader, stats, metrics, path_checkpoints),
     )
     return metrics
 
 
-def _train(
+def _train(  # noqa: PLR0913, the arguments of fine_tune_autoencoder plus its metrics
     model: Tadpole,
     train_loader: DataLoader[FlowField],
     validation_loader: DataLoader[FlowField],
     stats: NormalizationStats,
     metrics: TrainingMetrics,
+    path_checkpoints: Path,
 ) -> None:
     config = metrics.config
     device = next(model.parameters()).device
     autocast_dtype = HOST_CONFIG.autocast_dtype
     logger.info("Training forward passes in %s", "float32" if autocast_dtype is None else f"{autocast_dtype} autocast")
     optimizer, scheduler = create_optimizer(model.trainable_parameters().values(), config)
-    metrics.log_validation(0, evaluate(model, metrics.track_validation(validation_loader), stats))
+
+    def validate(update: int) -> None:
+        metrics.log_validation(update, evaluate(model, metrics.track_validation(validation_loader), stats))
+        torch.save(model.adapter(), path_checkpoints / f"adapter_update_{update}.pt")
+
+    validate(0)
     batches = endless(train_loader)
     model.train()
     for update in range(1, config.updates + 1):
@@ -134,4 +144,4 @@ def _train(
         metrics.log_update(update, mse_sum / steps, spectral_sum / steps, kl_sum / steps, learning_rate)
         if update % config.validate_every == 0 or update == config.updates:
             logger.info("update %d train MSE %.3e", update, mse_sum / steps)
-            metrics.log_validation(update, evaluate(model, metrics.track_validation(validation_loader), stats))
+            validate(update)
