@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from fnmatch import fnmatchcase
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -336,6 +337,7 @@ def run_experiment(  # noqa: PLR0913, the public entry point of every experiment
     """Start or resume a run, yield its `results/` directory and finish the run by how the block exits.
 
     - Seeds python, numpy and torch with `SEED` before the block runs
+    - Enables `expandable_segments` in the CUDA allocator unless `PYTORCH_CUDA_ALLOC_CONF` is set, cuts reserved but unused VRAM
     - `resume=True` and an unfinished live run -> continues in its folder, see `resume_run`, else starts a new run
     - Success -> `push_experiment` when `hub` is given, status `complete`
     - Exception -> everything stays for debugging, logs included, nothing pushed, status `failed`, the error propagates
@@ -364,6 +366,7 @@ def run_experiment(  # noqa: PLR0913, the public entry point of every experiment
             previous["date"],
             previous.get("status", RunStatus.RUNNING),
         )
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")  # read once, at CUDA initialization
     seed_everything()
     try:
         yield run.path_results
