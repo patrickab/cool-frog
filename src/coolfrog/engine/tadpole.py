@@ -4,6 +4,7 @@ from functools import partial
 from pathlib import Path
 
 from einops import rearrange
+from GIFt.modules.lora import LoRALinearLike
 import httpx
 from huggingface_hub import HfApi, hf_hub_download
 from huggingface_hub.errors import HfHubHTTPError
@@ -86,6 +87,20 @@ class Tadpole(nn.Module):
         """Encode, then decode, the training entry point."""
         flowfield_latent = self.encode(flowfield)
         return self.decode(flowfield_latent, sample), flowfield_latent
+
+    def train(self, mode: bool = True) -> "Tadpole":
+        """Set train mode, LoRA weights merged by an eval forward are unmerged here in float32.
+
+        - GIFt otherwise unmerges lazily in the next training forward, under bf16 autocast and inside checkpointed blocks
+        - That leaves bf16 rounding in the frozen weights and saves different tensors in forward and recomputation
+        """
+        super().train(mode)
+        if mode:
+            with torch.no_grad(), torch.autocast("cuda", enabled=False):
+                for module in self.modules():
+                    if isinstance(module, LoRALinearLike) and module.merged:
+                        module.unmerge_weight()
+        return self
 
     def trainable_parameters(self) -> dict[str, nn.Parameter]:
         """Parameters with requires_grad: LoRA matrices plus the biases GIFt leaves trainable, all under FPFT."""
