@@ -153,7 +153,7 @@ class CoolDataShard:
 
     @classmethod
     def voxelize_design(cls, row: DesignRow, grid: Grid, source: Path | None = None) -> VoxelizedDesign:
-        """Download and voxelize one design, polars-free as polars deadlocks in the forked workers of `build_voxel_cache`.
+        """Download and voxelize one design, the worker of `build_voxel_cache`.
 
         - Reads the volume from `source` when given, else extracts it from the design's `(run, batch)` HF zip
         """
@@ -323,14 +323,15 @@ class CoolData(Dataset[FlowField]):
             )
             shards = list({shard.path: shard for shard, _ in locations.values()}.values())
             disk_status = _require_disk_space(cache_dir, grid, shards, uncached.height)
-            # fork, as spawn would rerun the calling script's top level in every process
+            # forkserver, as fork deadlocks once this process runs threads (HF downloads, torch), the default from Python 3.14
+            # entry scripts therefore need an `if __name__ == "__main__":` guard, the server imports them once
             # workers voxelize single designs and ignore Ctrl+C, the pool's exit kills them at once
             # this process writes them into shards, an interrupt loses only the shard being filled
             voxelize_design = functools.partial(CoolDataShard.voxelize_design, grid=grid, source=source)
             rows = uncached.select("design_id", "run", "batch").rows()
-            fork = multiprocessing.get_context("fork")
+            forkserver = multiprocessing.get_context("forkserver")
             with (
-                fork.Pool(PROCESSES, initializer=signal.signal, initargs=(signal.SIGINT, signal.SIG_IGN)) as pool,
+                forkserver.Pool(PROCESSES, initializer=signal.signal, initargs=(signal.SIGINT, signal.SIG_IGN)) as pool,
                 progress_bar() as progress,
             ):
                 task = progress.add_task("Voxelizing designs", total=len(rows))
