@@ -153,10 +153,25 @@ def _warn_if_newer_weights() -> None:
 def _checkpoint_blocks(model: nn.Module) -> None:
     """Recompute each conv and attention block and the encoder stem in backward, parameter names unchanged."""
     for module in model.modules():
-        if isinstance(module, ConditionedEncoder3DBlock | PDEDiTBlock):
+        if isinstance(module, ConditionedEncoder3DBlock):
+            module.forward = partial(checkpoint, partial(_conv_block_forward, module), use_reentrant=False)
+        elif isinstance(module, PDEDiTBlock):
             module.forward = partial(checkpoint, module.forward, use_reentrant=False)
         elif isinstance(module, ConditionedEncoder3D):
             module.forward = partial(_conv_encoder_forward, module)
+
+
+def _conv_block_forward(block: ConditionedEncoder3DBlock, features: torch.Tensor) -> torch.Tensor:
+    """`ConditionedEncoder3DBlock.forward` with nested checkpointed norm-activations, the convs keep only their bf16 inputs."""
+    hidden = block.conv_1(checkpoint(_norm_activation, block.gn_1, block.activation_1, features, use_reentrant=False))
+    hidden = block.conv_2(checkpoint(_norm_activation, block.gn_2, block.activation_2, hidden, use_reentrant=False))
+    return hidden + features
+
+
+def _norm_activation(norm: nn.Module, activation: nn.Module, features: torch.Tensor) -> torch.Tensor:
+    """GroupNorm then GELU, cast to the autocast dtype here, so the float32 result never outlives the recomputation."""
+    hidden = activation(norm(features))
+    return hidden.to(torch.get_autocast_dtype("cuda")) if torch.is_autocast_enabled("cuda") else hidden
 
 
 def _conv_encoder_forward(conv_encoder: ConditionedEncoder3D, field: torch.Tensor) -> torch.Tensor:
