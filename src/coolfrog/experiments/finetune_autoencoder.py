@@ -1,4 +1,4 @@
-"""LoRA-32 fine-tuning of Tadpole-B on whole curated domains at 2x, then 4x, compared to zero-shot on the same validation designs.
+"""LoRA-32 fine-tuning of Tadpole-B on whole curated domains at 2x, then 1x, compared to zero-shot on the same validation designs.
 
 `--resume` continues an unfinished run. One `Stage` per latent scale, `results/latent_scale_<n>/`:
 
@@ -24,7 +24,6 @@ from coolfrog.engine.tadpole import Tadpole
 from coolfrog.engine.training import RandomCrops, fine_tune_autoencoder
 from coolfrog.engine.training_metrics import KL, MSE, NRMSE, SECONDS_PER_UPDATE, SPECTRAL, SPECTRAL_LOSS, validation_name
 from coolfrog.experiments.autoencoding import (
-    LATENT_SCALES,
     N_VALIDATION_DESIGNS,
     curated_metadata,
     load_stats,
@@ -42,8 +41,8 @@ from coolfrog.lib.plot import plot_slices
 
 TITLE = "Autoencoder fine-tuning with LoRA"
 GOAL = (
-    "Fine-tune Tadpole-B with rank-32 LoRA on whole single-channel domains, no crops or tiles, at 800x160x32 and "
-    "1600x320x64, and compare both to zero-shot on the same validation designs."
+    "Fine-tune Tadpole-B with rank-32 LoRA on whole single-channel domains, no crops or tiles, at 400x80x16 and "
+    "800x160x32, and compare both to zero-shot on the same validation designs."
 )
 HYPOTHESIS = "LoRA-32 lowers the validation NRMSE of every channel below zero-shot at both resolutions."
 
@@ -51,6 +50,7 @@ LORA_RANK = 32
 MODEL = f"LoRA-{LORA_RANK}"
 DEVICE = "cuda"
 RESUME = "--resume" in sys.argv  # continue an unfinished run, complete latent scale stages are loaded, not rerun
+LATENT_SCALES = (2, 1)  # 2x first, its voxel cache exists, 1x waits on `build.lock` until its cache is built
 
 MODEL_CONFIG = TadpoleConfig(
     size="B",
@@ -62,7 +62,7 @@ MODEL_CONFIG = TadpoleConfig(
     activation_checkpointing=True,  # whole-domain backward only fits at latent scale 1 without it
 )
 TRAIN_CONFIG = TrainConfig(
-    updates=14_000,
+    updates=50_000,
     crops_per_step=1,  # one whole single-channel domain per pass
     accumulation_steps=4,
     learning_rate=5e-5,
@@ -205,4 +205,4 @@ with run_experiment(TITLE, GOAL, HYPOTHESIS, [MODEL_CONFIG, TRAIN_CONFIG], hub=H
         )
         log.info("%s\n%s", name, table)
         inject_table(path_results, name, table.drop("statistic"))
-    inject_table(path_results, "training", pl.DataFrame(training_rows))
+    inject_table(path_results, "training", pl.DataFrame(training_rows).sort("latent_scale"))
