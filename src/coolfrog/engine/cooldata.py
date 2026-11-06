@@ -23,10 +23,11 @@ import numpy as np
 import polars as pl
 import pyvista as pv
 import torch
-from torch.utils.data import DataLoader, Dataset, random_split
+from torch.utils.data import DataLoader, Dataset, DistributedSampler, Subset, random_split
 
 from coolfrog.lib.config import HOST_CONFIG, SEED, DataConfig, Grid, Range
 from coolfrog.lib.datatypes import CHANNELS, PARAM_COLUMNS, SURFACE_CHANNELS, Channel, FlowField, SurfaceChannel
+from coolfrog.lib.distributed import rank, world_size
 from coolfrog.lib.log import get_logger, progress_bar
 
 CACHE_DIR = HOST_CONFIG.cache_dir
@@ -378,11 +379,19 @@ def create_dataloader(
     shuffle: bool,
     collate_fn: Callable[[list[FlowField]], FlowField] = torch.stack,
 ) -> DataLoader[FlowField]:
-    """DataLoader of FlowField batches, batch size and workers from `config`, `collate_fn` runs inside the worker processes."""
+    """DataLoader of FlowField batches, batch size and workers from `config`, `collate_fn` runs inside the worker processes.
+
+    - Under `torchrun` each process loads its own share of `dataset`
+        - `shuffle=True` -> `DistributedSampler`, a new shuffle per pass needs `sampler.set_epoch`, see `training.endless`
+        - `shuffle=False` -> every `world_size`-th design from `rank` on, nothing padded or repeated, e.g. for `evaluate`
+    """
+    sampler = DistributedSampler(dataset, shuffle=True, seed=SEED) if shuffle and world_size() > 1 else None
+    share = Subset(dataset, range(rank(), len(dataset), world_size())) if not shuffle and world_size() > 1 else dataset
     return DataLoader(
-        dataset,
+        share,
         batch_size=config.batch_size,
-        shuffle=shuffle,
+        shuffle=shuffle and sampler is None,
+        sampler=sampler,
         num_workers=config.num_workers,
         collate_fn=collate_fn,
         pin_memory=torch.cuda.is_available(),

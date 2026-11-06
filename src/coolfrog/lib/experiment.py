@@ -21,6 +21,7 @@ import torch
 import yaml
 
 from coolfrog.lib.config import HOST_CONFIG, PATH_REPO, SEED, seed_everything
+from coolfrog.lib.distributed import barrier, init_distributed, is_main_process, rank
 from coolfrog.lib.huggingface import HubFile, HuggingFaceHub
 from coolfrog.lib.log import get_logger, setup_logging
 
@@ -75,6 +76,12 @@ def folder_suffix() -> str:
 def find_folder(title: str) -> Path | None:
     """Return the existing `experiments/<NN>_<kebab-title>[_partial]/` folder of this host's share, None if new."""
     return next(PATH_EXPERIMENTS.glob(f"[0-9][0-9]_{kebab_case_slug(title)}{folder_suffix()}"), None)
+
+
+def experiment_folder(title: str) -> Path | None:
+    """Folder of the calling script's experiment: the script's own folder or `find_folder`, None if new."""
+    script = calling_script()
+    return script.parent if is_experiment_folder(script.parent) else find_folder(title)
 
 
 def new_folder(title: str) -> Path:
@@ -151,7 +158,9 @@ def render_readme(title: str, goal: str | None, hypothesis: str | None) -> str:
 
 
 def write_configs(configs: Sequence["DataclassInstance"], path: Path) -> None:
-    """Write `configs` as yaml keyed by class name, e.g. one `config.yaml` per run of a multi-run experiment."""
+    """Write `configs` as yaml keyed by class name, e.g. one `config.yaml` per run of a multi-run experiment, rank 0 only."""
+    if not is_main_process():
+        return
     # json round trip turns Path and tuple into yaml-safe types
     config_dict = {type(config).__name__: asdict(config) for config in configs}
     path.write_text(yaml.safe_dump(json.loads(json.dumps(config_dict, default=str))))
@@ -180,7 +189,10 @@ def inject_table(path_results: Path, name: str, dataframe: pl.DataFrame) -> None
     - Replaces the `<!-- table: name -->` block of the README, appends it if missing
     - Text outside the blocks is never touched, move an appended block once by hand, later runs update it in place
     - Call it as the last step of the script, so only completed runs update the README
+    - Writes on rank 0 only, every process may call it
     """
+    if not is_main_process():
+        return
     dataframe.write_csv(path_results / f"{name}.csv")
     path_readme = path_results.parent / "README.md"
     block = f"<!-- table: {name} -->\n{markdown_table(dataframe)}\n<!-- /table -->"
@@ -308,7 +320,7 @@ def start_run(title: str, goal: str | None, hypothesis: str | None, configs: Seq
     """
     script = calling_script()
     confirm_uncommitted_changes()
-    folder = script.parent if is_experiment_folder(script.parent) else find_folder(title)
+    folder = experiment_folder(title)
     is_new_folder = folder is None
     if folder is None:
         folder = new_folder(title)
@@ -356,6 +368,8 @@ def run_experiment(  # noqa: PLR0913, the public entry point of every experiment
     - KeyboardInterrupt (Ctrl+C, also `agent-proc stop`) -> then the interrupt propagates
         - New run on a terminal -> asks: `y` deletes it via `undo_run`, else it stays with status `interrupted`, resumable
         - New run without a terminal, resumed run -> `undo_run`
+    - Under `torchrun`: rank 0 does all of the above, the other ranks wait for its run and yield the same folder, writing nothing
+        - Each rank seeds with `SEED + rank`, so loader workers draw different crops
     - Killed process (SIGKILL, closed tmux window) -> no cleanup runs, status stays `running`
     - Logs to the console and `results/run.log`, use `get_logger("coolfrog.experiment")` in the script
 
@@ -365,9 +379,17 @@ def run_experiment(  # noqa: PLR0913, the public entry point of every experiment
     ...     log = get_logger("coolfrog.experiment")
     ...     ...  # write results, skip complete stages
     """
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")  # read once, at CUDA initialization
+    init_distributed()  # initializes CUDA, so after the allocator setting
+    if not is_main_process():
+        barrier()  # rank 0 has started or resumed the run
+        seed_everything(SEED + rank())
+        yield experiment_folder(title) / "results"
+        return
     run = resume_run(title, configs) if resume else None
     if run is None:
         run = start_run(title, goal, hypothesis, configs)
+    barrier()
     setup_logging(log_file=run.path_results / "run.log")  # appends, a resumed run continues its log
     if run.meta_before_resume is None:
         logger.info("Started run in %s at commit %s", run.folder, current_commit()[:7])
@@ -380,7 +402,6 @@ def run_experiment(  # noqa: PLR0913, the public entry point of every experiment
             previous["date"],
             previous.get("status", RunStatus.RUNNING),
         )
-    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")  # read once, at CUDA initialization
     seed_everything()
     try:
         yield run.path_results
@@ -406,8 +427,7 @@ def resume_run(title: str, configs: Sequence["DataclassInstance"]) -> Experiment
     - ValueError when `configs` differ from its `config.yaml`
     - Appends the current commit and date to `meta.json["resumed"]`, sets the status back to `running`
     """
-    script = calling_script()
-    folder = script.parent if is_experiment_folder(script.parent) else find_folder(title)
+    folder = experiment_folder(title)
     if folder is None or not (folder / "meta.json").exists():
         return None
     meta_before_resume = (folder / "meta.json").read_text()
@@ -473,6 +493,7 @@ class Stage:
     """One resumable step of a run, e.g. one latent scale: a folder whose `stage.json` marks it complete.
 
     - `save` writes every output by its suffix, then `stage.json` last: a crash mid-save leaves the stage incomplete
+    - Under `torchrun` every process calls `save`: rank 0 writes, all return once the stage is complete
     - Suffixes: `.parquet` / `.csv` <- pl.DataFrame, `.pt` <- tensors or a dict of them, `.png` <- matplotlib Figure
     - A resumed run (`run_experiment(..., resume=True)`) skips complete stages and loads their outputs
 
@@ -493,7 +514,12 @@ class Stage:
         return self.path_marker.exists()
 
     def save(self, outputs: Mapping[str, Any]) -> None:
-        """Write `outputs` (file name -> data) into the stage folder, then mark the stage complete."""
+        """Write `outputs` (file name -> data) into the stage folder, then mark the stage complete, rank 0 only."""
+        if is_main_process():
+            self._write(outputs)
+        barrier()  # the stage is complete for every process
+
+    def _write(self, outputs: Mapping[str, Any]) -> None:
         self.folder.mkdir(parents=True, exist_ok=True)
         for name, data in outputs.items():
             path = self.folder / name

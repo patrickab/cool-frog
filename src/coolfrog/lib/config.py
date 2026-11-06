@@ -181,7 +181,8 @@ class TrainConfig:
     crops_per_step : int
         Single-channel crops per forward/backward pass, bounded by VRAM (8 at 64³ on 12 GB), 1 for whole domains.
     accumulation_steps : int
-        Passes summed into one update, effective batch = `crops_per_step * accumulation_steps`.
+        Passes summed into one update over all GPUs, effective batch = `crops_per_step * accumulation_steps`.
+        Under `torchrun` each GPU runs `accumulation_steps / n_gpus` of them, which must divide evenly.
     learning_rate, weight_decay : float
         AdamW, linear warmup over `warmup_updates`, constant afterwards.
     kl_weight : float
