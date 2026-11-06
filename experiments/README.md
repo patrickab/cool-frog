@@ -21,7 +21,7 @@ Bulk data matching `experiments/.gitignore` (`*.npz`, `*.parquet`, `*.pt`, `*.sa
 |---|---|---|
 | success | stays | one commit: previous pushed run moves into `history/`, new large files upload, `meta.json["hub"]` records the commit |
 | exception | stays for debugging, no `"hub"` entry | untouched |
-| Ctrl+C, `agent-proc stop` | run deleted, previous run restored from `history/` | untouched |
+| Ctrl+C, `agent-proc stop` | asks `[y/N]` on a terminal: `y` deletes the run and restores the previous one from `history/`, else the run stays with status `interrupted`, without a terminal deleted | untouched |
 
 - Push failed or crashed run with useful results: `push_experiment(HuggingFaceHub(), folder)` by hand
 - Fresh clone: `pull_experiment(HuggingFaceHub(), folder)` restores the large files of a live or archived run
@@ -29,7 +29,7 @@ Bulk data matching `experiments/.gitignore` (`*.npz`, `*.parquet`, `*.pt`, `*.sa
 
 ## Status, resume and stages
 
-`meta.json["status"]` is `running` while the script runs (also after a killed process), `complete` after success and `failed` after an exception.
+`meta.json["status"]` is `running` while the script runs (also after a killed process), `complete` after success, `failed` after an exception and `interrupted` after Ctrl+C when the run was kept.
 
 - `run_experiment(..., resume=True)` continues an unfinished live run in its folder instead of archiving it, configs must be identical. Scripts take it as `--resume`, e.g. `uv run python -m coolfrog.experiments.finetune_autoencoder --resume`. Each resume is appended to `meta.json["resumed"]`. Ctrl+C on a resumed run only restores its `meta.json`, results stay.
 - `Stage(folder)` makes a step resumable, e.g. one latent scale: `stage.save({"metrics.parquet": df, "adapter.pt": model.adapter(), "curves.png": figure})` writes the outputs by suffix, then `stage.json` last. A resumed run skips stages with a `stage.json` and reads their outputs with `stage.load(name)`.
