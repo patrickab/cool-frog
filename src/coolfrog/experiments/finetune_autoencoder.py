@@ -1,6 +1,7 @@
 """LoRA-32 fine-tuning of Tadpole-B on whole curated domains at 2x, then 1x, compared to zero-shot on the same validation designs.
 
-`--resume` continues an unfinished run. One `Stage` per latent scale, `results/latent_scale_<n>/`:
+`--resume` continues an unfinished run. On several GPUs: `torchrun --standalone --nproc_per_node <n_gpus> -m <this module>`.
+One `Stage` per latent scale, `results/latent_scale_<n>/`:
 
 - `metrics.parquet` (Hugging Face): train MSE, spectral loss and KL per update, validation medians of NRMSE, MSE and spectral loss
 - `per_design.parquet` (Hugging Face): final NRMSE, MSE and spectral loss per design and channel

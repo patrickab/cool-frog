@@ -40,6 +40,15 @@ if not stage.is_complete():
     stage.save(fine_tune(latent_scale, stage.folder))
 metrics = stage.load("metrics.parquet")
 ```
+
+## Several GPUs
+
+`torchrun --standalone --nproc_per_node <n_gpus> -m coolfrog.experiments.finetune_autoencoder` trains data-parallel, one process per GPU (`src/coolfrog/lib/distributed.py`). Without `torchrun` the same script runs on one GPU.
+
+- Rank 0 alone starts or resumes the run, logs, shows the dashboard and writes files: `Stage.save`, `write_configs` and `inject_table` write on rank 0 only, `Stage.save` returns on every rank once the stage is complete. Other script writes need `is_main_process()`, then `barrier()` before other ranks read them
+- `TrainConfig.accumulation_steps` counts passes per update over all GPUs, so an update is the same on any GPU count, it must divide evenly
+- `create_dataloader` gives each rank its share: `DistributedSampler` when shuffled, every n-th design when not, `evaluate` gathers all rows on every rank
+
 ## Tables in the README
 
 Result tables are generated, never typed: `inject_table(path_results, name, dataframe)` as the last step of the script.

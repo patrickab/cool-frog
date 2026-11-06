@@ -7,6 +7,7 @@ import torch
 
 from coolfrog.engine.tadpole import Tadpole
 from coolfrog.lib.datatypes import CHANNELS, FlowField, NormalizationStats
+from coolfrog.lib.distributed import all_gather_objects
 
 SPATIAL_DIMS = (-3, -2, -1)
 
@@ -50,7 +51,10 @@ def fluid_mse(prediction: FlowField, reference: FlowField) -> torch.Tensor:
 
 
 def evaluate(model: Tadpole, flowfields: Iterable[FlowField], stats: NormalizationStats) -> dict[str, pl.DataFrame]:
-    """NRMSE, MSE and spectral loss per design and channel on the full domain, float32, latent mean decoded."""
+    """NRMSE, MSE and spectral loss per design and channel on the full domain, float32, latent mean decoded.
+
+    - Under `torchrun` each process evaluates its share of the designs, every process gets all rows sorted by `design_id`
+    """
     device = next(model.parameters()).device
     was_training = model.training
     model.eval()
@@ -63,7 +67,9 @@ def evaluate(model: Tadpole, flowfields: Iterable[FlowField], stats: Normalizati
             mse_tables.append(mse(prediction, reference))  # in normalized units, like the training loss
             spectral_tables.append(spectral_loss(prediction, reference))  # in normalized units
     model.train(was_training)
-    return {"nrmse": pl.concat(nrmse_tables), "mse": pl.concat(mse_tables), "spectral_loss": pl.concat(spectral_tables)}
+    local_tables = {"nrmse": nrmse_tables, "mse": mse_tables, "spectral_loss": spectral_tables}
+    gathered = all_gather_objects({metric: pl.concat(tables) for metric, tables in local_tables.items()})
+    return {metric: pl.concat(tables[metric] for tables in gathered).sort("design_id") for metric in local_tables}
 
 
 def _fluid_sum(values: torch.Tensor, fluid: torch.Tensor) -> torch.Tensor:
