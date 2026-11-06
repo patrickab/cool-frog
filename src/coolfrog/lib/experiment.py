@@ -40,6 +40,7 @@ class RunStatus(StrEnum):
     RUNNING = "running"  # started or resumed, also left behind by a killed process
     COMPLETE = "complete"  # block finished, pushed when a hub was given
     FAILED = "failed"  # exception, results kept for debugging
+    INTERRUPTED = "interrupted"  # Ctrl+C, results kept on request, resumable
 
 
 def kebab_case_slug(title: str) -> str:
@@ -109,6 +110,17 @@ def confirm_uncommitted_changes() -> None:
         answer = ""
     if answer.strip().lower() != "y":
         raise SystemExit("Experiment not started")
+
+
+def confirm_delete_interrupted_run(run: "ExperimentRun") -> bool:
+    """Ask whether to delete an interrupted new run, True without a terminal, False on anything but `y`."""
+    if not sys.stdin.isatty():
+        return True
+    try:
+        answer = input(f"Interrupted, delete the run in {run.folder}? [y/N] ")
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    return answer.strip().lower() == "y"
 
 
 def archive_previous_run(folder: Path) -> Path | None:
@@ -341,7 +353,9 @@ def run_experiment(  # noqa: PLR0913, the public entry point of every experiment
     - `resume=True` and an unfinished live run -> continues in its folder, see `resume_run`, else starts a new run
     - Success -> `push_experiment` when `hub` is given, status `complete`
     - Exception -> everything stays for debugging, logs included, nothing pushed, status `failed`, the error propagates
-    - KeyboardInterrupt (Ctrl+C, also `agent-proc stop`) -> `undo_run`, then the interrupt propagates
+    - KeyboardInterrupt (Ctrl+C, also `agent-proc stop`) -> then the interrupt propagates
+        - New run on a terminal -> asks: `y` deletes it via `undo_run`, else it stays with status `interrupted`, resumable
+        - New run without a terminal, resumed run -> `undo_run`
     - Killed process (SIGKILL, closed tmux window) -> no cleanup runs, status stays `running`
     - Logs to the console and `results/run.log`, use `get_logger("coolfrog.experiment")` in the script
 
@@ -371,7 +385,11 @@ def run_experiment(  # noqa: PLR0913, the public entry point of every experiment
     try:
         yield run.path_results
     except KeyboardInterrupt:
-        undo_run(run)
+        if run.meta_before_resume is None and not confirm_delete_interrupted_run(run):
+            print(f"Keeping the interrupted run in {run.folder}, continue it with resume")
+            update_meta(run.folder, status=RunStatus.INTERRUPTED)
+        else:
+            undo_run(run)
         raise
     except BaseException:
         update_meta(run.folder, status=RunStatus.FAILED)
