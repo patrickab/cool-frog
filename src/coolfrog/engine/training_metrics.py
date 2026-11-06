@@ -14,14 +14,14 @@ from coolfrog.lib.metrics import MetricTracker, WindowMean
 
 logger = get_logger(__name__)
 
-MSE, SPECTRAL, KL = "train/mse", "train/spectral_loss", "train/kl"
+TRAIN_MSE, TRAIN_SPECTRAL, KL = "train/mse", "train/spectral_loss", "train/kl"
 LEARNING_RATE, SECONDS_PER_UPDATE = "train/learning_rate", "train/seconds_per_update"
-NRMSE, SPECTRAL_LOSS = "nrmse", "spectral_loss"  # keys of `evaluate`
+NRMSE, MSE, SPECTRAL_LOSS = "nrmse", "mse", "spectral_loss"  # keys of `evaluate`
 TRAINING_PROGRESS, VALIDATION_PROGRESS = "Training", "Validation"  # progress bar labels
 
 
 def validation_name(metric: str, channel: str | None = None) -> str:
-    """Series name of a validation metric, `val/nrmse` for the channel mean, `val/nrmse/p [Pa]` for one channel."""
+    """Series name of a validation metric, `val/mse` for the channel mean, `val/mse/p [Pa]` for one channel."""
     return f"val/{metric}" if channel is None else f"val/{metric}/{channel}"
 
 
@@ -53,7 +53,9 @@ class TrainingMetrics:
         """Record one optimizer update and advance the training bar, KeyboardInterrupt when the dashboard asked to stop."""
         self.tracker.set_progress(TRAINING_PROGRESS, update, self.config.updates)
         now = time.perf_counter()
-        self._window.add({MSE: mse, SPECTRAL: spectral, KL: kl, LEARNING_RATE: learning_rate, SECONDS_PER_UPDATE: now - self._tick})
+        self._window.add(
+            {TRAIN_MSE: mse, TRAIN_SPECTRAL: spectral, KL: kl, LEARNING_RATE: learning_rate, SECONDS_PER_UPDATE: now - self._tick}
+        )
         self._tick = now
         if update % self.log_every == 0 or update == self.config.updates:
             self.tracker.log(update, self._window.flush())
@@ -75,7 +77,7 @@ class TrainingMetrics:
     def log_validation(self, update: int, per_design_tables: Mapping[str, pl.DataFrame]) -> None:
         """Record the median over designs per channel and its mean over channels of each `evaluate` table.
 
-        - Median, as a few designs dominate the mean, e.g. p NRMSE of designs with nearly constant pressure
+        - Median, as a few badly reconstructed designs dominate the mean
         - Resets the update timer, validation time does not count as update time
         """
         values: dict[str, float] = {}
@@ -85,9 +87,9 @@ class TrainingMetrics:
             values |= {validation_name(metric, channel): median for channel, median in channel_medians.items()}
         self.tracker.log(update, values)
         logger.info(
-            "update %d validation NRMSE %.3f %% spectral loss %.3e",
+            "update %d validation MSE %.3e spectral loss %.3e",
             update,
-            values[validation_name(NRMSE)],
+            values[validation_name(MSE)],
             values[validation_name(SPECTRAL_LOSS)],
         )
         self._tick = time.perf_counter()
@@ -110,18 +112,18 @@ class TrainingMetrics:
             charts=(
                 ChartSpec(
                     f"Train MSE and spectral loss, mean over {self.log_every} updates",
-                    (SeriesSpec(MSE, "mse", PALETTE[0]), SeriesSpec(SPECTRAL, "spectral", PALETTE[2], side="right")),
+                    (SeriesSpec(TRAIN_MSE, "mse", PALETTE[0]), SeriesSpec(TRAIN_SPECTRAL, "spectral", PALETTE[2], side="right")),
                     y_label="mse",
                 ),
-                ChartSpec("Validation NRMSE [%], median", channel_lines(NRMSE), y_label="nrmse"),
+                ChartSpec("Validation MSE, median", channel_lines(MSE), y_label="mse"),
                 ChartSpec("Validation spectral loss, median", channel_lines(SPECTRAL_LOSS), y_label="spectral"),
             ),
             columns=(
-                ColumnSpec("Train MSE", MSE),
-                ColumnSpec("Train spectral", SPECTRAL),
+                ColumnSpec("Train MSE", TRAIN_MSE),
+                ColumnSpec("Train spectral", TRAIN_SPECTRAL),
                 ColumnSpec("KL", KL),
                 ColumnSpec("LR", LEARNING_RATE, "dim"),
-                ColumnSpec("Val NRMSE %", validation_name(NRMSE), "green", "{:.3f}"),
+                ColumnSpec("Val MSE", validation_name(MSE), "green"),
                 ColumnSpec("Val spectral", validation_name(SPECTRAL_LOSS), "green"),
                 ColumnSpec("s/update", SECONDS_PER_UPDATE, "", "{:.2f}"),
             ),
