@@ -2,7 +2,7 @@
 
 Results:
 
-- `results/per_design.parquet` (Hugging Face): NRMSE and spectral loss per latent scale, design and channel
+- `results/per_design.parquet` (Hugging Face): NRMSE, MSE and spectral loss per latent scale, design and channel
 - `results/zero-shot-nrmse.csv`, `results/zero-shot-spectral-loss.csv` (README tables): median and q0.9 per channel
 - `results/latent_scale_<n>/slices_first_validation_design.png`
 """

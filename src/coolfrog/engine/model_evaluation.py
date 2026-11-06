@@ -21,6 +21,14 @@ def nrmse(prediction: FlowField, reference: FlowField) -> pl.DataFrame:
     return _per_channel_table(100 * (mean_squared_error / reference_variance).sqrt().squeeze(SPATIAL_DIMS), reference)
 
 
+def mse(prediction: FlowField, reference: FlowField) -> pl.DataFrame:
+    """Fluid-voxel MSE per design and channel, in normalized units like the training loss."""
+    fluid = reference.mask.unsqueeze(-4)
+    fluid_count = fluid.sum(dim=SPATIAL_DIMS, keepdim=True)
+    squared_error = (prediction.fields.float() - reference.fields).square()
+    return _per_channel_table((_fluid_sum(squared_error, fluid) / fluid_count).squeeze(SPATIAL_DIMS), reference)
+
+
 def spectral_distance(prediction: FlowField, reference: FlowField) -> torch.Tensor:
     """(B, C) mean L1 distance of log1p FFT amplitudes over the full grid, solids zeroed in both, float32."""
     fluid = reference.mask.unsqueeze(-4)
@@ -42,19 +50,20 @@ def fluid_mse(prediction: FlowField, reference: FlowField) -> torch.Tensor:
 
 
 def evaluate(model: Tadpole, flowfields: Iterable[FlowField], stats: NormalizationStats) -> dict[str, pl.DataFrame]:
-    """NRMSE and spectral loss per design and channel on the full domain, float32, latent mean decoded."""
+    """NRMSE, MSE and spectral loss per design and channel on the full domain, float32, latent mean decoded."""
     device = next(model.parameters()).device
     was_training = model.training
     model.eval()
-    nrmse_tables, spectral_tables = [], []
+    nrmse_tables, mse_tables, spectral_tables = [], [], []
     with torch.no_grad():
         for flowfield in flowfields:
             reference = flowfield.to(device).normalize(stats)
             prediction = model.decode(model.encode(reference))
             nrmse_tables.append(nrmse(prediction, reference))  # scale-invariant: physical units, log10 space for log channels
+            mse_tables.append(mse(prediction, reference))  # in normalized units, like the training loss
             spectral_tables.append(spectral_loss(prediction, reference))  # in normalized units
     model.train(was_training)
-    return {"nrmse": pl.concat(nrmse_tables), "spectral_loss": pl.concat(spectral_tables)}
+    return {"nrmse": pl.concat(nrmse_tables), "mse": pl.concat(mse_tables), "spectral_loss": pl.concat(spectral_tables)}
 
 
 def _fluid_sum(values: torch.Tensor, fluid: torch.Tensor) -> torch.Tensor:

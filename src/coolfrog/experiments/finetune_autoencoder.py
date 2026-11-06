@@ -2,13 +2,13 @@
 
 `--resume` continues an unfinished run. One `Stage` per latent scale, `results/latent_scale_<n>/`:
 
-- `metrics.parquet` (Hugging Face): train MSE, spectral loss and KL per update, validation medians
-- `per_design.parquet` (Hugging Face): final NRMSE and spectral loss per design and channel
+- `metrics.parquet` (Hugging Face): train MSE, spectral loss and KL per update, validation medians of NRMSE, MSE and spectral loss
+- `per_design.parquet` (Hugging Face): final NRMSE, MSE and spectral loss per design and channel
 - `adapter.pt` (Hugging Face): LoRA weights
 - `checkpoints/adapter_update_<update>.pt` (Hugging Face): LoRA weights after every validation
 - `training_curves.png`, `slices_first_validation_design.png`, `config.yaml`, `stage.json`
 
-README tables: `results/nrmse.csv`, `results/spectral-loss.csv`, `results/training.csv`.
+README tables: `results/nrmse.csv`, `results/mse.csv`, `results/spectral-loss.csv`, `results/training.csv`.
 """
 
 from pathlib import Path
@@ -22,7 +22,16 @@ from coolfrog.engine.cooldata import create_dataloader
 from coolfrog.engine.model_evaluation import evaluate
 from coolfrog.engine.tadpole import Tadpole
 from coolfrog.engine.training import RandomCrops, fine_tune_autoencoder
-from coolfrog.engine.training_metrics import KL, MSE, NRMSE, SECONDS_PER_UPDATE, SPECTRAL, SPECTRAL_LOSS, validation_name
+from coolfrog.engine.training_metrics import (
+    KL,
+    MSE,
+    NRMSE,
+    SECONDS_PER_UPDATE,
+    SPECTRAL_LOSS,
+    TRAIN_MSE,
+    TRAIN_SPECTRAL,
+    validation_name,
+)
 from coolfrog.experiments.autoencoding import (
     N_VALIDATION_DESIGNS,
     curated_metadata,
@@ -62,7 +71,7 @@ MODEL_CONFIG = TadpoleConfig(
     activation_checkpointing=True,  # whole-domain backward only fits at latent scale 1 without it
 )
 TRAIN_CONFIG = TrainConfig(
-    updates=50_000,
+    updates=22_500,
     crops_per_step=1,  # one whole single-channel domain per pass
     accumulation_steps=4,
     learning_rate=5e-5,
@@ -81,13 +90,13 @@ def data_config(latent_scale: int) -> DataConfig:
 
 def training_row(metrics: pl.DataFrame, latent_scale: int) -> dict[str, float]:
     """Row of the README training table."""
-    last = metrics.select(MSE, SPECTRAL, KL).drop_nulls().tail(1).row(0, named=True)
+    last = metrics.select(TRAIN_MSE, TRAIN_SPECTRAL, KL).drop_nulls().tail(1).row(0, named=True)
     return {
         "latent_scale": latent_scale,
         "updates": TRAIN_CONFIG.updates,
         "training time [h]": training_hours(metrics),
-        "final train MSE": last[MSE],
-        "final train spectral loss": last[SPECTRAL],
+        "final train MSE": last[TRAIN_MSE],
+        "final train spectral loss": last[TRAIN_SPECTRAL],
         "final KL": last[KL],
     }
 
@@ -97,15 +106,15 @@ def plot_training_curves(metrics: pl.DataFrame, latent_scale: int) -> Figure:
     figure = Figure(figsize=(14, 8), layout="constrained")
     axes = figure.subplots(2, 2)
     for axis, series, title in (
-        (axes[0, 0], MSE, "Train MSE, normalized units"),
-        (axes[0, 1], SPECTRAL, "Train spectral loss, whole domains"),
+        (axes[0, 0], TRAIN_MSE, "Train MSE, normalized units"),
+        (axes[0, 1], TRAIN_SPECTRAL, "Train spectral loss, whole domains"),
     ):
         train = metrics.select("update", series).drop_nulls()
         axis.plot(train["update"], train[series], color="#3b5b7a", linewidth=0.8)
         axis.set_title(title)
         axis.set_yscale("log")
     for axis, metric, title in (
-        (axes[1, 0], NRMSE, "Validation NRMSE [%], median"),
+        (axes[1, 0], MSE, "Validation MSE, median"),
         (axes[1, 1], SPECTRAL_LOSS, "Validation spectral loss, median"),
     ):
         for channel in CHANNELS:
@@ -136,7 +145,7 @@ def zero_shot_medians(metrics: pl.DataFrame, latent_scale: int) -> pl.DataFrame:
                 **{channel.value: update_zero[validation_name(metric, channel.value)] for channel in CHANNELS},
             }
         )
-        for metric in (NRMSE, SPECTRAL_LOSS)
+        for metric in (NRMSE, MSE, SPECTRAL_LOSS)
     )
 
 
@@ -198,7 +207,7 @@ with run_experiment(TITLE, GOAL, HYPOTHESIS, [MODEL_CONFIG, TRAIN_CONFIG], hub=H
 
     per_design = pl.concat(per_design_tables)
     zero_shot = pl.concat(zero_shot_tables)
-    for metric, name in ((NRMSE, "nrmse"), (SPECTRAL_LOSS, "spectral-loss")):
+    for metric, name in ((NRMSE, "nrmse"), (MSE, "mse"), (SPECTRAL_LOSS, "spectral-loss")):
         fine_tuned = quantile_table(per_design, metric, (0.5,))
         table = pl.concat([zero_shot.filter(pl.col("metric") == metric).drop("metric"), fine_tuned], how="vertical_relaxed").sort(
             "latent_scale", maintain_order=True
