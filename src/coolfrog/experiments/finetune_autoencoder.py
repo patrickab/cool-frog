@@ -5,6 +5,7 @@ One `Stage` per latent scale, `results/latent_scale_<n>/`:
 
 - `train.parquet` (Hugging Face): train MSE, spectral loss, KL, learning rate and seconds per update, mean over 50 updates
 - `validation.parquet` (Hugging Face): NRMSE, MSE and spectral loss per validation update, design and channel
+- `validation_medians.parquet` (Hugging Face): medians over designs of `validation.parquet` per validation update and channel
 - `state.json`: title and configs, progress of the last save, all tables rewritten while training runs
 - `per_design.parquet` (Hugging Face): the final validation of `validation.parquet` in the layout of `per_design_frame`
 - `adapter.pt` (Hugging Face): LoRA weights
@@ -25,7 +26,7 @@ from coolfrog.engine.cooldata import CoolMetadata, create_dataloader
 from coolfrog.engine.model_evaluation import MSE, NRMSE, SPECTRAL_LOSS
 from coolfrog.engine.tadpole import Tadpole
 from coolfrog.engine.training import RandomCrops, fine_tune_autoencoder
-from coolfrog.engine.training_metrics import SCHEMAS, TRAIN, VALIDATION
+from coolfrog.engine.training_metrics import SCHEMAS, TRAIN, VALIDATION, VALIDATION_MEDIANS
 from coolfrog.experiments.autoencoding import (
     curated_metadata,
     data_config,
@@ -89,13 +90,11 @@ def training_row(train: pl.DataFrame, latent_scale: int) -> dict[str, float]:
     }
 
 
-def zero_shot_medians(validation: pl.DataFrame, latent_scale: int) -> pl.DataFrame:
+def zero_shot_medians(medians: pl.DataFrame, latent_scale: int) -> pl.DataFrame:
     """Validation medians over designs at update 0, where LoRA is still the identity, in the layout of `quantile_table`."""
     medians = (
-        validation.filter(pl.col("update") == 0)
+        medians.filter(pl.col("update") == 0)
         .unpivot(on=[NRMSE, MSE, SPECTRAL_LOSS], index="channel", variable_name="metric")
-        .group_by("metric", "channel", maintain_order=True)
-        .agg(pl.col("value").median())
         .with_columns(pl.col("channel").cast(pl.String).replace_strict(CHANNEL_LABELS))
         .pivot(on="channel", index="metric", values="value")
     )
@@ -148,7 +147,7 @@ def fine_tune(latent_scale: int, stage: Stage, metadata: CoolMetadata, stats: No
     with mpl.rc_context(STYLE):
         curves = {
             "training_curves.png": training_curves(tracker.frame(TRAIN)),
-            "validation_curves.png": validation_curves(tracker.frame(VALIDATION)),
+            "validation_curves.png": validation_curves(tracker.frame(VALIDATION_MEDIANS)),
         }
         for figure in curves.values():
             figure.suptitle(f"{MODEL} at latent scale {latent_scale}")
@@ -176,7 +175,7 @@ with run_experiment(TITLE, GOAL, HYPOTHESIS, [MODEL_CONFIG, TRAIN_CONFIG], hub=H
             torch.cuda.empty_cache()
         train = stage.load(f"{TRAIN}.parquet")
         per_design_tables.append(stage.load("per_design.parquet"))
-        zero_shot_tables.append(zero_shot_medians(stage.load(f"{VALIDATION}.parquet"), latent_scale))
+        zero_shot_tables.append(zero_shot_medians(stage.load(f"{VALIDATION_MEDIANS}.parquet"), latent_scale))
         training_rows.append(training_row(train, latent_scale))
 
     per_design = pl.concat(per_design_tables)

@@ -13,7 +13,7 @@ Concepts: [system-overview.md](system-overview.md). Data flow and contracts: [ar
 ├── AGENTS.md                     # routes agents to frontend/AGENTS.md and experiments/README.md
 ├── pyproject.toml                # package `coolfrog` (uv_build, src layout), deps, ruff, pytest, git pins of tadpole and cooldata
 ├── uv.lock                       # locked deps, CI fails when out of sync (UV_LOCKED=1)
-├── run-frontend.sh               # starts API (8010) or monitor hub (8011) with --reload, plus Vite (5173)
+├── run-frontend.sh               # starts API (8010) or monitor hub (8015) with --reload, plus Vite (5173)
 ├── monitor-hosts.json            # gitignored, SSH hosts of the monitor, may hold plaintext passwords
 ├── .github/workflows/ci.yml      # uv sync, ruff check, ruff format --check, pytest
 ├── .pre-commit-config.yaml       # yaml/toml checks, ruff via uv, `uv lock --check`
@@ -62,7 +62,7 @@ Concepts: [system-overview.md](system-overview.md). Data flow and contracts: [ar
 ├── frontend/
 │   ├── AGENTS.md                 # canonical UI rules, code layout, components, verification
 │   ├── package.json              # React 19, vtk.js, three/R3F, Tailwind 4, Vite 6
-│   ├── vite.config.ts            # port 5173, proxy /api/hosts -> 8011 then /api -> 8010, inputs index.html + monitor.html
+│   ├── vite.config.ts            # port 5173, proxy /api/hosts -> 8015 then /api -> 8010, inputs index.html + monitor.html
 │   ├── index.html, monitor.html  # two pages, theme resolved before first paint
 │   └── src/
 │       ├── main.tsx, App.tsx     # explorer root, hash views, all views stay mounted
@@ -112,7 +112,7 @@ Concepts: [system-overview.md](system-overview.md). Data flow and contracts: [ar
 | Normalization or exclusions | Rerun `src/coolfrog/experiments/value_distribution.py`. Consumers read `PATH_VALUE_DISTRIBUTION` in `src/coolfrog/experiments/autoencoding.py` |
 | Channels or parameters | `src/coolfrog/lib/datatypes.py` (`Channel`, `PARAM_COLUMNS`), then `CGNS_ARRAYS` in `src/coolfrog/engine/cooldata.py`, `CHANNEL_LABELS` users in `src/coolfrog/lib/plots.py`. Existing shards and normalization CSVs become invalid |
 | CoolData revision | `HF_REVISION` in `src/coolfrog/engine/cooldata.py`. `design_rows.csv` maps rows of that revision |
-| Metric | `src/coolfrog/engine/model_evaluation.py`, `evaluate` keys, `VALIDATION_SCHEMA` in `src/coolfrog/lib/plots.py`, `validation_rows` in `src/coolfrog/engine/training_metrics.py` |
+| Metric | `src/coolfrog/engine/model_evaluation.py`, `evaluate` keys, `VALIDATION_SCHEMA` and `VALIDATION_PANELS` in `src/coolfrog/lib/plots.py`, `validation_rows` in `src/coolfrog/engine/training_metrics.py` |
 | Tracker table or plot | Schema and figure in `src/coolfrog/lib/plots.py`, `figure_for_table` for the monitor |
 | Explorer endpoint | `src/coolfrog/api/main.py` plus types/fetcher in `frontend/src/api.ts` |
 | Monitor endpoint | `src/coolfrog/lib/monitor.py` (training side), `src/coolfrog/api/monitor_hub.py` (proxy), `frontend/src/monitor/api.ts` |

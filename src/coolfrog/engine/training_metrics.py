@@ -1,4 +1,4 @@
-"""Tables of one fine-tuning run: windowed training means and validation per design and channel."""
+"""Tables of one fine-tuning run: windowed training means, validation per design and channel, and its medians over designs."""
 
 from collections.abc import Collection, Iterator, Mapping
 import logging
@@ -9,11 +9,24 @@ import polars as pl
 from coolfrog.engine.model_evaluation import MSE, SPECTRAL_LOSS
 from coolfrog.lib.config import TrainConfig
 from coolfrog.lib.metrics import Tracker, WindowMean
-from coolfrog.lib.plots import CHANNEL_LABELS, TRAIN, TRAIN_SCHEMA, VALIDATION, VALIDATION_SCHEMA
+from coolfrog.lib.plots import (
+    CHANNEL_LABELS,
+    TRAIN,
+    TRAIN_SCHEMA,
+    VALIDATION,
+    VALIDATION_MEDIANS,
+    VALIDATION_MEDIANS_SCHEMA,
+    VALIDATION_SCHEMA,
+    validation_medians,
+)
 
 logger = logging.getLogger(__name__)
 
-SCHEMAS = {TRAIN: TRAIN_SCHEMA, VALIDATION: VALIDATION_SCHEMA}  # tracker schemas of the tables, see `Tracker`
+SCHEMAS = {  # tracker schemas of the tables, see `Tracker`
+    TRAIN: TRAIN_SCHEMA,
+    VALIDATION: VALIDATION_SCHEMA,
+    VALIDATION_MEDIANS: VALIDATION_MEDIANS_SCHEMA,
+}
 TRAINING_PROGRESS, VALIDATION_PROGRESS = "Training", "Validation"  # progress bar labels
 
 
@@ -33,7 +46,8 @@ class TrainingMetrics:
     """Logging of one `fine_tune_autoencoder` run into `tracker`, keyed by update.
 
     - `train` table (`TRAIN_SCHEMA`): training values averaged over `log_every` updates, plus the final one
-    - `validation` table (`VALIDATION_SCHEMA`): every metric per update, design and channel, aggregated by its readers
+    - `validation` table (`VALIDATION_SCHEMA`): every metric per update, design and channel
+    - `validation_medians` table (`VALIDATION_MEDIANS_SCHEMA`): their medians over designs per update and channel
     - Progress bars: updates done, designs done of the running or last validation
 
     Examples
@@ -74,13 +88,14 @@ class TrainingMetrics:
             self.tracker.resume_progress(TRAINING_PROGRESS)
 
     def log_validation(self, update: int, per_design_tables: Mapping[str, pl.DataFrame]) -> None:
-        """Append every design and channel of the `evaluate` tables, log the channel mean of their medians over designs.
+        """Append every design and channel of the `evaluate` tables and their medians over designs, log the channel mean of medians.
 
         - Resets the update timer, validation time does not count as update time
         """
         rows = validation_rows(update, per_design_tables)
+        medians = validation_medians(rows)
         self.tracker.extend(VALIDATION, rows)
-        medians = rows.group_by("channel").agg(pl.col(MSE, SPECTRAL_LOSS).median())
+        self.tracker.extend(VALIDATION_MEDIANS, medians)
         channel_mean = medians.select(pl.col(MSE, SPECTRAL_LOSS).mean()).row(0)
         logger.info("update %d validation median MSE %.3e spectral loss %.3e, mean over channels", update, *channel_mean)
         self._tick = time.perf_counter()

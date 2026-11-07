@@ -22,7 +22,7 @@ flowchart LR
   Experiment --> HFArtifacts[(HF the-fruit-dude/cool-frog)]
   Tracker --> Dashboard[lib.dashboard<br/>terminal]
   Tracker --> Monitor[lib.monitor :8020]
-  Monitor -- SSH tunnel --> Hub[api.monitor_hub :8011]
+  Monitor -- SSH tunnel --> Hub[api.monitor_hub :8015]
   Hub --> MonitorPage[monitor.html]
   Cache --> API[api.main :8010]
   RunFolder --> API
@@ -141,7 +141,7 @@ Distributed: rank 0 alone starts/resumes the run, writes files, logs, shows the 
 - `request_stop` (dashboard `q`, Ctrl+C) raises KeyboardInterrupt at the next `append` / `set_progress`
 - Dashboard crash never stops the work, it continues with plain logging. No TTY = no dashboard
 - `serve_monitor`: FastAPI on `127.0.0.1:8020` in a daemon thread, `GET /api/state` (snapshot + `nvidia-smi`), `GET /api/tables/{name}?tail=`. Port taken = warning only, monitor off
-- Fine-tuning tables: `train` (`TRAIN_SCHEMA`, means over 50 updates) and `validation` (`VALIDATION_SCHEMA`, per update, design, channel symbol)
+- Fine-tuning tables: `train` (`TRAIN_SCHEMA`, means over 50 updates), `validation` (`VALIDATION_SCHEMA`, per update, design, channel symbol) and `validation_medians` (`VALIDATION_MEDIANS_SCHEMA`, medians over designs per update and channel, computed on the training host). The monitor plots `train` and `validation` as medians, `validation_medians` has no figure
 
 ## HTTP contracts
 
@@ -161,7 +161,7 @@ Distributed: rank 0 alone starts/resumes the run, writes files, logs, shows the 
 
 Errors: every exception becomes 500 `{"detail": "<Type>: <message>"}`, which the frontend shows inline. Unknown design → 404. Cached loads run concurrently in the thread pool. Uncached loads (voxelization, VTK readers share state) serialize behind `VTK_QUEUE` and return 499 when the browser disconnected while waiting. Fields read the local `data/cooldata` when it holds the design, else Hugging Face.
 
-### Monitor hub `coolfrog.api.monitor_hub` (port 8011)
+### Monitor hub `coolfrog.api.monitor_hub` (port 8015)
 
 | Endpoint | Contract |
 |---|---|
@@ -172,7 +172,7 @@ Errors: every exception becomes 500 `{"detail": "<Type>: <message>"}`, which the
 
 Tunnels: `ssh -N -L <free port>:127.0.0.1:8020`, one per host, reconnected when ssh exited. 502 on SSH failure (`sshpass` exit 5 = wrong password), 504 after 15 s.
 
-Vite dev server (5173) proxies `/api/hosts` to 8011 before `/api` to 8010. Both servers bind 127.0.0.1.
+Vite dev server (5173) proxies `/api/hosts` to 8015 before `/api` to 8010. Both servers bind 127.0.0.1.
 
 ## Persistence authority
 
@@ -185,7 +185,7 @@ Vite dev server (5173) proxies `/api/hosts` to 8011 before `/api` to 8010. Both 
 | `experiments/<NN>_<name>/` | `lib.experiment`, git | README, `config.yaml`, `meta.json`, CSV/log/PNG results, `history/` | Source of truth for the latest run |
 | HF `the-fruit-dude/cool-frog` (private) | `lib.huggingface` | Large run files, same paths, archived runs in `history/` | Every write = one commit on `main`, pinned in `meta.json["hub"]` |
 | `monitor-hosts.json` | `api.monitor_hub` | SSH addresses, optional plaintext passwords | Gitignored, written mode 0600 |
-| Browser `localStorage` | frontend | Theme (`coolfrog-theme`), sidebar fold state | |
+| Browser `localStorage` | frontend | Theme (`coolfrog-theme`), sidebar fold state, monitor's selected host (`coolfrog-monitor-host`) and open groups (`coolfrog-monitor-open/<key>`) | Per browser |
 
 ## Trust boundaries and security
 

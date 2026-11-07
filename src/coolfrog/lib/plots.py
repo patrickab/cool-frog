@@ -20,19 +20,19 @@ from matplotlib.axes import Axes
 from matplotlib.colors import to_hex
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
-from matplotlib.ticker import FuncFormatter
+from matplotlib.ticker import FuncFormatter, MaxNLocator
 import numpy as np
 import polars as pl
 
 from coolfrog.lib.config import Grid
 from coolfrog.lib.datatypes import CHANNELS, Channel, FlowField
 
-TRAIN, VALIDATION = "train", "validation"  # tracker tables of a fine-tuning run
+TRAIN, VALIDATION, VALIDATION_MEDIANS = "train", "validation", "validation_medians"  # tracker tables of a fine-tuning run
 CHANNEL_SYMBOLS = tuple(channel.value.partition(" [")[0] for channel in CHANNELS)  # `p [Pa]` -> `p`, model order
 CHANNEL_LABELS = dict(zip(CHANNEL_SYMBOLS, (channel.value for channel in CHANNELS), strict=True))  # `p` -> `p [Pa]`
 CHANNEL_ENUM = pl.Enum(CHANNEL_SYMBOLS)
 
-# Optional `run` (String) column on TRAIN and VALIDATION frames: one color per run, e.g. to compare latent scales
+# Optional `run` (String) column on TRAIN, VALIDATION and VALIDATION_MEDIANS frames: one color per run, e.g. to compare latent scales
 TRAIN_SCHEMA = pl.Schema(  # one row per logged window, means over its updates
     {
         "update": pl.Int64,
@@ -52,6 +52,9 @@ VALIDATION_SCHEMA = pl.Schema(  # one row per validation update, design and chan
         "mse": pl.Float64,
         "spectral_loss": pl.Float64,
     }
+)
+VALIDATION_MEDIANS_SCHEMA = pl.Schema(  # one row per validation update and channel, medians over designs of VALIDATION_SCHEMA
+    {name: dtype for name, dtype in VALIDATION_SCHEMA.items() if name != "design_id"}
 )
 CHANNEL_AXES_SCHEMA = pl.Schema(  # one row per channel, axis settings of the value-distribution plots
     {
@@ -146,14 +149,16 @@ def figure_for_table(table: str, frame: pl.DataFrame) -> Figure | None:
     """Monitor figure of a tracker table, None if not plottable.
 
     - Dedicated plot for "train"/"validation", column lines by naming convention otherwise
+    - "validation" plots its medians over designs, so runs without a "validation_medians" table show curves too
+    - "validation_medians" gets no figure, it holds the same curves
     - Casts "train"/"validation" to their schema, nulls (missing or non-finite values) as line gaps
     """
-    if frame.height == 0 or frame.width < 2:  # noqa: PLR2004, x plus at least one series
+    if frame.height == 0 or frame.width < 2 or table == VALIDATION_MEDIANS:  # noqa: PLR2004, x plus at least one series
         return None
     if table == TRAIN:
         return training_curves(frame)
     if table == VALIDATION:
-        return validation_curves(frame)
+        return validation_curves(validation_medians(frame))
     if not all(dtype.is_numeric() or dtype == pl.Null for dtype in frame.dtypes):
         return None
     return column_lines(frame)
@@ -174,26 +179,34 @@ def training_curves(train: pl.DataFrame) -> Figure:
         for index, (run, rows) in enumerate(runs):
             axis.plot(rows["update"].to_numpy(), float_values(rows, column), color=cycle_color(index), label=run)
         label_axis(axis, title, "update", y_label, float_values(train, column))
+        integer_x_ticks(axis)
     if runs[0][0] is not None:
         axes[0].legend()
     return figure
 
 
-def validation_curves(validation: pl.DataFrame) -> Figure:
-    """Median over designs per update and channel of NRMSE, MSE and spectral loss.
+def validation_medians(validation: pl.DataFrame) -> pl.DataFrame:
+    """`VALIDATION_SCHEMA` rows as `VALIDATION_MEDIANS_SCHEMA`, medians over designs per update and channel, keeps `run`."""
+    validation = typed(validation, VALIDATION_SCHEMA)
+    groups = ["run"] if "run" in validation.columns else []
+    metrics = [column for column, *_ in VALIDATION_PANELS]
+    medians = validation.group_by(*groups, "update", "channel", maintain_order=True).agg(pl.col(metrics).median())
+    return medians.sort("update", "channel", maintain_order=True).select(*groups, *VALIDATION_MEDIANS_SCHEMA.names())
+
+
+def validation_curves(medians: pl.DataFrame) -> Figure:
+    """NRMSE, MSE and spectral loss medians over designs per update and channel.
 
     - Without `run`: one panel per metric, one color per channel
     - With `run`: one panel per metric and channel, one color per run
 
     Parameters
     ----------
-    validation : pl.DataFrame
-        `VALIDATION_SCHEMA`, nulls and NaN as line gaps, optional `run` column -> one color per run.
+    medians : pl.DataFrame
+        `VALIDATION_MEDIANS_SCHEMA`, nulls and NaN as line gaps, optional `run` column -> one color per run.
     """
-    validation = typed(validation, VALIDATION_SCHEMA).drop_nulls("update")
-    metrics = [column for column, *_ in VALIDATION_PANELS]
-    groups = ["run"] if "run" in validation.columns else []
-    medians = validation.group_by(*groups, "update", "channel").agg(pl.col(metrics).median()).sort("update")
+    medians = typed(medians, VALIDATION_MEDIANS_SCHEMA).drop_nulls("update").sort("update")
+    groups = ["run"] if "run" in medians.columns else []
     channels = [symbol for symbol in CHANNEL_SYMBOLS if symbol in set(medians["channel"].cast(pl.String))]
     if not groups:
         figure, axes = panels(len(VALIDATION_PANELS) + 1, columns=2)  # last panel holds the channel legend
@@ -202,6 +215,7 @@ def validation_curves(validation: pl.DataFrame) -> Figure:
                 rows = medians.filter(pl.col("channel") == channel)
                 axis.plot(rows["update"].to_numpy(), float_values(rows, column), marker="o", color=cycle_color(index), label=channel)
             label_axis(axis, f"{title}, median over designs", "update", y_label, float_values(medians, column))
+            integer_x_ticks(axis)
         axes[-1].legend(*axes[0].get_legend_handles_labels(), loc="center", ncols=2, title="channel")
         axes[-1].axis("off")
         return figure
@@ -216,6 +230,7 @@ def validation_curves(validation: pl.DataFrame) -> Figure:
                 axis.plot(updates, float_values(channel_rows, column), marker="o", color=cycle_color(index), label=run)
             channel_values = float_values(medians.filter(pl.col("channel") == channel), column)
             label_axis(axis, f"{title} | {channel}, median", "update", y_label, channel_values)
+            integer_x_ticks(axis)
     axes[0].legend()
     return figure
 
@@ -232,6 +247,8 @@ def column_lines(frame: pl.DataFrame) -> Figure:
             axis.plot(x, float_values(frame, column), label=series_label(group, column))
         values = np.concatenate([float_values(frame, column) for column in columns])
         label_axis(axis, group, x_name, group, values)
+        if frame[x_name].dtype.is_integer():
+            integer_x_ticks(axis)
         if len(columns) > 1:
             axis.legend()
     return figure
@@ -443,6 +460,14 @@ def label_axis(axis: Axes, title: str, x_label: str, y_label: str, values: np.nd
     axis.set(title=title, xlabel=x_label, ylabel=y_label)
     if is_log_scale(values.tolist()):
         axis.set_yscale("log")
+
+
+def integer_x_ticks(axis: Axes) -> None:
+    """Whole-number x ticks for counts like updates, call after plotting, a single update gets one tick instead of ±0.05 decimals."""
+    if axis.dataLim.width == 0:
+        axis.set_xticks([axis.dataLim.x0])
+    else:
+        axis.xaxis.set_major_locator(MaxNLocator(integer=True, steps=[1, 2, 5, 10]))
 
 
 def _sample_volumes(reference: FlowField, prediction: FlowField, sample_index: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

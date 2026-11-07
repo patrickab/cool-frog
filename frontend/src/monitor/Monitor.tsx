@@ -8,11 +8,29 @@ import { ErrorPanel, HEADING, Layout, Panel, useTheme } from '../lib/ui';
 
 const POLL_MILLISECONDS = 2000;
 const SELECTED_HOST_KEY = 'coolfrog-monitor-host';
+const FOLD_KEY_PREFIX = 'coolfrog-monitor-open/'; // + group or panel key, e.g. `hosts`, `state/configs`, `table/train`
 const MIB_PER_GIB = 1024;
 const TABLE_TAIL = 500; // rows a table panel shows, the per-design validation table grows by ~900 per validation
 const SHOWN_ELSEWHERE = new Set(['title', 'progress', 'tables', 'gpus']); // state keys with their own sidebar block
 
 type Monitored = { state?: MonitorState; error?: string };
+
+function readStorage(key: string): string | null {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+
+function writeStorage(key: string, value: string): void {
+  try { localStorage.setItem(key, value); } catch { /* Keep the in-memory state when storage is unavailable. */ }
+}
+
+/** Open state of a sidebar group or table panel, `defaultOpen` until the user toggles it, then remembered by this browser. */
+function useFold(key: string, defaultOpen: boolean): [boolean, (open: boolean) => void] {
+  const [open, setOpen] = useState(() => {
+    const stored = readStorage(FOLD_KEY_PREFIX + key);
+    return stored === null ? defaultOpen : stored === 'true';
+  });
+  return [open, (next) => { setOpen(next); writeStorage(FOLD_KEY_PREFIX + key, String(next)); }];
+}
 
 /** State of the training on `host` every `POLL_MILLISECONDS`, keeps the last state while the host is unreachable. */
 function useMonitor(host: string | undefined): Monitored {
@@ -76,7 +94,7 @@ function GpuRow({ gpu }: { gpu: Gpu }) {
 
 /** Bottom sidebar block: mean load in the header, one line per GPU below. */
 function GpuSection({ gpus }: { gpus: Gpu[] }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useFold('gpus', true);
   const meanUtilization = gpus.reduce((total, gpu) => total + gpu.utilization_percent, 0) / Math.max(gpus.length, 1);
   return <section aria-label="GPUs" className="mx-2 border-t border-divider-soft py-2">
     <button onClick={() => setOpen(!open)} aria-expanded={open}
@@ -91,8 +109,8 @@ function GpuSection({ gpus }: { gpus: Gpu[] }) {
 }
 
 /** Chevron group of the sidebar tree, its rows indented below. */
-function SidebarSection({ label, count, defaultOpen, children }: { label: string; count?: number; defaultOpen: boolean; children: ReactNode }) {
-  const [open, setOpen] = useState(defaultOpen);
+function SidebarSection({ label, count, foldKey, defaultOpen, children }: { label: string; count?: number; foldKey: string; defaultOpen: boolean; children: ReactNode }) {
+  const [open, setOpen] = useFold(foldKey, defaultOpen);
   return <section>
     <button onClick={() => setOpen(!open)} aria-expanded={open}
       className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm font-medium transition hover:bg-hover hover:text-ink">
@@ -113,7 +131,7 @@ function formatValue(value: unknown): string {
 
 /** Collapsed table, its newest `TABLE_TAIL` rows first, fetched while open and again when rows were added. */
 function TablePanel({ host, name, info }: { host: string; name: string; info: TableInfo }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useFold(`table/${name}`, false);
   const [data, setData] = useState<TableData>();
   const [error, setError] = useState<string>();
   useEffect(() => {
@@ -172,18 +190,18 @@ function ProgressRow({ label, progress }: { label: string; progress: ProgressSta
   </li>;
 }
 
-/** One state dict as a folded group: its plain values as `key value` rows, nested dicts as nested groups, e.g. `configs`. */
-function StateGroup({ label, value }: { label: string; value: Record<string, unknown> }) {
+/** One state dict as a group, open by default: its plain values as `key value` rows, nested dicts as nested groups, e.g. `configs`. */
+function StateGroup({ label, path, value }: { label: string; path: string; value: Record<string, unknown> }) {
   const entries = Object.entries(value);
   const leaves = entries.filter(([, inner]) => !isRecord(inner));
-  return <SidebarSection label={label} count={entries.length} defaultOpen={false}>
+  return <SidebarSection label={label} count={entries.length} foldKey={`state/${path}`} defaultOpen>
     {leaves.length > 0 && <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-[11px]">
       {leaves.map(([key, inner]) => <div key={key} className="contents">
         <dt className="text-ink-muted">{key}</dt>
         <dd className="truncate text-right tabular-nums" title={formatValue(inner)}>{formatValue(inner)}</dd>
       </div>)}
     </dl>}
-    {entries.filter(([, inner]) => isRecord(inner)).map(([key, inner]) => <StateGroup key={key} label={key} value={inner as Record<string, unknown>} />)}
+    {entries.filter(([, inner]) => isRecord(inner)).map(([key, inner]) => <StateGroup key={key} label={key} path={`${path}/${key}`} value={inner as Record<string, unknown>} />)}
   </SidebarSection>;
 }
 
@@ -193,8 +211,8 @@ function StateSection({ state }: { state: MonitorState }) {
   const leaves = Object.fromEntries(entries.filter(([, value]) => !isRecord(value)));
   if (!entries.length) return null;
   return <section aria-label="Run state" className="mx-2 border-t border-divider-soft py-2">
-    {entries.filter(([, value]) => isRecord(value)).map(([key, value]) => <StateGroup key={key} label={key} value={value as Record<string, unknown>} />)}
-    {Object.keys(leaves).length > 0 && <StateGroup label="state" value={leaves} />}
+    {entries.filter(([, value]) => isRecord(value)).map(([key, value]) => <StateGroup key={key} label={key} path={key} value={value as Record<string, unknown>} />)}
+    {Object.keys(leaves).length > 0 && <StateGroup label="state" path="state" value={leaves} />}
   </section>;
 }
 
@@ -212,7 +230,8 @@ function HostsSection({ selected, onSelect }: { selected: string | undefined; on
   useEffect(() => { void update(fetchHosts()); }, []);
   // Keep the selection on a configured host, e.g. after removing the selected one
   useEffect(() => {
-    if (hosts && !hosts.some((host) => host.address === selected)) onSelect(hosts[0]?.address);
+    const fallback = hosts?.[0]?.address;
+    if (hosts && !hosts.some((host) => host.address === selected) && fallback !== selected) onSelect(fallback);
   }, [hosts, selected]);
 
   const add = async () => {
@@ -234,7 +253,7 @@ function HostsSection({ selected, onSelect }: { selected: string | undefined; on
   };
   const inputClass = 'w-full rounded-lg bg-surface px-2.5 py-1.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-divider';
 
-  return <SidebarSection label="Hosts" count={hosts?.length} defaultOpen={false}>
+  return <SidebarSection label="Hosts" count={hosts?.length} foldKey="hosts" defaultOpen={false}>
     {hosts?.length === 0 && <p className="text-xs text-ink-muted">No hosts in monitor-hosts.json yet</p>}
     {hosts && hosts.length > 0 && <ul className="space-y-0.5 text-xs">
       {hosts.map((host) => <li key={host.address} className="flex items-center gap-1">
@@ -262,22 +281,18 @@ function HostsSection({ selected, onSelect }: { selected: string | undefined; on
 }
 
 export default function Monitor() {
-  const [host, setHost] = useState<string | undefined>(() => {
-    try { return localStorage.getItem(SELECTED_HOST_KEY) ?? undefined; } catch { return undefined; }
-  });
-  useEffect(() => {
-    try { if (host) localStorage.setItem(SELECTED_HOST_KEY, host); } catch { /* Keep the in-memory selection when storage is unavailable. */ }
-  }, [host]);
+  const [host, setHost] = useState(() => readStorage(SELECTED_HOST_KEY) ?? undefined);
+  useEffect(() => { if (host) writeStorage(SELECTED_HOST_KEY, host); }, [host]);
   const { state, error } = useMonitor(host);
   useEffect(() => { document.title = state?.title ? `Coolfrog · ${state.title}` : 'Coolfrog · Training monitor'; }, [state?.title]);
   const progress = Object.entries(state?.progress ?? {});
   const tables = Object.entries(state?.tables ?? {}); // order of first append, `train` before `validation`
 
   const sidebar = <Panel className="py-2">
-    <nav aria-label="Hosts" className="px-2 pb-2"><HostsSection selected={host} onSelect={setHost} /></nav>
-    {progress.length > 0 && <section aria-label="Progress" className="mx-2 border-t border-divider-soft py-2">
+    {progress.length > 0 && <section aria-label="Progress" className="mx-2 border-b border-divider-soft pb-2 pt-1">
       <ul className="space-y-2">{progress.map(([label, bar]) => <ProgressRow key={label} label={label} progress={bar} />)}</ul>
     </section>}
+    <nav aria-label="Hosts" className="px-2 py-2"><HostsSection selected={host} onSelect={setHost} /></nav>
     {state && <StateSection state={state} />}
     {state && <GpuSection gpus={state.gpus} />}
   </Panel>;
@@ -286,7 +301,7 @@ export default function Monitor() {
     {error && <ErrorPanel message={error} />}
     {state && host
       ? <>
-        <div className="grid gap-5 lg:grid-cols-2">{tables.map(([name, info]) => <TableFigure key={name} host={host} name={name} rows={info.rows} />)}</div>
+        {tables.map(([name, info]) => <TableFigure key={name} host={host} name={name} rows={info.rows} />)}
         {tables.map(([name, info]) => <TablePanel key={name} host={host} name={name} info={info} />)}
       </>
       : !error && <Panel className={`grid h-40 place-items-center text-xs text-ink-muted ${host ? 'animate-pulse' : ''}`}>

@@ -23,7 +23,7 @@ require_free_port() {
 
 case ${1:-} in
   '') api=coolfrog.api.main port=8010 page= ;;
-  --monitor) api=coolfrog.api.monitor_hub port=8011 page=monitor.html ;;
+  --monitor) api=coolfrog.api.monitor_hub port=8015 page=monitor.html ;;
   *) sed -n '2,4s/^# \{0,1\}//p' "$0" >&2; exit 2 ;;
 esac
 

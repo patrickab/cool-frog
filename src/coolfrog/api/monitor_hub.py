@@ -1,6 +1,6 @@
 """Local backend of the training monitor page: SSH hosts from `monitor-hosts.json`, one tunnel per host to its training.
 
-Run by `run-frontend.sh --monitor`, or `uvicorn coolfrog.api.monitor_hub:app --port 8011`.
+Run by `run-frontend.sh --monitor`, or `uvicorn coolfrog.api.monitor_hub:app --port 8015`.
 
 - Address only -> plain `ssh` (keys, agent, Tailscale SSH), address and password -> `sshpass`
 - Each host gets its own local port, forwarded to the training's `MONITOR_PORT` on that host
