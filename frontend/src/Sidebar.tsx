@@ -2,7 +2,7 @@ import { useState } from 'react';
 import type { Config, SampleQuery } from './api';
 import { withRange } from './lib/range';
 import type { Range } from './lib/range';
-import { Badge, Disclosure, HEADING, Panel, RangeControl, Slider } from './lib/ui';
+import { Disclosure, HEADING, Panel, RangeControl, SectionHeading, Slider } from './lib/ui';
 
 const MAX_SEED = 2147483646;
 
@@ -19,18 +19,12 @@ export default function Sidebar({ config, busy, onSample }: { config: Config; bu
 
   return <Panel className="divide-y divide-divider-soft">
     <section className="space-y-3 p-4">
-      <div className="flex items-center justify-between"><h2 className={HEADING}>Samples</h2><Badge>{count}</Badge></div>
+      <SectionHeading title="Samples" count={count} />
       <Slider label="Number of samples" min={1} max={12} values={[count]} onChange={([value]) => setCount(value)} />
     </section>
 
     <section className="space-y-4 p-4">
-      <div className="flex items-center justify-between">
-        <h2 className={HEADING}>Parameter ranges</h2>
-        <span className="flex items-center gap-2">
-          {narrowedCount > 0 && <button className="text-[11px] text-ink-muted transition hover:text-ink" onClick={() => setNarrowed({})}>Reset</button>}
-          <Badge>{narrowedCount}</Badge>
-        </span>
-      </div>
+      <SectionHeading title="Parameter ranges" count={narrowedCount} onReset={narrowedCount > 0 ? () => setNarrowed({}) : undefined} />
       <Disclosure label="All parameters" aside={<span className="tabular-nums">{config.parameters.length}</span>} className="rounded-xl bg-paper" summaryClassName="px-3 py-2">
         <div className="max-h-64 space-y-4 overflow-y-auto border-t border-divider-soft px-3 py-3 [scrollbar-width:thin]">
           {config.parameters.map((parameter) => <RangeControl key={parameter.name} bounded={parameter} range={narrowed[parameter.name]} onChange={(range) => setNarrowed((previous) => withRange(previous, parameter, range))} />)}

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import fcntl
 import functools
 import itertools
+import logging
 import math
 import multiprocessing
 import os
@@ -28,7 +29,7 @@ from torch.utils.data import DataLoader, Dataset, DistributedSampler, Subset, ra
 from coolfrog.lib.config import HOST_CONFIG, SEED, DataConfig, Grid, Range
 from coolfrog.lib.datatypes import CHANNELS, PARAM_COLUMNS, SURFACE_CHANNELS, Channel, FlowField, SurfaceChannel
 from coolfrog.lib.distributed import rank, world_size
-from coolfrog.lib.log import get_logger, progress_bar
+from coolfrog.lib.log import progress_bar
 
 CACHE_DIR = HOST_CONFIG.cache_dir
 SHARD_SIZE = 64
@@ -40,7 +41,7 @@ DISK_MARGIN = 0.1  # extra share of the projected size the disk check requires
 HF_REVISION = "49d714f48160e3ecc788aa3b5a89c5c0c68a40e2"
 HF_DATASET = f"datasets/bgce/cooldata-v2@{HF_REVISION}"
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 DesignRow = tuple[int, str, str]  # (design_id, run, batch)
 VoxelizedDesign = tuple[int, np.ndarray, np.ndarray]  # (design_id, (C, X, Y, Z) fields, (X, Y, Z) fluid mask)
 

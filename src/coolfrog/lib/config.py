@@ -150,9 +150,9 @@ class TadpoleConfig:
         Holds `tadpole_<size>_{encoder,decoder}.safetensors`, None = Hugging Face.
     encoder_state, decoder_state : FinetuneState
         "frozen", "FPFT" (full-parameter fine-tuning) or a LoRA rank.
-    encoder_crop_size: int | None
-        int -> sets crop size for voxels
-        None -> sets crop size to 1e6
+    encoder_crop_size : int | None
+        int -> encode and decode in tiles of this edge, it must divide every longer axis
+        None -> whole domain in one tile
     max_internal_batchsize : int | None
         Scalar fields per encoder/decoder call, None = all at once, 1 for whole-domain evaluation from latent scale 3 on.
     activation_checkpointing : bool
@@ -187,8 +187,6 @@ class TrainConfig:
         Weight of the mean elementwise KL term next to the fluid-voxel MSE.
     validate_every : int
         Updates between validation runs, update 0 = zero-shot.
-    n_validation_designs : int
-        Held-out designs, never cropped for training.
     """
 
     updates: int = 14_000
@@ -198,4 +196,3 @@ class TrainConfig:
     weight_decay: float = 1e-15
     kl_weight: float = 1e-6
     validate_every: int = 1000
-    n_validation_designs: int = 128

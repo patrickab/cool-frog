@@ -72,20 +72,18 @@ export function colorScaleOf(kind: ScaleKind, values: Float32Array, trim = 0): C
 /** Tensor axis kinds of the Tadpole shape notation, one fixed color each in formulas and 3D scenes. */
 export type Axis = 'batch' | 'channel' | 'crop' | 'spatial' | 'feature';
 type Oklch = readonly [number, number, number]
-type ThemeColors = { surface: Oklch; ink: Oklch; solid: Oklch; outline: Oklch; axes: Record<Axis, Oklch> }
+export type ThemeColors = { surface: Oklch; ink: Oklch; solid: Oklch; outline: Oklch; axes: Record<Axis, Oklch> }
 /** Renderer colors mirror CSS roles, axis hues retain their meaning in both themes. */
-const THEME_COLORS: Record<'light' | 'dark', ThemeColors> = {
+export const THEME_COLORS: Record<'light' | 'dark', ThemeColors> = {
   light: {
     surface: [0.975, 0.012, 85], ink: [0.3, 0.012, 85], solid: [0.84, 0.012, 85], outline: [0.72, 0.008, 85],
     axes: { batch: [0.5, 0.13, 255], channel: [0.5, 0.12, 150], crop: [0.52, 0.12, 55], spatial: [0.42, 0.015, 85], feature: [0.5, 0.15, 320] },
   },
   dark: {
-    surface: [0.235, 0.008, 85], ink: [0.92, 0.012, 85], solid: [0.44, 0.008, 85], outline: [0.55, 0.008, 85],
+    surface: [0.165, 0.007, 70], ink: [0.94, 0.010, 75], solid: [0.40, 0.008, 70], outline: [0.48, 0.010, 60],
     axes: { batch: [0.76, 0.10, 255], channel: [0.76, 0.10, 150], crop: [0.78, 0.10, 55], spatial: [0.78, 0.015, 85], feature: [0.76, 0.12, 320] },
   },
 }
-
-export const themeColors = (theme: 'light' | 'dark') => THEME_COLORS[theme]
 
 export const oklchCss = ([lightness, chroma, hue]: readonly number[]) => `oklch(${lightness} ${chroma} ${hue})`;
 

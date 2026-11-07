@@ -6,7 +6,7 @@ Measure the fluid value distribution of every channel over all CoolData designs:
 
 ## Result
 
-All 5692 designs at 1600x320x64, 2 h 10 min sweep. Analysis and plots: [`notebooks/02_cooldata_value_distribution.ipynb`](../../notebooks/02_cooldata_value_distribution.ipynb).
+All 5692 designs at 1600x320x64, 2 h 10 min sweep. Analysis and plots: [`notebooks/01_cooldata_value_distribution.ipynb`](../../notebooks/01_cooldata_value_distribution.ipynb).
 
 - [`results/excluded_designs.csv`](results/excluded_designs.csv): `design_id` and `reason` of every design breaking the outlier rule
 - [`results/normalization_stats.csv`](results/normalization_stats.csv): `channel`, `transform`, `low`, `high`, read by `NormalizationStats.load`

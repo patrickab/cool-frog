@@ -8,6 +8,11 @@ export function formatNumber(value: number): string {
   return value !== 0 && Math.abs(value) < 1e-4 ? scientificFormat.format(value) : numberFormat.format(value);
 }
 
+/** Exact integer with thousands separators, for counts that must not be rounded. */
+export function formatCount(value: number): string {
+  return value.toLocaleString('en');
+}
+
 /** `10⁻³` style power of ten. */
 export function formatPower(exponent: number): string {
   return `10${[...String(exponent)].map((character) => SUPERSCRIPTS[character]).join('')}`;

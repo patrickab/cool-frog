@@ -35,11 +35,6 @@ CONSOLE = Console(stderr=True)
 NUMBER_HIGHLIGHTER = NumberHighlighter()
 
 
-def get_logger(name: str) -> logging.Logger:
-    """Return a logger, use as `log = get_logger(__name__)`."""
-    return logging.getLogger(name)
-
-
 def setup_logging(level: int | str = "INFO", log_file: Path | None = None) -> logging.Logger:
     """Configure the `coolfrog` logger, safe to call repeatedly.
 

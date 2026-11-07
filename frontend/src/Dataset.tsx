@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { fetchRows, fetchSummary } from './api';
-import type { Config, Dataset, DatasetColumn, DatasetFilter, DatasetSummary, Design, Row, RowsQuery } from './api';
+import type { Config, Dataset, DatasetFilter, DatasetSummary, Design, Row, RowsQuery } from './api';
 import { errorMessage, formatNumber } from './lib/format';
 import { withRange } from './lib/range';
 import type { Range } from './lib/range';
-import { Badge, HEADING, Layout, Panel, RangeControl } from './lib/ui';
+import { ErrorPanel, HEADING, Layout, Panel, RangeControl, SectionHeading } from './lib/ui';
 import { useAsync } from './lib/useAsync';
 
 /** Most designs sent to the flow explorer at once, its sample count limit. */
@@ -91,13 +91,17 @@ function useRowBlocks(source: RowSource, first: number, last: number): Omit<RowB
 const STICKY_CELL = 'sticky z-[1] bg-surface group-hover:shadow-[inset_0_0_0_100vmax_var(--hover)]';
 const STICKY_PICKED = 'shadow-[inset_0_0_0_100vmax_var(--hover-strong)] group-hover:shadow-[inset_0_0_0_100vmax_var(--hover-strong)]';
 
+function SortButton({ column, source, onSort }: { column: string; source: RowSource; onSort: (column: string) => void }) {
+  const sorted = source.sort === column;
+  return <button className={`transition hover:text-ink ${sorted ? 'text-ink' : ''}`} onClick={() => onSort(column)}>{column}{sorted && (source.descending ? ' ↓' : ' ↑')}</button>;
+}
+
 /** Sortable `design_id` header whose lens swaps the title for a digits-only prefix search, Escape or a second click clears it. */
 function DesignIdHeader({ column, source, onSort, search, onSearch }: {
   column: string; source: RowSource; onSort: (column: string) => void; search: string; onSearch: (search: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const close = () => { setOpen(false); onSearch(''); };
-  const sorted = source.sort === column;
   return <div className="flex h-5 items-center justify-end gap-1.5">
     {open
       ? <input
@@ -107,16 +111,16 @@ function DesignIdHeader({ column, source, onSort, search, onSearch }: {
         onBlur={() => !search && setOpen(false)}
         className="min-w-0 flex-1 rounded-md bg-paper px-1.5 py-0.5 text-xs font-normal text-ink outline-none placeholder:text-ink-subtle focus-visible:ring-2 focus-visible:ring-divider [&::-webkit-search-cancel-button]:hidden"
       />
-      : <button className={`transition hover:text-ink ${sorted ? 'text-ink' : ''}`} onClick={() => onSort(column)}>{column}{sorted && (source.descending ? ' ↓' : ' ↑')}</button>}
+      : <SortButton column={column} source={source} onSort={onSort} />}
     <button aria-label="Search design id" aria-pressed={open} onClick={() => (open ? close() : setOpen(true))} className={`shrink-0 transition hover:text-ink ${open ? 'text-ink' : ''}`}>
       <svg viewBox="0 0 16 16" className="size-3" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden><circle cx="7" cy="7" r="4.5" /><path d="m10.5 10.5 3.5 3.5" /></svg>
     </button>
   </div>;
 }
 
-/** Endless table over all `rowCount` rows: renders the visible window, numeric headers sort, rows toggle picking. */
-function Table({ header, columns, rowCount, source, onSort, search, onSearch, isPicked, canPick, onPick }: {
-  header: string[]; columns: Record<string, DatasetColumn>; rowCount: number; source: RowSource; onSort: (column: string) => void;
+/** Endless table over all `rowCount` rows: renders the visible window, `numeric` columns sort, rows toggle picking. */
+function Table({ header, numeric, rowCount, source, onSort, search, onSearch, isPicked, canPick, onPick }: {
+  header: string[]; numeric: Set<string>; rowCount: number; source: RowSource; onSort: (column: string) => void;
   search: string; onSearch: (search: string) => void; isPicked: (row: Row) => boolean; canPick: boolean; onPick: (row: Row) => void;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
@@ -134,16 +138,14 @@ function Table({ header, columns, rowCount, source, onSort, search, onSearch, is
   const { blocks, error } = useRowBlocks(source, first, last);
 
   return <div ref={scroller} onScroll={(event) => { const top = event.currentTarget.scrollTop; setViewport((previous) => ({ ...previous, top })); }} className="min-h-0 flex-1 overflow-auto [scrollbar-width:thin]">
-    <table className="min-w-full table-fixed text-xs tabular-nums" style={{ width: `${3.5 + header.length * 5 + header.filter((column) => !(column in columns)).length + 1}rem` }}>
+    <table className="min-w-full table-fixed text-xs tabular-nums" style={{ width: `${3.5 + header.length * 5 + header.filter((column) => !numeric.has(column)).length + 1}rem` }}>
       <thead className="sticky top-0 z-10 bg-surface text-left text-ink-muted shadow-[inset_0_-1px_0_var(--divider-soft)]">
         <tr>
           <th className={`${STICKY_CELL} left-0 w-10 px-4`}><span className="sr-only">Picked</span></th>
-          {header.map((column, index) => <th key={column} scope="col" className={`${index === 0 ? `${STICKY_CELL} left-10 w-28` : column in columns ? 'w-20' : 'w-24'} truncate px-3 py-2 font-medium ${column in columns ? 'text-right' : ''}`} aria-sort={source.sort === column ? (source.descending ? 'descending' : 'ascending') : undefined}>
+          {header.map((column, index) => <th key={column} scope="col" className={`${index === 0 ? `${STICKY_CELL} left-10 w-28` : numeric.has(column) ? 'w-20' : 'w-24'} truncate px-3 py-2 font-medium ${numeric.has(column) ? 'text-right' : ''}`} aria-sort={source.sort === column ? (source.descending ? 'descending' : 'ascending') : undefined}>
             {index === 0
               ? <DesignIdHeader column={column} source={source} onSort={onSort} search={search} onSearch={onSearch} />
-              : column in columns
-                ? <button className={`transition hover:text-ink ${source.sort === column ? 'text-ink' : ''}`} onClick={() => onSort(column)}>{column}{source.sort === column && (source.descending ? ' ↓' : ' ↑')}</button>
-                : column}
+              : numeric.has(column) ? <SortButton column={column} source={source} onSort={onSort} /> : column}
           </th>)}
         </tr>
       </thead>
@@ -157,7 +159,7 @@ function Table({ header, columns, rowCount, source, onSort, search, onSearch, is
           const stickyCell = `${STICKY_CELL} ${picked ? STICKY_PICKED : ''}`;
           return <tr key={index} onClick={() => (picked || canPick) && onPick(row)} className={`group h-6 cursor-pointer transition hover:bg-hover ${picked ? 'bg-hover-strong' : ''}`}>
             <td className={`${stickyCell} left-0 px-4`}><input type="checkbox" readOnly checked={picked} disabled={!picked && !canPick} aria-label={`Pick design ${row[0]}`} className="block accent-ink" /></td>
-            {row.map((value, column) => <td key={header[column]} className={`truncate px-3 ${header[column] in columns ? 'text-right' : 'text-ink-muted'} ${column === 0 ? `${stickyCell} left-10` : ''}`}>{formatCell(value)}</td>)}
+            {row.map((value, column) => <td key={header[column]} className={`truncate px-3 ${numeric.has(header[column]) ? 'text-right' : 'text-ink-muted'} ${column === 0 ? `${stickyCell} left-10` : ''}`}>{formatCell(value)}</td>)}
           </tr>;
         })}
         {last < rowCount && <tr aria-hidden style={{ height: (rowCount - last) * ROW_HEIGHT }} />}
@@ -184,16 +186,16 @@ export default function DatasetExplorer({ dataset, config, nav, onOpen }: {
   if (result.status === 'done') latest.current = result.data;
   const summary = latest.current;
 
-  const columns = useMemo(() => Object.fromEntries(dataset.columns.map((column) => [column.name, column])), [dataset]);
+  const numeric = useMemo(() => new Set(dataset.columns.map((column) => column.name)), [dataset]);
   const narrowedCount = Object.keys(ranges).length;
   const pickedCount = Object.keys(picked).length;
 
-  const designFromRow = (row: Row): Design => ({
-    id: row[dataset.header.indexOf('design_id')] as number,
-    params: Object.fromEntries(config.parameters.map(({ name }) => [name, row[dataset.header.indexOf(name)] as number])),
-  });
+  const idOf = (row: Row) => row[dataset.header.indexOf('design_id')] as number;
   const togglePick = (row: Row) => {
-    const design = designFromRow(row);
+    const design: Design = {
+      id: idOf(row),
+      params: Object.fromEntries(config.parameters.map(({ name }) => [name, row[dataset.header.indexOf(name)] as number])),
+    };
     setPicked(({ [design.id]: existing, ...rest }) => existing ? rest : { ...rest, [design.id]: design });
   };
 
@@ -203,13 +205,7 @@ export default function DatasetExplorer({ dataset, config, nav, onOpen }: {
       <RunFilter runs={Object.keys(dataset.runs)} counts={summary?.runs ?? dataset.runs} selected={runs} onChange={setRuns} />
     </section>
     <section className="flex min-h-0 flex-col gap-4 p-4">
-      <div className="flex items-center justify-between">
-        <h2 className={HEADING}>Column ranges</h2>
-        <span className="flex items-center gap-2">
-          {narrowedCount > 0 && <button className="text-[11px] text-ink-muted transition hover:text-ink" onClick={() => setRanges({})}>Reset</button>}
-          <Badge>{narrowedCount}</Badge>
-        </span>
-      </div>
+      <SectionHeading title="Column ranges" count={narrowedCount} onReset={narrowedCount > 0 ? () => setRanges({}) : undefined} />
       <div className="-mx-4 min-h-0 space-y-4 overflow-y-auto px-4 [scrollbar-width:thin]">
         {dataset.columns.map((column) => <RangeControl key={column.name} bounded={column} range={ranges[column.name]} onChange={(range) => setRanges((previous) => withRange(previous, column, range))}>
           <Histogram all={column.counts} filtered={summary?.histograms[column.name]} />
@@ -232,14 +228,14 @@ export default function DatasetExplorer({ dataset, config, nav, onOpen }: {
         </span>
       </div>
 
-      {result.status === 'error' && <Panel className="p-4 text-sm text-danger"><p role="alert">{result.error}</p></Panel>}
+      {result.status === 'error' && <ErrorPanel message={result.error} />}
 
       <Panel className="flex min-h-0 flex-1 flex-col overflow-hidden">
         <Table
-          header={dataset.header} columns={columns} rowCount={summary?.matched ?? 0} source={source}
+          header={dataset.header} numeric={numeric} rowCount={summary?.matched ?? 0} source={source}
           onSort={(column) => setSort((previous) => ({ sort: column, descending: previous.sort === column && !previous.descending }))}
           search={search} onSearch={setSearch}
-          isPicked={(row) => designFromRow(row).id in picked} canPick={pickedCount < MAX_PICKED} onPick={togglePick}
+          isPicked={(row) => idOf(row) in picked} canPick={pickedCount < MAX_PICKED} onPick={togglePick}
         />
       </Panel>
     </div>

@@ -8,20 +8,14 @@ import Gallery, { defaultDisplay, FieldControls, useFieldBatch } from './Gallery
 import Overview, { TADPOLE_DESIGN } from './Overview';
 import Sidebar from './Sidebar';
 import { formatNumber } from './lib/format';
-import { Layout, Panel, Select } from './lib/ui';
+import { ErrorPanel, Layout, Panel, Select } from './lib/ui';
 import { useAsync } from './lib/useAsync';
 
 const VIEWS = { overview: 'Cool Overview', flow: 'Cool Flowfields', dataset: 'Cool Dataframe', autoencoder: 'Cool Autoencoder' } as const;
 export type View = keyof typeof VIEWS;
+const VIEW_OPTIONS = Object.entries(VIEWS).map(([value, label]) => ({ value: value as View, label }));
 /** A seeded sample from the sidebar or designs picked in the overview or dataframe. */
 type FlowRequest = SampleQuery | Design[];
-
-/** Subtitle-styled select switching between views. */
-function ViewSelect({ view, onChange }: { view: View; onChange: (view: View) => void }) {
-  return <div className="mt-1">
-    <Select variant="inline" label="View" value={view} onChange={onChange} options={Object.entries(VIEWS).map(([value, label]) => ({ value: value as View, label }))} />
-  </div>;
-}
 
 function Explorer({ config, nav, request, onRequest }: { config: Config; nav: ReactNode; request: FlowRequest | undefined; onRequest: (request: FlowRequest) => void }) {
   const sample = useAsync<Sample & { seed?: number }>(request && ((signal) => Array.isArray(request)
@@ -47,7 +41,7 @@ function Explorer({ config, nav, request, onRequest }: { config: Config; nav: Re
       <span className="ml-auto text-xs text-ink-muted" role="status">{status}</span>
     </div>
 
-    {sample.status === 'error' && <Panel className="p-4 text-sm text-danger"><p role="alert">{sample.error}</p></Panel>}
+    {sample.status === 'error' && <ErrorPanel message={sample.error} />}
     {designs
       ? <Gallery designs={designs} batch={batch} config={config} display={display} />
       : <Panel className="grid place-items-center py-32 text-sm text-ink-muted">{sample.status === 'loading' ? 'Selecting designs…' : 'Set parameter ranges and sample, or pick designs in Cool Dataframe.'}</Panel>}
@@ -63,7 +57,7 @@ export default function App() {
     history.replaceState(null, '', `#${view}`);
     document.title = `Coolfrog · ${VIEWS[view]}`;
   }, [view]);
-  const nav = <ViewSelect view={view} onChange={setView} />;
+  const nav = <div className="mt-1"><Select variant="inline" label="View" value={view} onChange={setView} options={VIEW_OPTIONS} /></div>;
 
   if (loaded.status === 'done') {
     const [config, dataset] = loaded.data;

@@ -1,55 +1,30 @@
-"""Web monitor of a running `MetricTracker`: FastAPI on 127.0.0.1 in a daemon thread, read by `coolfrog.api.monitor_hub`.
+"""Web monitor of a running `Tracker`: FastAPI on 127.0.0.1 in a daemon thread, read by `coolfrog.api.monitor_hub`.
 
-- `GET /api/monitor` returns the `DashboardSpec` charts with their data, progress bars and `nvidia-smi` GPU stats
+- `GET /api/state`: `Tracker.snapshot` plus `gpus`, the `nvidia-smi` readings at request time
+- `GET /api/tables/{name}`: one table as columns and rows, `tail` limits it to its last rows
 - Loopback only, remote machines reach it through an SSH tunnel
 """
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+import logging
 import socket
 import subprocess
 import threading
-import time
-from typing import Literal
+from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
-from rich.text import Text
 import uvicorn
 
-from coolfrog.lib.dashboard import DashboardSpec, SeriesSpec, progress_times
-from coolfrog.lib.log import get_logger
-from coolfrog.lib.metrics import MetricTracker
+from coolfrog.lib.metrics import Tracker, frame_payload
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 MONITOR_PORT = 8020  # the SSH tunnels of `coolfrog.api.monitor_hub` forward to it
 NVIDIA_SMI_FIELDS = "index,name,utilization.gpu,memory.used,memory.total,temperature.gpu"
 NVIDIA_SMI_TIMEOUT_SECONDS = 5
 SHUTDOWN_TIMEOUT_SECONDS = 5
-
-
-class SeriesData(BaseModel):
-    label: str
-    color: str
-    side: Literal["left", "right"]
-    steps: list[int]
-    values: list[float]
-
-
-class ChartData(BaseModel):
-    title: str
-    log_y: bool
-    series: list[SeriesData]
-
-
-class ProgressData(BaseModel):
-    """One progress bar, `times` as in the terminal dashboard: elapsed, remaining, total."""
-
-    label: str
-    completed: int
-    total: int
-    times: str
 
 
 class Gpu(BaseModel):
@@ -59,18 +34,6 @@ class Gpu(BaseModel):
     memory_used_mib: float
     memory_total_mib: float
     temperature_celsius: float
-
-
-class MonitorState(BaseModel):
-    """Everything the web monitor shows, `last_step` None before the first `log`."""
-
-    title: str
-    summary: str
-    step_header: str
-    last_step: int | None
-    progress: list[ProgressData]
-    charts: list[ChartData]
-    gpus: list[Gpu]
 
 
 def query_gpus() -> list[Gpu]:
@@ -101,49 +64,24 @@ def query_gpus() -> list[Gpu]:
     return gpus
 
 
-def series_data(tracker: MetricTracker, series: SeriesSpec) -> SeriesData:
-    steps, values = tracker.series(series.name)
-    return SeriesData(label=series.label, color=series.color, side=series.side, steps=steps, values=values)
-
-
-def monitor_state(tracker: MetricTracker, spec: DashboardSpec) -> MonitorState:
-    now = time.monotonic()
-    progress = [
-        ProgressData(label=label, completed=bar.completed, total=bar.total, times=progress_times(bar, now))
-        for label in spec.progress_bars
-        if (bar := tracker.progress(label)) is not None
-    ]
-    charts = [
-        ChartData(
-            title=chart.title,
-            log_y=chart.log_y,
-            series=[series_data(tracker, series) for series in chart.series],
-        )
-        for chart in spec.charts
-    ]
-    return MonitorState(
-        title=spec.title,
-        summary=Text.from_markup(spec.summary).plain,
-        step_header=spec.step_header,
-        last_step=tracker.last_step,
-        progress=progress,
-        charts=charts,
-        gpus=query_gpus(),
-    )
-
-
-def create_monitor_app(tracker: MetricTracker, spec: DashboardSpec) -> FastAPI:
+def create_monitor_app(tracker: Tracker) -> FastAPI:
     app = FastAPI(title="Coolfrog monitor")
 
-    @app.get("/api/monitor")
-    def monitor() -> MonitorState:
-        return monitor_state(tracker, spec)
+    @app.get("/api/state")
+    def state() -> dict[str, Any]:
+        return tracker.snapshot() | {"gpus": [gpu.model_dump() for gpu in query_gpus()]}
+
+    @app.get("/api/tables/{name:path}")
+    def table(name: str, tail: int | None = Query(default=None, ge=1)) -> dict[str, list[Any]]:
+        if name not in tracker.table_names():
+            raise HTTPException(404, f"No table {name}")
+        return frame_payload(tracker.frame(name, tail))
 
     return app
 
 
 @contextmanager
-def serve_monitor(tracker: MetricTracker, spec: DashboardSpec, port: int = MONITOR_PORT) -> Iterator[None]:
+def serve_monitor(tracker: Tracker, port: int = MONITOR_PORT) -> Iterator[None]:
     """Serve `tracker` on 127.0.0.1:`port` meanwhile, only a warning when the port is taken, e.g. by a second run."""
     listener = socket.socket()
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -155,7 +93,7 @@ def serve_monitor(tracker: MetricTracker, spec: DashboardSpec, port: int = MONIT
         yield
         return
     # No log config: uvicorn's records stay out of the terminal dashboard
-    server = uvicorn.Server(uvicorn.Config(create_monitor_app(tracker, spec), log_config=None, access_log=False))
+    server = uvicorn.Server(uvicorn.Config(create_monitor_app(tracker), log_config=None, access_log=False))
     thread = threading.Thread(target=server.run, kwargs={"sockets": [listener]}, name="monitor", daemon=True)
     thread.start()
     logger.info("Web monitor on 127.0.0.1:%d, view it with `run-frontend.sh --monitor`", port)

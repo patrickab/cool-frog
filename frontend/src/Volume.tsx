@@ -15,14 +15,13 @@ import vtkColorTransferFunction from '@kitware/vtk.js/Rendering/Core/ColorTransf
 import vtkCubeSource from '@kitware/vtk.js/Filters/Sources/CubeSource';
 import vtkMapper from '@kitware/vtk.js/Rendering/Core/Mapper';
 import vtkActor from '@kitware/vtk.js/Rendering/Core/Actor';
-import { colormapStops, oklchToRgb, scalePosition, themeColors } from './lib/colormap';
-import type { ColorScale } from './lib/colormap';
+import { colormapStops, oklchToRgb, scalePosition } from './lib/colormap';
+import type { ColorScale, ThemeColors } from './lib/colormap';
 import { errorMessage } from './lib/format';
 import { useTheme } from './lib/ui';
 import type { Config, FieldViewProps, Surface as SurfaceData } from './api';
 
 type Own = <T extends { delete: () => void }>(object: T) => T;
-type ThemeColors = ReturnType<typeof themeColors>;
 type ThemeControls = { setTheme: (colors: ThemeColors) => void };
 /** Adds actors to `renderer`, returns what the view updates without rebuilding. */
 type Build<Controls extends ThemeControls> = (renderer: vtkRenderer, own: Own, colors: ThemeColors) => Controls;
@@ -50,8 +49,7 @@ function lookupTable(scale: ColorScale, own: Own, colors: ThemeColors) {
 
 /** vtk.js window with the channel outline, rebuilt when `build` or `config` change, camera oblique over the channel. */
 function useScene<Controls extends ThemeControls>(config: Config, build: Build<Controls>) {
-  const { theme } = useTheme();
-  const colors = themeColors(theme);
+  const { colors } = useTheme();
   const currentColors = useRef(colors);
   currentColors.current = colors;
   const container = useRef<HTMLDivElement>(null);
@@ -106,7 +104,6 @@ function useScene<Controls extends ThemeControls>(config: Config, build: Build<C
         renderWindow.render();
       };
       const setTheme = (nextColors: ThemeColors) => {
-        if (disposed) return;
         renderer.setBackground(...vtkColor(nextColors.surface));
         outline.getProperty().setColor(...vtkColor(nextColors.outline));
         controls.setTheme(nextColors);

@@ -1,20 +1,20 @@
 import { useEffect, useRef } from 'react';
 import type { FieldViewProps } from './api';
-import { colorAt, oklchToRgb, themeColors } from './lib/colormap';
+import { colorAt, oklchToRgb } from './lib/colormap';
 import { useTheme } from './lib/ui';
 
 const AXIS_STEP_MM = 100;
 
 /** XY slice at `slice`, `axis` = x ticks in mm and the flow direction below. */
 export default function Heatmap({ field, config, scale, slice, axis = true }: FieldViewProps & { axis?: boolean }) {
-  const { theme } = useTheme();
+  const { colors } = useTheme();
   const canvas = useRef<HTMLCanvasElement>(null);
   const [nx, ny] = config.dimensions;
   const [lengthX, lengthY] = [(nx - 1) * config.spacing[0], (ny - 1) * config.spacing[1]];
   useEffect(() => {
     const context = canvas.current?.getContext('2d');
     if (!context) return;
-    const solid = oklchToRgb(themeColors(theme).solid);
+    const solid = oklchToRgb(colors.solid);
     const image = context.createImageData(nx, ny);
     for (let y = 0; y < ny; y++) {
       for (let x = 0; x < nx; x++) {
@@ -28,7 +28,7 @@ export default function Heatmap({ field, config, scale, slice, axis = true }: Fi
       }
     }
     context.putImageData(image, 0, 0);
-  }, [field, nx, ny, slice, scale, theme]);
+  }, [field, nx, ny, slice, scale, colors]);
   const lengthMm = Math.round(lengthX * 1000);
   const ticks = Array.from({ length: Math.floor(lengthMm / AXIS_STEP_MM) + 1 }, (_, index) => index * AXIS_STEP_MM);
   return (

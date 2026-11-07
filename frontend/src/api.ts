@@ -1,13 +1,12 @@
 import type { ColorScale, ScaleKind } from './lib/colormap';
 import { fetchJson, fetchOk } from './lib/http';
-import type { Range } from './lib/range';
+import type { Bounded, Range } from './lib/range';
 
-export type Parameter = { name: string; unit: string | null; min: number; max: number };
 /** One field or surface quantity, `scale` = how it maps to color. */
 export type Channel = { name: string; unit: string; scale: ScaleKind };
 /** Sampling inputs and the grid every field comes on, `dimensions` and `spacing` (m) in x, y, z. */
 export type Config = {
-  parameters: Parameter[];
+  parameters: Bounded[];
   channels: Channel[];
   surface_channels: Channel[];
   dimensions: [number, number, number];
@@ -29,20 +28,18 @@ export function fluidValues(field: Field, config: Config, slice?: number): Float
   return Float32Array.from(values);
 }
 
-export function voxelCount(config: Config): number {
-  return config.dimensions[0] * config.dimensions[1] * config.dimensions[2];
+/** Index of the volume channel called `name`, 0 if the server has none. */
+export function channelIndex(config: Config, name: string): number {
+  return Math.max(0, config.channels.findIndex((channel) => channel.name === name));
 }
 
 /** Boundary faces: x, y, z per point in m, legacy VTK `polygons` [n, i0, …], face `values` per surface channel, NaN where a boundary lacks it. */
 export type Surface = { points: Float32Array; polygons: Uint32Array; values: Float32Array[] };
-/** Props of every field renderer. */
 export type FieldViewProps = { field: Field; config: Config; scale: ColorScale; slice: number };
 /** Numeric dataset column, `counts` = histogram of all rows over [min, max]. */
-export type DatasetColumn = { name: string; unit: string | null; min: number; max: number; counts: number[] };
+export type DatasetColumn = Bounded & { counts: number[] };
 /** Static overview, `header` is the column order of `fetchRows` rows. */
-export type Dataset = {
-  total: number; header: string[]; columns: DatasetColumn[]; runs: Record<string, number>;
-};
+export type Dataset = { total: number; header: string[]; columns: DatasetColumn[]; runs: Record<string, number> };
 /** Narrowed ranges only, `search` = design id prefix ("" = all), `runs` undefined = every run. */
 export type DatasetFilter = { ranges: Record<string, Range>; search: string; runs?: string[] };
 export type RowsQuery = DatasetFilter & { sort: string; descending: boolean; offset: number; limit: number };
@@ -52,17 +49,18 @@ export type DatasetSummary = { matched: number; histograms: Record<string, numbe
 /** Per channel in config order, `nrmse` in percent, `spectral_loss` on the per-design [-1, 1] scale. */
 export type ReconstructionMetrics = { nrmse: number[]; spectral_loss: number[] };
 
-export const fetchConfig = (signal: AbortSignal) => fetchJson<Config>('/api/config', signal);
-export const fetchSample = (query: SampleQuery, signal: AbortSignal) => fetchJson<Sample>('/api/sample', signal, query);
-export const fetchDataset = (signal: AbortSignal) => fetchJson<Dataset>('/api/dataset', signal);
-export const fetchSummary = (filter: DatasetFilter, signal: AbortSignal) => fetchJson<DatasetSummary>('/api/dataset/summary', signal, filter);
-export const fetchRows = (query: RowsQuery, signal: AbortSignal) => fetchJson<Row[]>('/api/dataset/rows', signal, query);
-export const fetchDesigns = (ids: number[], signal: AbortSignal) => fetchJson<Design[]>(`/api/designs?${ids.map((id) => `id=${id}`).join('&')}`, signal);
-export const fetchReconstructionMetrics = (designId: number, signal: AbortSignal) => fetchJson<ReconstructionMetrics>(`/api/reconstruction/${designId}/metrics`, signal);
+export const fetchConfig = (signal: AbortSignal) => fetchJson<Config>('/api/config', { signal });
+export const fetchSample = (query: SampleQuery, signal: AbortSignal) => fetchJson<Sample>('/api/sample', { signal, body: query });
+export const fetchDataset = (signal: AbortSignal) => fetchJson<Dataset>('/api/dataset', { signal });
+export const fetchSummary = (filter: DatasetFilter, signal: AbortSignal) => fetchJson<DatasetSummary>('/api/dataset/summary', { signal, body: filter });
+export const fetchRows = (query: RowsQuery, signal: AbortSignal) => fetchJson<Row[]>('/api/dataset/rows', { signal, body: query });
+export const fetchDesigns = (ids: number[], signal: AbortSignal) => fetchJson<Design[]>(`/api/designs?${ids.map((id) => `id=${id}`).join('&')}`, { signal });
+export const fetchReconstructionMetrics = (designId: number, signal: AbortSignal) => fetchJson<ReconstructionMetrics>(`/api/reconstruction/${designId}/metrics`, { signal });
 
-/** One channel of one design, simulated or Tadpole-B's zero-shot reconstruction: float32 values then uint8 mask, `size` voxels each. */
-export async function fetchField(designId: number, channel: number, size: number, signal: AbortSignal, source: 'fields' | 'reconstruction' = 'fields'): Promise<Field> {
-  const buffer = await (await fetchOk(`/api/${source}/${designId}?channel=${channel}`, signal)).arrayBuffer();
+/** One channel of one design, simulated or Tadpole-B's zero-shot reconstruction: float32 values then uint8 mask, one per voxel. */
+export async function fetchField(config: Config, designId: number, channel: number, signal: AbortSignal, source: 'fields' | 'reconstruction' = 'fields'): Promise<Field> {
+  const size = config.dimensions[0] * config.dimensions[1] * config.dimensions[2];
+  const buffer = await (await fetchOk(`/api/${source}/${designId}?channel=${channel}`, { signal })).arrayBuffer();
   if (buffer.byteLength !== size * 5) throw new Error('The field dimensions do not match the configured grid.');
   const values = new Float32Array(buffer, 0, size);
   const mask = new Uint8Array(buffer, size * 4, size);
@@ -77,8 +75,9 @@ export async function fetchField(designId: number, channel: number, size: number
 }
 
 /** Boundary surface of one design with every surface channel, see `Surface`. */
-export async function fetchSurface(designId: number, channelCount: number, signal: AbortSignal): Promise<Surface> {
-  const buffer = await (await fetchOk(`/api/surface/${designId}`, signal)).arrayBuffer();
+export async function fetchSurface(config: Config, designId: number, signal: AbortSignal): Promise<Surface> {
+  const channelCount = config.surface_channels.length;
+  const buffer = await (await fetchOk(`/api/surface/${designId}`, { signal })).arrayBuffer();
   const [pointCount, polygonLength, faceCount] = new Uint32Array(buffer, 0, 3);
   const polygonsStart = 12 + pointCount * 12;
   const valuesStart = polygonsStart + polygonLength * 4;

@@ -3,8 +3,11 @@
 `--resume` continues an unfinished run. On several GPUs: `torchrun --standalone --nproc_per_node <n_gpus> -m <this module>`.
 One `Stage` per latent scale, `results/latent_scale_<n>/`:
 
-- `metrics.parquet` (Hugging Face): train MSE, spectral loss and KL per update, validation medians of NRMSE, MSE and spectral loss
-- `per_design.parquet` (Hugging Face): final NRMSE, MSE and spectral loss per design and channel
+- `train.parquet` (Hugging Face): train MSE, spectral loss, KL, learning rate and seconds per update, mean over 50 updates
+- `validation.parquet` (Hugging Face): NRMSE, MSE and spectral loss per validation update, design and channel
+- `validation_aggregates.parquet` (Hugging Face): their median and mean over the designs per update and channel
+- `state.json`: title and configs, progress of the last save, all tables rewritten while training runs
+- `per_design.parquet` (Hugging Face): the final validation of `validation.parquet` in the layout of `per_design_frame`
 - `adapter.pt` (Hugging Face): LoRA weights
 - `checkpoints/adapter_update_<update>.pt` (Hugging Face): LoRA weights after every validation
 - `training_curves.png`, `slices_first_validation_design.png`, `config.yaml`, `stage.json`
@@ -12,41 +15,32 @@ One `Stage` per latent scale, `results/latent_scale_<n>/`:
 README tables: `results/nrmse.csv`, `results/mse.csv`, `results/spectral-loss.csv`, `results/training.csv`.
 """
 
-from pathlib import Path
+import logging
 import sys
 
 from matplotlib.figure import Figure
 import polars as pl
 import torch
 
-from coolfrog.engine.cooldata import create_dataloader
-from coolfrog.engine.model_evaluation import evaluate
+from coolfrog.engine.cooldata import CoolMetadata, create_dataloader
+from coolfrog.engine.model_evaluation import MSE, NRMSE, SPECTRAL_LOSS
 from coolfrog.engine.tadpole import Tadpole
 from coolfrog.engine.training import RandomCrops, fine_tune_autoencoder
-from coolfrog.engine.training_metrics import (
-    KL,
-    MSE,
-    NRMSE,
-    SECONDS_PER_UPDATE,
-    SPECTRAL_LOSS,
-    TRAIN_MSE,
-    TRAIN_SPECTRAL,
-    validation_name,
-)
+from coolfrog.engine.training_metrics import TRAIN, VALIDATION, VALIDATION_AGGREGATES, aggregate_name
 from coolfrog.experiments.autoencoding import (
-    N_VALIDATION_DESIGNS,
     curated_metadata,
+    data_config,
     load_stats,
     per_design_frame,
     quantile_table,
     train_validation_split,
     validation_loader,
 )
-from coolfrog.lib.config import DataConfig, Grid, TadpoleConfig, TrainConfig
-from coolfrog.lib.datatypes import CHANNELS
-from coolfrog.lib.experiment import Stage, inject_table, run_experiment, write_configs
+from coolfrog.lib.config import TadpoleConfig, TrainConfig
+from coolfrog.lib.datatypes import CHANNELS, NormalizationStats
+from coolfrog.lib.experiment import Stage, run_experiment, write_configs
 from coolfrog.lib.huggingface import HuggingFaceHub
-from coolfrog.lib.log import get_logger
+from coolfrog.lib.metrics import configs_state
 from coolfrog.lib.plot import plot_slices
 
 TITLE = "Autoencoder fine-tuning with LoRA"
@@ -61,6 +55,7 @@ MODEL = f"LoRA-{LORA_RANK}"
 DEVICE = "cuda"
 RESUME = "--resume" in sys.argv  # continue an unfinished run, complete latent scale stages are loaded, not rerun
 LATENT_SCALES = (2,)
+log = logging.getLogger("coolfrog.experiment")
 
 MODEL_CONFIG = TadpoleConfig(
     size="B",
@@ -79,38 +74,31 @@ TRAIN_CONFIG = TrainConfig(
     weight_decay=1e-15,
     kl_weight=1e-6,
     validate_every=1000,
-    n_validation_designs=N_VALIDATION_DESIGNS,
 )
 
 
-def data_config(latent_scale: int) -> DataConfig:
-    """Grid of `latent_scale`, two single-channel domains per training pass on each GPU."""
-    return DataConfig(grid=Grid(latent_scale=latent_scale), source=None, cache=True, batch_size=2, num_workers=6)
-
-
-def training_row(metrics: pl.DataFrame, latent_scale: int) -> dict[str, float]:
+def training_row(train: pl.DataFrame, latent_scale: int) -> dict[str, float]:
     """Row of the README training table."""
-    last = metrics.select(TRAIN_MSE, TRAIN_SPECTRAL, KL).drop_nulls().tail(1).row(0, named=True)
+    last = train.tail(1).row(0, named=True)
     return {
         "latent_scale": latent_scale,
         "updates": TRAIN_CONFIG.updates,
-        "training time [h]": training_hours(metrics),
-        "final train MSE": last[TRAIN_MSE],
-        "final train spectral loss": last[TRAIN_SPECTRAL],
-        "final KL": last[KL],
+        "training time [h]": training_hours(train),
+        "final train MSE": last["mse"],
+        "final train spectral loss": last["spectral_loss"],
+        "final KL": last["kl"],
     }
 
 
-def plot_training_curves(metrics: pl.DataFrame, latent_scale: int) -> Figure:
+def plot_training_curves(train: pl.DataFrame, aggregates: pl.DataFrame, latent_scale: int) -> Figure:
     """Train MSE and spectral loss per update, validation medians of both metrics per channel and update."""
     figure = Figure(figsize=(14, 8), layout="constrained")
     axes = figure.subplots(2, 2)
-    for axis, series, title in (
-        (axes[0, 0], TRAIN_MSE, "Train MSE, normalized units"),
-        (axes[0, 1], TRAIN_SPECTRAL, "Train spectral loss, whole domains"),
+    for axis, column, title in (
+        (axes[0, 0], "mse", "Train MSE, normalized units"),
+        (axes[0, 1], "spectral_loss", "Train spectral loss"),
     ):
-        train = metrics.select("update", series).drop_nulls()
-        axis.plot(train["update"], train[series], color="#3b5b7a", linewidth=0.8)
+        axis.plot(train["update"], train[column], color="#3b5b7a", linewidth=0.8)
         axis.set_title(title)
         axis.set_yscale("log")
     for axis, metric, title in (
@@ -118,10 +106,8 @@ def plot_training_curves(metrics: pl.DataFrame, latent_scale: int) -> Figure:
         (axes[1, 1], SPECTRAL_LOSS, "Validation spectral loss, median"),
     ):
         for channel in CHANNELS:
-            validation = metrics.select("update", validation_name(metric, channel.value)).drop_nulls()
-            axis.plot(
-                validation["update"], validation[validation_name(metric, channel.value)], marker="o", markersize=3, label=channel.value
-            )
+            column = aggregate_name(metric, "median", channel.value)
+            axis.plot(aggregates["update"], aggregates[column], marker="o", markersize=3, label=channel.value)
         axis.set_title(title)
         axis.set_yscale("log")
     axes[1, 0].legend(fontsize=8, ncols=2)
@@ -132,9 +118,9 @@ def plot_training_curves(metrics: pl.DataFrame, latent_scale: int) -> Figure:
     return figure
 
 
-def zero_shot_medians(metrics: pl.DataFrame, latent_scale: int) -> pl.DataFrame:
+def zero_shot_medians(aggregates: pl.DataFrame, latent_scale: int) -> pl.DataFrame:
     """Validation medians at update 0, where LoRA is still the identity, in the layout of `quantile_table`."""
-    update_zero = metrics.filter(pl.col("update") == 0)
+    update_zero = aggregates.filter(pl.col("update") == 0)
     return pl.concat(
         pl.DataFrame(
             {
@@ -142,26 +128,35 @@ def zero_shot_medians(metrics: pl.DataFrame, latent_scale: int) -> pl.DataFrame:
                 "model": ["zero-shot"],
                 "metric": [metric],
                 "statistic": ["median"],
-                **{channel.value: update_zero[validation_name(metric, channel.value)] for channel in CHANNELS},
+                **{channel.value: update_zero[aggregate_name(metric, "median", channel.value)] for channel in CHANNELS},
             }
         )
         for metric in (NRMSE, MSE, SPECTRAL_LOSS)
     )
 
 
-def training_hours(metrics: pl.DataFrame) -> float:
+def training_hours(train: pl.DataFrame) -> float:
     """Optimizer time without validation: mean seconds per update of each logged window times its updates."""
-    windows = (
-        metrics.select("update", SECONDS_PER_UPDATE).drop_nulls().with_columns(pl.col("update").diff().fill_null(pl.col("update")))
-    )
-    return (windows["update"] * windows[SECONDS_PER_UPDATE]).sum() / 3600
+    windows = train.select("update", "seconds_per_update").with_columns(pl.col("update").diff().fill_null(pl.col("update")))
+    return (windows["update"] * windows["seconds_per_update"]).sum() / 3600
 
 
-def fine_tune(latent_scale: int, path_stage: Path) -> dict[str, object]:
-    """Fine-tune and evaluate one resolution, return the outputs of its stage (file name -> data)."""
+def final_per_design(validation: pl.DataFrame, latent_scale: int) -> pl.DataFrame:
+    """The last validation, after the final update, in the layout of `per_design_frame`."""
+    final = validation.filter(pl.col("update") == validation["update"].max())
+    channels = [channel.value for channel in CHANNELS]
+    tables = {
+        metric: final.pivot(on="channel", index="design_id", values=metric).select("design_id", *channels)
+        for metric in (NRMSE, MSE, SPECTRAL_LOSS)
+    }
+    return per_design_frame(tables, latent_scale, MODEL)
+
+
+def fine_tune(latent_scale: int, stage: Stage, metadata: CoolMetadata, stats: NormalizationStats) -> dict[str, object]:
+    """Fine-tune and evaluate one resolution into `stage`, return the outputs of the stage besides its tracker tables."""
     config = data_config(latent_scale)
-    path_stage.mkdir(exist_ok=True)
-    write_configs([config, MODEL_CONFIG], path_stage / "config.yaml")
+    stage.folder.mkdir(parents=True, exist_ok=True)
+    write_configs([config, MODEL_CONFIG], stage.folder / "config.yaml")
 
     train, validation = train_validation_split(metadata, config)
     log.info("%d train and %d validation designs on grid %s", len(train), len(validation), config.grid.shape)
@@ -171,39 +166,37 @@ def fine_tune(latent_scale: int, path_stage: Path) -> dict[str, object]:
 
     model = Tadpole(MODEL_CONFIG).to(DEVICE)
     title = f"{MODEL} · latent scale {latent_scale} · {'x'.join(map(str, config.grid.shape))}"
-    metrics = fine_tune_autoencoder(model, train_loader, loader, stats, TRAIN_CONFIG, path_stage / "checkpoints", title).to_frame()
-    per_design = per_design_frame(evaluate(model, loader, stats), latent_scale, MODEL)
+    tracker = stage.track({"title": title, "configs": configs_state([config, MODEL_CONFIG, TRAIN_CONFIG])})
+    fine_tune_autoencoder(model, train_loader, loader, stats, TRAIN_CONFIG, stage.folder / "checkpoints", tracker)
     model.eval()
     with torch.no_grad():
         reference = next(iter(loader)).to(DEVICE).normalize(stats)
         prediction = model.decode(model.encode(reference))
     return {
-        "metrics.parquet": metrics,
-        "per_design.parquet": per_design,
+        "per_design.parquet": final_per_design(tracker.frame(VALIDATION), latent_scale),
         "adapter.pt": model.adapter(),
-        "training_curves.png": plot_training_curves(metrics, latent_scale),
+        "training_curves.png": plot_training_curves(tracker.frame(TRAIN), tracker.frame(VALIDATION_AGGREGATES), latent_scale),
         "slices_first_validation_design.png": plot_slices(reference, prediction, config.grid),
     }
 
 
-with run_experiment(TITLE, GOAL, HYPOTHESIS, [MODEL_CONFIG, TRAIN_CONFIG], hub=HuggingFaceHub(), resume=RESUME) as path_results:
-    log = get_logger("coolfrog.experiment")
+with run_experiment(TITLE, GOAL, HYPOTHESIS, [MODEL_CONFIG, TRAIN_CONFIG], hub=HuggingFaceHub(), resume=RESUME) as run:
     stats = load_stats()
     metadata = curated_metadata()
 
     per_design_tables, zero_shot_tables, training_rows = [], [], []
     for latent_scale in LATENT_SCALES:
-        stage = Stage(path_results / f"latent_scale_{latent_scale}")
+        stage = run.stage(f"latent_scale_{latent_scale}")
         if stage.is_complete():
             log.info("Latent scale %d: stage complete, loading its results from %s", latent_scale, stage.folder)
         else:
             log.info("Latent scale %d: training", latent_scale)
-            stage.save(fine_tune(latent_scale, stage.folder))
+            stage.save(fine_tune(latent_scale, stage, metadata, stats))
             torch.cuda.empty_cache()
-        metrics = stage.load("metrics.parquet")
+        train = stage.load(f"{TRAIN}.parquet")
         per_design_tables.append(stage.load("per_design.parquet"))
-        zero_shot_tables.append(zero_shot_medians(metrics, latent_scale))
-        training_rows.append(training_row(metrics, latent_scale))
+        zero_shot_tables.append(zero_shot_medians(stage.load(f"{VALIDATION_AGGREGATES}.parquet"), latent_scale))
+        training_rows.append(training_row(train, latent_scale))
 
     per_design = pl.concat(per_design_tables)
     zero_shot = pl.concat(zero_shot_tables)
@@ -213,5 +206,5 @@ with run_experiment(TITLE, GOAL, HYPOTHESIS, [MODEL_CONFIG, TRAIN_CONFIG], hub=H
             "latent_scale", maintain_order=True
         )
         log.info("%s\n%s", name, table)
-        inject_table(path_results, name, table.drop("statistic"))
-    inject_table(path_results, "training", pl.DataFrame(training_rows).sort("latent_scale"))
+        run.publish(name, table.drop("statistic"))
+    run.publish("training", pl.DataFrame(training_rows).sort("latent_scale"))

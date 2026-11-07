@@ -1,5 +1,7 @@
 """Per-channel fluid value histograms and per-design stats over all CoolData designs."""
 
+import logging
+
 import numpy as np
 import polars as pl
 import torch
@@ -10,7 +12,7 @@ from coolfrog.lib.config import HOST_CONFIG, DataConfig, Grid
 from coolfrog.lib.datatypes import CHANNELS, Channel, FlowField, NormalizationStats
 from coolfrog.lib.experiment import run_experiment
 from coolfrog.lib.huggingface import HuggingFaceHub
-from coolfrog.lib.log import get_logger, track
+from coolfrog.lib.log import track
 
 TITLE = "CoolData value distribution"
 GOAL = (
@@ -132,8 +134,8 @@ def normalized(stats: NormalizationStats, values: np.ndarray) -> np.ndarray:
 
 
 if __name__ == "__main__":
-    with run_experiment(TITLE, GOAL, HYPOTHESIS, [DATA_CONFIG], hub=HuggingFaceHub()) as path_results:
-        log = get_logger("coolfrog.experiment")
+    with run_experiment(TITLE, GOAL, HYPOTHESIS, [DATA_CONFIG], hub=HuggingFaceHub()) as run:
+        log = logging.getLogger("coolfrog.experiment")
 
         dataset = CoolData(CoolMetadata.load(HOST_CONFIG.n_splits, HOST_CONFIG.idx_split), DATA_CONFIG)
         log.info("%d designs on grid %s", len(dataset), DATA_CONFIG.grid.shape)
@@ -145,10 +147,10 @@ if __name__ == "__main__":
         n_fluid = counts[:, 0].sum(axis=-1)  # (D,)
         mean = merged["sum"] / n_fluid[:, None]
         std = np.sqrt(np.maximum(merged["sum_squares"] / n_fluid[:, None] - mean**2, 0))
-        np.savez_compressed(path_results / "histograms.npz", design_id=design_id, counts=counts, bin_edges=BIN_EDGES)
+        np.savez_compressed(run.path_results / "histograms.npz", design_id=design_id, counts=counts, bin_edges=BIN_EDGES)
         design_stats = {"min": merged["min"], "max": merged["max"], "mean": mean, "std": std}
         design_table = channel_table(design_id, n_fluid, design_stats, histogram_quantiles(counts))
-        design_table.write_parquet(path_results / "design_stats.parquet")
+        design_table.write_parquet(run.path_results / "design_stats.parquet")
 
         total_fluid = n_fluid.sum()
         total_mean = merged["sum"].sum(0) / total_fluid
@@ -160,13 +162,13 @@ if __name__ == "__main__":
         }
         total_quantiles = histogram_quantiles(counts.sum(0, dtype=np.int64))[None]
         channel_stats = channel_table(np.array([-1]), np.array([total_fluid]), total_stats, total_quantiles)
-        channel_stats.drop("design_id").write_csv(path_results / "channel_stats.csv")
+        channel_stats.drop("design_id").write_csv(run.path_results / "channel_stats.csv")
 
         excluded = excluded_designs(design_id, merged["min"], merged["max"])
-        excluded.write_csv(path_results / "excluded_designs.csv")
+        excluded.write_csv(run.path_results / "excluded_designs.csv")
         is_curated = ~np.isin(design_id, excluded["design_id"].to_numpy())
         stats = normalization_stats(counts[is_curated].sum(0, dtype=np.int64))
-        stats.save(path_results / "normalization_stats.csv")
+        stats.save(run.path_results / "normalization_stats.csv")
         curated_range = normalized(stats, merged["min"][is_curated].min(0)), normalized(stats, merged["max"][is_curated].max(0))
 
         with pl.Config(tbl_cols=-1, tbl_width_chars=250, tbl_hide_dataframe_shape=True, tbl_rows=-1, fmt_str_lengths=100):
@@ -175,7 +177,7 @@ if __name__ == "__main__":
             log.info(
                 "normalization stats over %d curated designs, curated min and max normalized\n%s",
                 is_curated.sum(),
-                pl.read_csv(path_results / "normalization_stats.csv").with_columns(
+                pl.read_csv(run.path_results / "normalization_stats.csv").with_columns(
                     normalized_min=curated_range[0], normalized_max=curated_range[1]
                 ),
             )

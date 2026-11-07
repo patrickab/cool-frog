@@ -10,6 +10,7 @@ from coolfrog.lib.datatypes import CHANNELS, FlowField, NormalizationStats
 from coolfrog.lib.distributed import all_gather_objects
 
 SPATIAL_DIMS = (-3, -2, -1)
+NRMSE, MSE, SPECTRAL_LOSS = "nrmse", "mse", "spectral_loss"  # keys of `evaluate`
 
 
 def nrmse(prediction: FlowField, reference: FlowField) -> pl.DataFrame:
@@ -67,7 +68,7 @@ def evaluate(model: Tadpole, flowfields: Iterable[FlowField], stats: Normalizati
             mse_tables.append(mse(prediction, reference))  # in normalized units, like the training loss
             spectral_tables.append(spectral_loss(prediction, reference))  # in normalized units
     model.train(was_training)
-    local_tables = {"nrmse": nrmse_tables, "mse": mse_tables, "spectral_loss": spectral_tables}
+    local_tables = {NRMSE: nrmse_tables, MSE: mse_tables, SPECTRAL_LOSS: spectral_tables}
     gathered = all_gather_objects({metric: pl.concat(tables) for metric, tables in local_tables.items()})
     return {metric: pl.concat(tables[metric] for tables in gathered).sort("design_id") for metric in local_tables}
 

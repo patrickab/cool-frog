@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import http.client
 import json
+import logging
 import os
 from pathlib import Path
 import shutil
@@ -22,13 +23,14 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from coolfrog.lib.log import get_logger, setup_logging
+from coolfrog.lib.log import setup_logging
 from coolfrog.lib.monitor import MONITOR_PORT
 
 HOSTS_PATH = Path("monitor-hosts.json")
@@ -37,7 +39,7 @@ REQUEST_TIMEOUT_SECONDS = 10
 SSHPASS_WRONG_PASSWORD = 5  # exit code of `sshpass`
 
 setup_logging()
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class Host(BaseModel):
@@ -190,16 +192,20 @@ def remove_host(target: HostAddress) -> list[HostInfo]:
     return save_hosts([host for host in load_hosts() if host.address != target.address])
 
 
-@app.get("/api/hosts/monitor")
-def monitor(address: str) -> Response:
-    """`coolfrog.lib.monitor.MonitorState` of the training on `address`, passed through unchanged.
+@app.get("/api/hosts/monitor/{path:path}")
+def monitor(request: Request, path: str, address: str) -> Response:
+    """`coolfrog.lib.monitor` endpoint `/api/<path>` of the training on `address`, passed through unchanged.
 
+    - e.g. `/api/hosts/monitor/state?address=...`, `/api/hosts/monitor/tables/train?address=...&tail=200`
     - Connects on the first poll and reconnects once SSH exited, e.g. after the host rebooted
     """
-    host = find_host(address)
-    port = tunnel_port(host)
+    port = tunnel_port(find_host(address))
+    query = urllib.parse.urlencode([(key, value) for key, value in request.query_params.multi_items() if key != "address"])
+    url = f"http://127.0.0.1:{port}/api/{urllib.parse.quote(path)}" + (f"?{query}" if query else "")
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/monitor", timeout=REQUEST_TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(url, timeout=REQUEST_TIMEOUT_SECONDS) as response:
             return Response(response.read(), media_type="application/json")
+    except urllib.error.HTTPError as error:  # the training answered, e.g. 404 for an unknown table
+        return Response(error.read(), status_code=error.code, media_type="application/json")
     except (urllib.error.URLError, http.client.HTTPException, ConnectionError, TimeoutError) as error:
         raise HTTPException(502, f"No training serves the monitor on {address} port {MONITOR_PORT}") from error

@@ -1,7 +1,7 @@
 @import "@fontsource-variable/outfit";
 @import "tailwindcss";
 
-/* Warm neutral themes. Renderer equivalents live in lib/colormap.ts. */
+/* Warm neutral themes, the values of gigachad-bot's `palette.css`. Renderer equivalents live in lib/colormap.ts. */
 :root {
   color-scheme: light;
   background: var(--paper);
@@ -22,6 +22,8 @@
   --danger: oklch(52% 0.22 25);
   /* Solid voxels use the same role in canvas and WebGL renderers. */
   --solid: oklch(84% 0.012 85);
+  /* Plot gridlines: opaque, about 12% ink over surface, Plotly can't parse color-mix() */
+  --chart-grid: rgb(225, 223, 218);
 
   /* Derived */
   --divider: color-mix(in oklab, var(--ink) 24%, transparent);
@@ -39,23 +41,29 @@
   --inner-highlight: inset 0 1px 0 0 oklch(100% 0 0 / 0.5);
 }
 
+/* Cream on near-black */
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --shadow-color: oklch(8% 0.006 85);
-  --ink: oklch(92% 0.012 85);
-  --ink-muted: oklch(75% 0.012 85);
-  --ink-subtle: oklch(64% 0.010 85);
-  --ink-faint: oklch(55% 0.008 85);
-  --paper: oklch(19% 0.008 85);
-  --surface: oklch(23.5% 0.008 85);
-  --surface-elevated: oklch(29% 0.008 85);
-  --danger: oklch(75% 0.15 25);
-  --solid: oklch(44% 0.008 85);
-  --shadow-sm: 0 1px 2px color-mix(in oklab, var(--shadow-color) 24%, transparent),
-    0 2px 8px color-mix(in oklab, var(--shadow-color) 18%, transparent);
-  --shadow-md: 0 2px 4px color-mix(in oklab, var(--shadow-color) 28%, transparent),
-    0 6px 20px color-mix(in oklab, var(--shadow-color) 24%, transparent);
-  --inner-highlight: inset 0 1px 0 0 color-mix(in oklab, var(--ink) 7%, transparent);
+  --shadow-color: oklch(4% 0.004 70);
+  --ink: oklch(94% 0.010 75);
+  --ink-muted: oklch(75% 0.013 70);
+  --ink-subtle: oklch(59% 0.012 65);
+  --ink-faint: oklch(48% 0.010 60);
+  --paper: oklch(13% 0.006 70);
+  --surface: oklch(16.5% 0.007 70);
+  --surface-elevated: oklch(19% 0.008 70);
+  --danger: oklch(68% 0.20 25);
+  --solid: oklch(40% 0.008 70);
+  --chart-grid: rgb(47, 44, 40);
+  --divider: color-mix(in oklab, var(--ink) 22%, transparent);
+  --divider-soft: color-mix(in oklab, var(--ink) 11%, transparent);
+  --shadow-sm: 0 1px 2px color-mix(in oklab, var(--shadow-color) 40%, transparent),
+    0 2px 8px color-mix(in oklab, var(--shadow-color) 30%, transparent);
+  --shadow-md: 0 1px 3px color-mix(in oklab, var(--shadow-color) 40%, transparent),
+    0 4px 12px color-mix(in oklab, var(--shadow-color) 35%, transparent),
+    0 8px 20px color-mix(in oklab, var(--shadow-color) 25%, transparent);
+  /* On near-black the top-edge highlight, not the shadow, carries depth */
+  --inner-highlight: inset 0 1px 0 0 oklch(100% 0 0 / 0.05);
 }
 
 body { margin: 0; }
@@ -91,3 +99,30 @@ body { margin: 0; }
 .slider:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px var(--hover-strong); }
 .slider:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 3px var(--hover-strong); }
 .slider:disabled { opacity: 0.4; }
+
+/* Theme bloom from gigachad-bot: the new palette reveals from the viewport center through a softened edge */
+@property --theme-bloom-radius {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  :root.theme-transition::view-transition-old(root),
+  :root.theme-transition::view-transition-new(root) {
+    animation: none;
+    mix-blend-mode: normal;
+  }
+  :root.theme-transition::view-transition-new(root) {
+    --theme-bloom-feather: clamp(11px, 2.25vmin, 27px);
+    mask-image: radial-gradient(
+      circle at center,
+      black max(0px, calc(var(--theme-bloom-radius) - var(--theme-bloom-feather))),
+      transparent var(--theme-bloom-radius)
+    );
+    animation: theme-bloom 450ms linear both;
+  }
+}
+@keyframes theme-bloom {
+  from { --theme-bloom-radius: 0px; }
+  to { --theme-bloom-radius: calc(var(--theme-radius) + var(--theme-bloom-feather)); }
+}

@@ -1,14 +1,17 @@
 import { createContext, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react';
-import { gradientCss, scaleValue } from './colormap';
-import type { ColorScale } from './colormap';
+import { flushSync } from 'react-dom';
+import { Moon, PanelLeft, PanelLeftClose, Sun } from 'lucide-react';
+import { gradientCss, scaleValue, THEME_COLORS } from './colormap';
+import type { ColorScale, ThemeColors } from './colormap';
 import { formatNumber, formatPower, formatTick } from './format';
 import type { Bounded, Range } from './range';
 import type { AsyncState } from './useAsync';
 
 type ThemePreference = 'system' | 'light' | 'dark'
-type ThemeState = { theme: 'light' | 'dark'; preference: ThemePreference; setPreference: (value: ThemePreference) => void }
+type ThemeState = { theme: 'light' | 'dark'; colors: ThemeColors; setPreference: (value: ThemePreference) => void }
 const ThemeContext = createContext<ThemeState | null>(null)
+const DARK_QUERY = '(prefers-color-scheme: dark)'
 
 /** Share the resolved theme without remounting views or visualization state. */
 export function ThemeProvider({ children }: { children: ReactNode }) {
@@ -16,36 +19,46 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     const saved = document.documentElement.dataset.themePreference
     return saved === 'light' || saved === 'dark' ? saved : 'system'
   })
-  const [systemDark, setSystemDark] = useState(() => matchMedia('(prefers-color-scheme: dark)').matches)
+  const [systemDark, setSystemDark] = useState(() => matchMedia(DARK_QUERY).matches)
   const theme = preference === 'system' ? (systemDark ? 'dark' : 'light') : preference
   useEffect(() => {
-    const media = matchMedia('(prefers-color-scheme: dark)')
+    const media = matchMedia(DARK_QUERY)
     const update = () => setSystemDark(media.matches)
-    update()
     media.addEventListener('change', update)
     return () => media.removeEventListener('change', update)
   }, [])
   useLayoutEffect(() => {
     document.documentElement.dataset.theme = theme
     document.documentElement.dataset.themePreference = preference
-    document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')!.content = theme === 'dark' ? '#161410' : '#f5eee0'
+    document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')!.content = theme === 'dark' ? '#090705' : '#f5eee0'
     try { localStorage.setItem('coolfrog-theme', preference) } catch { /* Keep the in-memory preference when storage is unavailable. */ }
   }, [theme, preference])
-  const value = useMemo(() => ({ theme, preference, setPreference }), [theme, preference])
+  const value = useMemo(() => ({ theme, colors: THEME_COLORS[theme], setPreference }), [theme])
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>
 }
 
-/** Light/dark switch next to the page title. */
+/** Run `applyColors` through gigachad-bot's theme bloom: the new palette reveals from the viewport center, instant without View Transitions or with reduced motion. */
+function switchColors(applyColors: () => void) {
+  if (!document.startViewTransition || matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    applyColors()
+    return
+  }
+  const root = document.documentElement
+  root.style.setProperty('--theme-radius', `${Math.hypot(innerWidth / 2, innerHeight / 2)}px`)
+  root.classList.add('theme-transition')
+  void document.startViewTransition(applyColors).finished.catch(() => {}).finally(() => {
+    root.classList.remove('theme-transition')
+    root.style.removeProperty('--theme-radius')
+  })
+}
+
+/** Light/dark switch at the top right of the page, gigachad-bot's. */
 function ThemeToggle() {
   const { theme, setPreference } = useTheme()
-  return <button type="button" aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
-    onClick={() => setPreference(theme === 'dark' ? 'light' : 'dark')}
-    className="grid size-8 place-items-center rounded-lg text-ink-muted transition hover:bg-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-ink-muted">
-    <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-      {theme === 'dark'
-        ? <><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M2 12h2m16 0h2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" /></>
-        : <path d="M20.9 13a9 9 0 0 1-9.9-9.9A9 9 0 1 0 20.9 13Z" />}
-    </svg>
+  return <button type="button" aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+    onClick={() => switchColors(() => flushSync(() => setPreference(theme === 'dark' ? 'light' : 'dark')))}
+    className="rounded p-1 text-ink-subtle transition-colors hover:bg-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-divider">
+    {theme === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}
   </button>
 }
 
@@ -114,23 +127,49 @@ export function Colorbar({ scale, unit, label, clipped = { below: false, above: 
   </div>;
 }
 
-/** Page shell: sticky sidebar with the title, theme switch and `nav` (view select) left, content right. */
+const SIDEBAR_COLLAPSED_KEY = 'coolfrog-sidebar-collapsed';
+
+/** Panel icon button folding the sidebar away or back, gigachad-bot's `PanelToggleButton`. */
+function SidebarToggle({ collapsed, onClick }: { collapsed: boolean; onClick: () => void }) {
+  const Icon = collapsed ? PanelLeft : PanelLeftClose;
+  return <button type="button" aria-label={collapsed ? 'Open sidebar' : 'Close sidebar'} aria-expanded={!collapsed} onClick={onClick}
+    className="shrink-0 rounded p-1 text-ink-subtle transition-colors hover:bg-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-divider">
+    <Icon className="size-4" />
+  </button>;
+}
+
+/** Page shell: foldable sticky sidebar with the title and `nav` (view select) left, content right, theme switch top right. */
 export function Layout({ nav, sidebar, children }: { nav: ReactNode; sidebar?: ReactNode; children: ReactNode }) {
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true' } catch { return false }
+  });
+  const toggle = () => {
+    setCollapsed(!collapsed);
+    try { localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(!collapsed)) } catch { /* Keep the in-memory state when storage is unavailable. */ }
+  };
   return <div className="min-h-screen bg-paper font-sans text-ink antialiased">
     <div className="flex gap-6 p-6 max-md:flex-col">
-      <aside className="w-72 shrink-0 max-md:w-full">
+      {collapsed && <aside className="shrink-0">
+        <h1 className="sr-only">Coolfrog</h1>
+        <div className="sticky top-6"><SidebarToggle collapsed onClick={toggle} /></div>
+      </aside>}
+      {/* Hidden, not unmounted, so sidebar inputs keep their state */}
+      <aside hidden={collapsed} className="w-72 shrink-0 max-md:w-full">
         <div className="sticky top-6 space-y-5">
           <header className="px-1">
             <div className="flex items-center justify-between">
               <h1 className="text-2xl font-semibold tracking-tight">Coolfrog</h1>
-              <ThemeToggle />
+              <SidebarToggle collapsed={false} onClick={toggle} />
             </div>
             {nav}
           </header>
           {sidebar}
         </div>
       </aside>
-      <main className="min-w-0 flex-1 space-y-5">{children}</main>
+      <main className="min-w-0 flex-1 space-y-5">
+        <div className="flex justify-end"><ThemeToggle /></div>
+        {children}
+      </main>
     </div>
   </div>;
 }
@@ -138,20 +177,42 @@ export function Layout({ nav, sidebar, children }: { nav: ReactNode; sidebar?: R
 /** Section heading class: small uppercase muted label. */
 export const HEADING = 'text-[11px] font-medium uppercase tracking-[0.12em] text-ink-muted';
 
-/** Elevated container on the page: surface layer, warm shadow, top inner highlight. */
 export function Panel({ className = '', children }: { className?: string; children: ReactNode }) {
   return <div className={`rounded-2xl bg-surface shadow-[var(--shadow-sm),var(--inner-highlight)] ${className}`}>{children}</div>;
+}
+
+/** Inline error where the failure happened. */
+export function ErrorPanel({ message }: { message: string }) {
+  return <Panel className="p-4 text-sm text-danger"><p role="alert">{message}</p></Panel>;
 }
 
 /** Inline error, or a pulsing placeholder with one factual line while `state` loads. */
 export function Pending({ state, message }: { state: AsyncState<unknown>; message: string }) {
   return state.status === 'error'
-    ? <Panel className="p-4 text-sm text-danger"><p role="alert">{state.error}</p></Panel>
+    ? <ErrorPanel message={state.error} />
     : <Panel className="grid h-40 animate-pulse place-items-center text-xs text-ink-muted"><span role="status">{message}</span></Panel>;
 }
 
-export function Badge({ children }: { children: ReactNode }) {
-  return <span className="rounded-md bg-paper px-1.5 py-0.5 text-[11px] text-ink-muted tabular-nums">{children}</span>;
+/** Section title with an optional count, Reset shows only while `onReset` is given. */
+export function SectionHeading({ title, count, onReset }: { title: string; count?: number; onReset?: () => void }) {
+  return <div className="flex items-center justify-between">
+    <h2 className={HEADING}>{title}</h2>
+    <span className="flex items-center gap-2">
+      {onReset && <button className="text-[11px] text-ink-muted transition hover:text-ink" onClick={onReset}>Reset</button>}
+      {count !== undefined && <span className="rounded-md bg-paper px-1.5 py-0.5 text-[11px] text-ink-muted tabular-nums">{count}</span>}
+    </span>
+  </div>;
+}
+
+/** Panel-wrapped table with a header row of `head` cells, `caption` for screen readers. */
+export function DataTable({ className = '', caption, head, children }: { className?: string; caption?: string; head: ReactNode; children: ReactNode }) {
+  return <Panel className={`overflow-x-auto ${className}`}>
+    <table className="w-full text-left text-xs tabular-nums">
+      {caption && <caption className="sr-only">{caption}</caption>}
+      <thead className="text-ink-muted shadow-[inset_0_-1px_0_var(--divider-soft)]"><tr>{head}</tr></thead>
+      <tbody>{children}</tbody>
+    </table>
+  </Panel>;
 }
 
 /** Collapsed `details` with a rotating chevron, `aside` sits right in the summary. */
@@ -169,7 +230,7 @@ export function Disclosure({ label, aside, className = '', summaryClassName = ''
 
 /** Radio group styled as a segmented control, arrow keys work natively, `name` unique per instance. */
 export function Segmented<T extends string | number>({ label, options, value, onChange }: {
-  label: string; options: { value: T; label: string }[]; value: T; onChange: (value: T) => void;
+  label: string; options: readonly { value: T; label: string }[]; value: T; onChange: (value: T) => void;
 }) {
   const name = useId();
   return <fieldset className="inline-flex rounded-xl bg-hover-strong p-1">
@@ -223,9 +284,9 @@ export function RangeControl({ bounded, range, onChange, children }: {
   </div>;
 }
 
-/** Listbox select ported from gigachad-bot `StyledSelect`: bordered "box" field or "inline" text trigger. */
+/** Listbox select: bordered "box" field or "inline" text trigger. */
 export function Select<T extends string>({ label, options, value, onChange, variant = 'box' }: {
-  label: string; options: { value: T; label: string }[]; value: T; onChange: (value: T) => void; variant?: 'box' | 'inline';
+  label: string; options: readonly { value: T; label: string }[]; value: T; onChange: (value: T) => void; variant?: 'box' | 'inline';
 }) {
   const inline = variant === 'inline';
   const [open, setOpen] = useState(false);

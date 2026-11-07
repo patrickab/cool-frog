@@ -16,19 +16,19 @@ from coolfrog.lib.datatypes import CHANNELS, FlowField, NormalizationStats
 from coolfrog.lib.experiment import PATH_EXPERIMENTS
 
 LATENT_SCALES = (2, 4)  # 800x160x32 with 32³ tiles first, then 1600x320x64 with 64³ tiles
-# Normalization and exclusion list of experiment 02 on the full dataset, used on every host
-PATH_VALUE_DISTRIBUTION = PATH_EXPERIMENTS / "02_cooldata-value-distribution" / "results"
+# Normalization and exclusion list of experiment 01 on the full dataset, used on every host
+PATH_VALUE_DISTRIBUTION = PATH_EXPERIMENTS / "01_cooldata-value-distribution" / "results"
 N_VALIDATION_DESIGNS = 128
 MEDIAN = 0.5
 
 
 def load_stats() -> NormalizationStats:
-    """Quantile normalization of experiment 02."""
+    """Quantile normalization of experiment 01."""
     return NormalizationStats.load(PATH_VALUE_DISTRIBUTION / "normalization_stats.csv")
 
 
 def curated_metadata() -> CoolMetadata:
-    """All designs without the implausible ones excluded in experiment 02."""
+    """All designs without the implausible ones excluded in experiment 01."""
     excluded = pl.read_csv(PATH_VALUE_DISTRIBUTION / "excluded_designs.csv")["design_id"]
     designs = CoolMetadata.load(HOST_CONFIG.n_splits, HOST_CONFIG.idx_split).designs
     return CoolMetadata(designs.filter(~pl.col("design_id").is_in(excluded)))

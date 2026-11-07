@@ -1,4 +1,4 @@
-"""Zero-shot Tadpole-B reconstruction of the curated validation designs at 2x and 4x, the baseline of all later experiments.
+"""Zero-shot Tadpole-B reconstruction of the curated validation designs at 2x and 4x on 32³ and 64³ tiles.
 
 Results:
 
@@ -6,6 +6,8 @@ Results:
 - `results/zero-shot-nrmse.csv`, `results/zero-shot-spectral-loss.csv` (README tables): median and q0.9 per channel
 - `results/latent_scale_<n>/slices_first_validation_design.png`
 """
+
+import logging
 
 import polars as pl
 import torch
@@ -24,15 +26,16 @@ from coolfrog.experiments.autoencoding import (
     tadpole_config,
     validation_loader,
 )
-from coolfrog.lib.experiment import inject_table, run_experiment, write_configs
+from coolfrog.lib.experiment import run_experiment, write_configs
 from coolfrog.lib.huggingface import HuggingFaceHub
-from coolfrog.lib.log import get_logger, track
+from coolfrog.lib.log import track
 from coolfrog.lib.plot import plot_slices
 
 TITLE = "Zero-shot Tadpole reconstruction on CoolData"
 GOAL = (
     "Measure NRMSE and spectral loss of the frozen, pretrained Tadpole-B autoencoder on the curated validation designs "
-    "at 800x160x32 (32³ tiles) and 1600x320x64 (64³ tiles): the baseline of every fine-tuning experiment."
+    "at 800x160x32 (32³ tiles) and 1600x320x64 (64³ tiles). Fine-tuning runs compare against their own update 0 on whole "
+    "domains instead, a different setup."
 )
 HYPOTHESIS = None
 
@@ -44,7 +47,7 @@ def reconstruct(latent_scale: int, validation: CoolData) -> pl.DataFrame:
     """Evaluate the frozen model at one resolution, write its configs and slice plot, return the per-design table."""
     config = validation.config
     model_config = tadpole_config(latent_scale, "frozen")
-    path_run = path_results / f"latent_scale_{latent_scale}"
+    path_run = run.path_results / f"latent_scale_{latent_scale}"
     path_run.mkdir(exist_ok=True)
     write_configs([config, model_config], path_run / "config.yaml")
 
@@ -60,16 +63,16 @@ def reconstruct(latent_scale: int, validation: CoolData) -> pl.DataFrame:
     return per_design_frame(tables, latent_scale, "zero-shot")
 
 
-with run_experiment(TITLE, GOAL, HYPOTHESIS, hub=HuggingFaceHub()) as path_results:
-    log = get_logger("coolfrog.experiment")
+with run_experiment(TITLE, GOAL, HYPOTHESIS, hub=HuggingFaceHub()) as run:
+    log = logging.getLogger("coolfrog.experiment")
     stats = load_stats()
     _, validation_metadata = split_metadata(curated_metadata())
     # Voxelize every scale before the first model, the forked voxelizing workers hang once CUDA is initialized
     validations = {latent_scale: CoolData(validation_metadata, data_config(latent_scale)) for latent_scale in LATENT_SCALES}
 
     per_design = pl.concat([reconstruct(latent_scale, validation) for latent_scale, validation in validations.items()])
-    per_design.write_parquet(path_results / "per_design.parquet")
+    per_design.write_parquet(run.path_results / "per_design.parquet")
     for metric, name in (("nrmse", "zero-shot-nrmse"), ("spectral_loss", "zero-shot-spectral-loss")):
         table = quantile_table(per_design, metric, QUANTILES).drop("model")
         log.info("%s\n%s", name, table)
-        inject_table(path_results, name, table)
+        run.publish(name, table)

@@ -2,11 +2,12 @@
 
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from fnmatch import fnmatchcase
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -15,15 +16,17 @@ import socket
 import subprocess
 import sys
 from typing import TYPE_CHECKING, Any
+import zlib
 
 import polars as pl
 import torch
 import yaml
 
 from coolfrog.lib.config import HOST_CONFIG, PATH_REPO, SEED, seed_everything
-from coolfrog.lib.distributed import barrier, init_distributed, is_main_process, rank
+from coolfrog.lib.distributed import barrier, init_distributed, is_main_process, rank, world_size
 from coolfrog.lib.huggingface import HubFile, HuggingFaceHub
-from coolfrog.lib.log import get_logger, setup_logging
+from coolfrog.lib.log import setup_logging
+from coolfrog.lib.metrics import Tracker, configs_state, write_atomically
 
 if TYPE_CHECKING:
     from _typeshed import DataclassInstance
@@ -32,7 +35,8 @@ PATH_EXPERIMENTS = PATH_REPO / "experiments"
 PATH_LARGE_FILE_PATTERNS = PATH_EXPERIMENTS / ".gitignore"
 RUN_FILES = ("config.yaml", "meta.json", "results")  # what one run writes, moved into history/ by the next run
 PARTIAL_SUFFIX = "_partial"  # folder suffix of runs on part of the dataset, see `HostConfig.is_partial`
-logger = get_logger(__name__)
+TABLE_SUFFIXES = (".parquet", ".csv")  # results the API serves as tables
+logger = logging.getLogger(__name__)
 
 
 class RunStatus(StrEnum):
@@ -84,6 +88,17 @@ def experiment_folder(title: str) -> Path | None:
     return script.parent if is_experiment_folder(script.parent) else find_folder(title)
 
 
+def experiment_folders() -> list[Path]:
+    """Every `experiments/<NN>_<name>[_partial]/` folder, sorted by index."""
+    return sorted(path for path in PATH_EXPERIMENTS.glob("[0-9][0-9]_*") if path.is_dir())
+
+
+def result_tables(folder: Path) -> list[str]:
+    """`.parquet` and `.csv` files below `folder / "results"` present locally, relative to it, sorted."""
+    paths = (path for path in (folder / "results").rglob("*") if path.suffix in TABLE_SUFFIXES and not path.name.startswith("."))
+    return sorted(path.relative_to(folder / "results").as_posix() for path in paths)
+
+
 def new_folder(title: str) -> Path:
     """Folder of a new experiment, sharing the index of the same experiment on the other data share when it exists."""
     pattern = re.compile(rf"(\d{{2}})_{re.escape(kebab_case_slug(title))}({PARTIAL_SUFFIX})?")
@@ -105,37 +120,60 @@ def uncommitted_changes() -> str:
     return "\n".join(changes)
 
 
+def is_confirmed(prompt: str) -> bool:
+    """Ask `prompt`, True only on `y`, False without input."""
+    try:
+        return input(prompt).strip().lower() == "y"
+    except (EOFError, KeyboardInterrupt):
+        return False
+
+
 def confirm_uncommitted_changes() -> None:
     """List uncommitted changes and ask whether to run anyway, SystemExit on anything but `y`, also without a terminal."""
     changes = uncommitted_changes()
     if not changes:
         return
     print(f"Uncommitted changes, meta.json will only record HEAD:\n{changes}")
-    try:
-        answer = input("Start the experiment anyway? [y/N] ")
-    except EOFError:
-        answer = ""
-    if answer.strip().lower() != "y":
+    if not is_confirmed("Start the experiment anyway? [y/N] "):
         raise SystemExit("Experiment not started")
 
 
 def confirm_delete_interrupted_run(run: "ExperimentRun") -> bool:
     """Ask whether to delete an interrupted new run, True without a terminal, False on anything but `y`."""
-    if not sys.stdin.isatty():
-        return True
-    try:
-        answer = input(f"Interrupted, delete the run in {run.folder}? [y/N] ")
-    except (EOFError, KeyboardInterrupt):
-        answer = ""
-    return answer.strip().lower() == "y"
+    return not sys.stdin.isatty() or is_confirmed(f"Interrupted, delete the run in {run.folder}? [y/N] ")
+
+
+def read_meta(folder: Path) -> dict[str, Any]:
+    return json.loads((folder / "meta.json").read_text())
+
+
+def update_meta(folder: Path, **fields: object) -> None:
+    """Set `fields` in the run's `meta.json`, keeping all others."""
+    text = json.dumps(read_meta(folder) | fields, indent=2)
+    write_atomically(folder / "meta.json", lambda path: path.write_text(text))
+
+
+def runtime() -> dict[str, Any]:
+    """How this process trains: `training_precision` (`float32` or `<dtype> autocast`) and `gpus`, the `torchrun` processes."""
+    dtype = HOST_CONFIG.autocast_dtype
+    precision = "float32" if dtype is None else f"{str(dtype).removeprefix('torch.')} autocast"
+    return {"training_precision": precision, "gpus": world_size()}
+
+
+def utc_now() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def current_commit() -> str:
+    """Full hash of the repository's HEAD."""
+    return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=PATH_REPO, text=True).strip()
 
 
 def archive_previous_run(folder: Path) -> Path | None:
     """Move `RUN_FILES` into `history/<date>_<commit>/`, copy `README.md`, return that folder, None without a previous run."""
-    path_meta = folder / "meta.json"
-    if not path_meta.exists():
+    if not (folder / "meta.json").exists():
         return None
-    meta = json.loads(path_meta.read_text())
+    meta = read_meta(folder)
     path_run = folder / "history" / f"{meta['date'][:16].replace(':', '-')}_{meta['commit_hash_git'][:7]}"
     path_run.mkdir(parents=True)
     for name in RUN_FILES:
@@ -157,13 +195,15 @@ def render_readme(title: str, goal: str | None, hypothesis: str | None) -> str:
     return "\n\n".join(sections)
 
 
+def configs_yaml(configs: Sequence["DataclassInstance"]) -> str:
+    """`configs` as yaml keyed by class name, see `configs_state`."""
+    return yaml.safe_dump(configs_state(configs))
+
+
 def write_configs(configs: Sequence["DataclassInstance"], path: Path) -> None:
-    """Write `configs` as yaml keyed by class name, e.g. one `config.yaml` per run of a multi-run experiment, rank 0 only."""
-    if not is_main_process():
-        return
-    # json round trip turns Path and tuple into yaml-safe types
-    config_dict = {type(config).__name__: asdict(config) for config in configs}
-    path.write_text(yaml.safe_dump(json.loads(json.dumps(config_dict, default=str))))
+    """Write `configs_yaml`, e.g. one `config.yaml` per run of a multi-run experiment, rank 0 only."""
+    if is_main_process():
+        path.write_text(configs_yaml(configs))
 
 
 def markdown_table(dataframe: pl.DataFrame, significant_digits: int = 3) -> str:
@@ -181,26 +221,6 @@ def markdown_table(dataframe: pl.DataFrame, significant_digits: int = 3) -> str:
         fmt_str_lengths=10_000,
     ):
         return str(formatted)
-
-
-def inject_table(path_results: Path, name: str, dataframe: pl.DataFrame) -> None:
-    """Write `dataframe` to `results/<name>.csv` at full precision and inject it rounded into the run's README.
-
-    - Replaces the `<!-- table: name -->` block of the README, appends it if missing
-    - Text outside the blocks is never touched, move an appended block once by hand, later runs update it in place
-    - Call it as the last step of the script, so only completed runs update the README
-    - Writes on rank 0 only, every process may call it
-    """
-    if not is_main_process():
-        return
-    dataframe.write_csv(path_results / f"{name}.csv")
-    path_readme = path_results.parent / "README.md"
-    block = f"<!-- table: {name} -->\n{markdown_table(dataframe)}\n<!-- /table -->"
-    pattern = re.compile(rf"<!-- table: {re.escape(name)} -->\n.*?<!-- /table -->", re.DOTALL)
-    readme, n_replaced = pattern.subn(lambda _: block, path_readme.read_text())
-    if n_replaced == 0:
-        readme = f"{readme.rstrip()}\n\n{block}\n"
-    path_readme.write_text(readme)
 
 
 def large_file_patterns(path: Path = PATH_LARGE_FILE_PATTERNS) -> tuple[str, ...]:
@@ -238,7 +258,7 @@ class HubEntry:
     commit_hash_hub : str
         Hugging Face commit holding every file of the run.
     run_root : str
-        Path of the run in the repository at that commit, e.g. `experiments/02_cooldata-value-distribution_partial`.
+        Path of the run in the repository at that commit, e.g. `experiments/01_cooldata-value-distribution_partial`.
     files : tuple[str, ...]
         Paths relative to `run_root` and to the local run folder, e.g. `results/histograms.npz`.
 
@@ -246,13 +266,14 @@ class HubEntry:
     --------
     `meta.json["hub"]`, unchanged when the run is archived into `history/`:
 
-    >>> HubEntry.from_dict(meta["hub"])
+    >>> meta["hub"]
     {
         "repo_id": "the-fruit-dude/cool-frog",
         "commit_hash_hub": "3f2a9c1...",
-        "run_root": "experiments/02_cooldata-value-distribution_partial",
+        "run_root": "experiments/01_cooldata-value-distribution_partial",
         "files": ["results/histograms.npz"],
     }
+    >>> entry = HubEntry.from_dict(meta["hub"])
     >>> model.load_adapter(hub.download(entry.file("results/latent_scale_4/adapter.pt")))
     """
 
@@ -279,7 +300,9 @@ class HubEntry:
 
 @dataclass(frozen=True)
 class ExperimentRun:
-    """One started run: what `run_experiment` needs to push it on success or undo it on interrupt.
+    """One started run: where the script writes, what `run_experiment` needs to push it on success or undo it on interrupt.
+
+    - `stage` -> resumable step with persisted trackers, `publish` -> README table, see `run_experiment`
 
     Attributes
     ----------
@@ -293,17 +316,54 @@ class ExperimentRun:
     meta_before_resume : str | None
         str -> `meta.json` text before `resume_run`, an interrupt restores it and keeps the results
         None -> a new run
+    stages : list[Stage]
+        Stages created through `stage`, their trackers are saved however the run ends.
     """
 
     folder: Path
     path_archived_run: Path | None
     is_new_folder: bool
     meta_before_resume: str | None = None
+    stages: list["Stage"] = field(default_factory=list, compare=False)
 
     @property
     def path_results(self) -> Path:
         """`folder / "results"`, where the script writes."""
         return self.folder / "results"
+
+    def stage(self, name: str) -> "Stage":
+        """Resumable step in `results/<name>/`, see `Stage`.
+
+        - Seeds every process from `SEED`, its rank and `name`, so a stage draws the same LoRA init, shuffles and crops
+          whether it runs first, after other stages or in a resumed run
+        """
+        seed_everything(SEED + rank() + zlib.crc32(name.encode()) % 2**16)
+        stage = Stage(self.path_results / name)
+        self.stages.append(stage)
+        return stage
+
+    def save_trackers(self) -> None:
+        for stage in self.stages:
+            stage.save_tracker()
+
+    def publish(self, name: str, dataframe: pl.DataFrame) -> None:
+        """Write `dataframe` to `results/<name>.csv` at full precision (git) and inject it rounded into the run's README.
+
+        - Replaces the `<!-- table: name -->` block of the README, appends it if missing
+        - Text outside the blocks is never touched, move an appended block once by hand, later runs update it in place
+        - Call it as the last step of the script, so only completed runs update the README
+        - Writes on rank 0 only, every process may call it
+        """
+        if not is_main_process():
+            return
+        dataframe.write_csv(self.path_results / f"{name}.csv")
+        path_readme = self.folder / "README.md"
+        block = f"<!-- table: {name} -->\n{markdown_table(dataframe)}\n<!-- /table -->"
+        pattern = re.compile(rf"<!-- table: {re.escape(name)} -->\n.*?<!-- /table -->", re.DOTALL)
+        readme, n_replaced = pattern.subn(lambda _: block, path_readme.read_text())
+        if n_replaced == 0:
+            readme = f"{readme.rstrip()}\n\n{block}\n"
+        path_readme.write_text(readme)
 
 
 def start_run(title: str, goal: str | None, hypothesis: str | None, configs: Sequence["DataclassInstance"]) -> ExperimentRun:
@@ -334,14 +394,15 @@ def start_run(title: str, goal: str | None, hypothesis: str | None, configs: Seq
 
     meta = {
         "commit_hash_git": current_commit(),
-        "script": str(script.relative_to(PATH_EXPERIMENTS.parent.resolve())),
-        "date": datetime.now(UTC).isoformat(timespec="seconds"),
+        "script": str(script.relative_to(PATH_REPO.resolve())),
+        "date": utc_now(),
         "seed": SEED,
         "host": socket.gethostname(),
         "data_split": f"{HOST_CONFIG.idx_split} of {HOST_CONFIG.n_splits}",
+        **runtime(),
         "status": RunStatus.RUNNING,
     }
-    (folder / "meta.json").write_text(json.dumps(meta, indent=2))
+    write_atomically(folder / "meta.json", lambda path: path.write_text(json.dumps(meta, indent=2)))
 
     path_readme = folder / "README.md"
     if not path_readme.exists():
@@ -357,8 +418,8 @@ def run_experiment(  # noqa: PLR0913, the public entry point of every experiment
     configs: Sequence["DataclassInstance"] = (),
     hub: HuggingFaceHub | None = None,
     resume: bool = False,
-) -> Iterator[Path]:
-    """Start or resume a run, yield its `results/` directory and finish the run by how the block exits.
+) -> Iterator[ExperimentRun]:
+    """Start or resume a run, yield it and finish the run by how the block exits.
 
     - Seeds python, numpy and torch with `SEED` before the block runs
     - Enables `expandable_segments` in the CUDA allocator unless `PYTORCH_CUDA_ALLOC_CONF` is set, cuts reserved but unused VRAM
@@ -368,23 +429,27 @@ def run_experiment(  # noqa: PLR0913, the public entry point of every experiment
     - KeyboardInterrupt (Ctrl+C, also `agent-proc stop`) -> then the interrupt propagates
         - New run on a terminal -> asks: `y` deletes it via `undo_run`, else it stays with status `interrupted`, resumable
         - New run without a terminal, resumed run -> `undo_run`
-    - Under `torchrun`: rank 0 does all of the above, the other ranks wait for its run and yield the same folder, writing nothing
+    - Under `torchrun`: rank 0 does all of the above, the other ranks wait for its run and yield the same run, writing nothing
         - Each rank seeds with `SEED + rank`, so loader workers draw different crops
-    - Killed process (SIGKILL, closed tmux window) -> no cleanup runs, status stays `running`
-    - Logs to the console and `results/run.log`, use `get_logger("coolfrog.experiment")` in the script
+    - Killed process (SIGKILL, closed tmux window) -> no cleanup runs, status stays `running`, trackers keep their last save
+    - Every other exit saves the trackers of all `run.stage(...)` stages first
+    - Logs to the console and `results/run.log`, use `logging.getLogger("coolfrog.experiment")` in the script
 
     Examples
     --------
-    >>> with run_experiment(TITLE, GOAL, HYPOTHESIS, [DATA_CONFIG], hub=HuggingFaceHub(), resume=True) as path_results:
-    ...     log = get_logger("coolfrog.experiment")
-    ...     ...  # write results, skip complete stages
+    >>> with run_experiment(TITLE, GOAL, HYPOTHESIS, [DATA_CONFIG], hub=HuggingFaceHub(), resume=True) as run:
+    ...     stage = run.stage("latent_scale_4")
+    ...     if not stage.is_complete():
+    ...         train(stage.track({"title": TITLE}))  # its tables persist while it logs
+    ...         stage.save({"adapter.pt": model.adapter()})
+    ...     run.publish("nrmse", summarize(stage.load("validation_aggregates.parquet")))
     """
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")  # read once, at CUDA initialization
     init_distributed()  # initializes CUDA, so after the allocator setting
     if not is_main_process():
         barrier()  # rank 0 has started or resumed the run
         seed_everything(SEED + rank())
-        yield experiment_folder(title) / "results"
+        yield ExperimentRun(experiment_folder(title), path_archived_run=None, is_new_folder=False)
         return
     run = resume_run(title, configs) if resume else None
     if run is None:
@@ -404,7 +469,10 @@ def run_experiment(  # noqa: PLR0913, the public entry point of every experiment
         )
     seed_everything()
     try:
-        yield run.path_results
+        try:
+            yield run
+        finally:  # before the keep-or-delete prompt, a kept run holds every logged value
+            run.save_trackers()
     except KeyboardInterrupt:
         if run.meta_before_resume is None and not confirm_delete_interrupted_run(run):
             print(f"Keeping the interrupted run in {run.folder}, continue it with resume")
@@ -425,24 +493,22 @@ def resume_run(title: str, configs: Sequence["DataclassInstance"]) -> Experiment
 
     - Reuses its folder and results, nothing moves into `history/`
     - ValueError when `configs` differ from its `config.yaml`
-    - Appends the current commit and date to `meta.json["resumed"]`, sets the status back to `running`
+    - Appends the current commit, date, training precision and GPU count to `meta.json["resumed"]`, sets the status
+      back to `running`
     """
     folder = experiment_folder(title)
     if folder is None or not (folder / "meta.json").exists():
         return None
     meta_before_resume = (folder / "meta.json").read_text()
-    if json.loads(meta_before_resume).get("status") == RunStatus.COMPLETE:
+    meta = json.loads(meta_before_resume)
+    if meta.get("status") == RunStatus.COMPLETE:
         print(f"Live run in {folder} is complete, starting a new run instead of resuming")
         return None
     path_config = folder / "config.yaml"
-    previous_config = path_config.read_text()
-    write_configs(configs, path_config)
-    if path_config.read_text() != previous_config:
-        path_config.write_text(previous_config)
+    if configs_yaml(configs) != path_config.read_text():
         raise ValueError(f"configs differ from {path_config}, resume needs identical configs, rerun without resume")
     confirm_uncommitted_changes()
-    meta = json.loads(meta_before_resume)
-    resumed = {"commit_hash_git": current_commit(), "date": datetime.now(UTC).isoformat(timespec="seconds")}
+    resumed = {"commit_hash_git": current_commit(), "date": utc_now(), **runtime()}
     update_meta(folder, status=RunStatus.RUNNING, resumed=[*meta.get("resumed", []), resumed])
     return ExperimentRun(folder, path_archived_run=None, is_new_folder=False, meta_before_resume=meta_before_resume)
 
@@ -457,7 +523,7 @@ def undo_run(run: ExperimentRun) -> None:
     """
     if run.meta_before_resume is not None:
         print(f"Interrupted, restoring the run in {run.folder} to its state before resuming")
-        (run.folder / "meta.json").write_text(run.meta_before_resume)
+        write_atomically(run.folder / "meta.json", lambda path: path.write_text(run.meta_before_resume))
         return
     print(f"Interrupted, removing the run from {run.folder}")
     if run.is_new_folder:
@@ -478,44 +544,56 @@ def undo_run(run: ExperimentRun) -> None:
         run.path_archived_run.parent.rmdir()
 
 
-def update_meta(folder: Path, **fields: object) -> None:
-    """Set `fields` in the run's `meta.json`, keeping all others."""
-    path_meta = folder / "meta.json"
-    path_meta.write_text(json.dumps(json.loads(path_meta.read_text()) | fields, indent=2))
-
-
-def current_commit() -> str:
-    """Full hash of the repository's HEAD."""
-    return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=PATH_EXPERIMENTS.parent, text=True).strip()
-
-
 class Stage:
     """One resumable step of a run, e.g. one latent scale: a folder whose `stage.json` marks it complete.
 
-    - `save` writes every output by its suffix, then `stage.json` last: a crash mid-save leaves the stage incomplete
+    - Create it with `run.stage(name)`, so the run saves its tracker however it ends
+    - `track` -> `Tracker` saving its tables as `<table>.parquet` plus `state.json` while it logs, readable by the API
+      during the run
+    - `save` saves the tracker, writes every output by its suffix, then `stage.json` last: a crash mid-save leaves
+      the stage incomplete
     - Under `torchrun` every process calls `save`: rank 0 writes, all return once the stage is complete
     - Suffixes: `.parquet` / `.csv` <- pl.DataFrame, `.pt` <- tensors or a dict of them, `.png` <- matplotlib Figure
     - A resumed run (`run_experiment(..., resume=True)`) skips complete stages and loads their outputs
 
     Examples
     --------
-    >>> stage = Stage(path_results / "latent_scale_4")
+    >>> stage = run.stage("latent_scale_4")
     >>> if not stage.is_complete():
-    ...     stage.save({"metrics.parquet": metrics, "adapter.pt": model.adapter(), "curves.png": figure})
-    >>> metrics = stage.load("metrics.parquet")
+    ...     train(model, stage.track({"title": "LoRA-32", "configs": configs_state([TRAIN_CONFIG])}))
+    ...     stage.save({"adapter.pt": model.adapter(), "curves.png": figure})
+    >>> train = stage.load("train.parquet")
     """
 
     def __init__(self, folder: Path) -> None:
         self.folder = folder
         self.path_marker = folder / "stage.json"
+        self.tracker: Tracker | None = None
 
     def is_complete(self) -> bool:
         """Whether `save` finished for this stage."""
         return self.path_marker.exists()
 
+    def track(self, state: Mapping[str, Any] | None = None) -> Tracker:
+        """Empty tracker starting with `state`, saved into the stage folder while it logs and when the run ends, rank 0 only.
+
+        - A rerun of an interrupted stage starts it anew and overwrites the partial files
+        """
+        folder = self.folder if is_main_process() else None
+        if folder is not None:
+            for path in [*folder.glob("*.parquet"), folder / "state.json"]:
+                path.unlink(missing_ok=True)
+        self.tracker = Tracker(folder, state)
+        return self.tracker
+
+    def save_tracker(self) -> None:
+        if self.tracker is not None:
+            self.tracker.save()
+
     def save(self, outputs: Mapping[str, Any]) -> None:
-        """Write `outputs` (file name -> data) into the stage folder, then mark the stage complete, rank 0 only."""
+        """Save the trackers, write `outputs` (file name -> data) into the stage folder, then mark it complete, rank 0 only."""
         if is_main_process():
+            self.save_tracker()
             self._write(outputs)
         barrier()  # the stage is complete for every process
 
@@ -534,14 +612,10 @@ class Stage:
                     data.savefig(path, dpi=150)
                 case suffix:
                     raise ValueError(f"no writer for {suffix!r} files, e.g. {path}")
-        marker = {
-            "status": RunStatus.COMPLETE,
-            "date": datetime.now(UTC).isoformat(timespec="seconds"),
-            "commit_hash_git": current_commit(),
-            "files": sorted(outputs),
-        }
+        files = sorted([*outputs, *(self.tracker.file_names() if self.tracker is not None else ())])
+        marker = {"status": RunStatus.COMPLETE, "date": utc_now(), "commit_hash_git": current_commit(), "files": files}
         self.path_marker.write_text(json.dumps(marker, indent=2))
-        logger.info("Stage %s complete: %s", self.folder.name, ", ".join(sorted(outputs)))
+        logger.info("Stage %s complete: %s", self.folder.name, ", ".join(files))
 
     def load(self, name: str) -> Any:  # noqa: ANN401, the type follows the suffix
         """Read one output of a complete stage back: DataFrame for `.parquet` / `.csv`, the saved object for `.pt`."""
@@ -559,13 +633,13 @@ class Stage:
 
 def repository_path(folder: Path) -> str:
     """Path of `folder` relative to the repository root, the same path in the Hugging Face repository."""
-    return folder.resolve().relative_to(PATH_EXPERIMENTS.parent.resolve()).as_posix()
+    return folder.resolve().relative_to(PATH_REPO.resolve()).as_posix()
 
 
 def last_pushed_run(folder: Path) -> Path | None:
     """Newest run in `folder / "history"` with a `meta.json["hub"]`, None if no archived run was pushed."""
     paths_meta = sorted((folder / "history").glob("*/meta.json"))
-    pushed = [path_meta.parent for path_meta in paths_meta if "hub" in json.loads(path_meta.read_text())]
+    pushed = [path_meta.parent for path_meta in paths_meta if "hub" in read_meta(path_meta.parent)]
     return pushed[-1] if pushed else None
 
 
@@ -584,17 +658,15 @@ def push_experiment(hub: HuggingFaceHub, folder: Path) -> HubEntry | None:
     moves = {}
     path_previous_run = last_pushed_run(folder)
     if path_previous_run is not None:
-        previous = HubEntry.from_dict(json.loads((path_previous_run / "meta.json").read_text())["hub"])
+        previous = HubEntry.from_dict(read_meta(path_previous_run)["hub"])
         if previous.run_root == run_root:  # skip runs uploaded straight into history/
             path_history = f"{run_root}/history/{path_previous_run.name}"
             moves = {f"{run_root}/{file}": f"{path_history}/{file}" for file in previous.files}
-    path_meta = folder / "meta.json"
-    meta = json.loads(path_meta.read_text())
+    meta = read_meta(folder)
     uploads = {f"{run_root}/{file}": folder / file for file in files}
     commit_hash_hub = hub.commit(uploads, moves, f"{run_root}: run {meta['date']} at {meta['commit_hash_git'][:7]}")
     entry = HubEntry(hub.repo_id, commit_hash_hub, run_root, files)
-    meta["hub"] = entry.to_dict()
-    path_meta.write_text(json.dumps(meta, indent=2))
+    update_meta(folder, hub=entry.to_dict())
     print(f"Pushed {len(files)} files to https://huggingface.co/{hub.repo_id}/tree/{commit_hash_hub}/{run_root}")
     return entry
 
@@ -605,7 +677,7 @@ def pull_experiment(hub: HuggingFaceHub, folder: Path) -> Path:
     - `folder` is a live run `experiments/<NN>_<name>/` or an archived one `.../history/<date>_<commit>/`
     - Every file of the `HubEntry` is downloaded at its commit into `folder / <file>`
     """
-    entry = HubEntry.from_dict(json.loads((folder / "meta.json").read_text())["hub"])
+    entry = HubEntry.from_dict(read_meta(folder)["hub"])
     if entry.repo_id != hub.repo_id:
         raise ValueError(f"{folder} was pushed to {entry.repo_id}, not {hub.repo_id}")
     for file in entry.files:

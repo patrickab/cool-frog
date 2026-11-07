@@ -4,6 +4,7 @@ from collections.abc import Iterable, Iterator
 from contextlib import nullcontext
 from dataclasses import dataclass
 import itertools
+import logging
 from pathlib import Path
 
 import torch
@@ -18,10 +19,10 @@ from coolfrog.lib.config import HOST_CONFIG, TrainConfig
 from coolfrog.lib.dashboard import run_dashboard
 from coolfrog.lib.datatypes import FlowField, NormalizationStats
 from coolfrog.lib.distributed import average_gradients, average_values, broadcast_parameters, is_main_process, world_size
-from coolfrog.lib.log import get_logger
+from coolfrog.lib.metrics import Tracker
 from coolfrog.lib.monitor import serve_monitor
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -82,35 +83,34 @@ def endless(loader: DataLoader[FlowField]) -> Iterator[FlowField]:
         yield from loader
 
 
-def fine_tune_autoencoder(  # noqa: PLR0913, model, data, stats, config, checkpoint folder and the dashboard title
+def fine_tune_autoencoder(  # noqa: PLR0913, model, data, stats, config, checkpoint folder and tracker
     model: Tadpole,
     train_loader: DataLoader[FlowField],
     validation_loader: DataLoader[FlowField],
     stats: NormalizationStats,
     config: TrainConfig,
     path_checkpoints: Path,
-    title: str = "Fine-tuning",
-) -> TrainingMetrics:
+    tracker: Tracker,
+) -> None:
     """Accumulated updates on `train_loader` crops, in `HOST_CONFIG.autocast_dtype`, with periodic full-domain `evaluate`.
 
     - Update 0 is validated before training, the zero-shot baseline under LoRA
     - Writes `model.adapter()` to `path_checkpoints/adapter_update_<update>.pt` after every validation
     - Logs the spectral loss of the training crops next to the MSE they are trained on
-    - Runs under the live terminal dashboard titled `title`, plainly when there is no terminal
-    - Serves the same charts and the GPU stats to the web monitor meanwhile, see `coolfrog.lib.monitor`
+    - Logs into the `tracker` tables of `TrainingMetrics`, e.g. a `Stage.track` tracker persisting them
+    - Runs under the live terminal dashboard, plainly when there is no terminal, and serves the tracker to the web
+      monitor meanwhile, see `coolfrog.lib.monitor`
     - Stop key `q` in the dashboard raises KeyboardInterrupt
     - Under `torchrun` every process runs it on its GPU: rank 0 alone writes, shows the dashboard and serves the monitor
     """
-    metrics = TrainingMetrics(config, train_loader.batch_size, title)
+    metrics = TrainingMetrics(config, train_loader.batch_size, tracker)
     path_checkpoints.mkdir(parents=True, exist_ok=True)
-    with serve_monitor(metrics.tracker, metrics.spec) if is_main_process() else nullcontext():
+    with serve_monitor(tracker) if is_main_process() else nullcontext():
         run_dashboard(
-            metrics.tracker,
-            metrics.spec,
+            tracker,
             lambda: _train(model, train_loader, validation_loader, stats, metrics, path_checkpoints),
             enabled=is_main_process(),
         )
-    return metrics
 
 
 def _train(  # noqa: PLR0913, the arguments of fine_tune_autoencoder plus its metrics

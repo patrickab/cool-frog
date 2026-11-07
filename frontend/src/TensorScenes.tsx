@@ -5,16 +5,14 @@ import type { ReactNode } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { Config, Field } from './api';
-import { colorAt, oklchCss, oklchToLinear, themeColors } from './lib/colormap';
-import type { Axis, ColorScale } from './lib/colormap';
-import { Disclosure, Panel, Segmented, Slider, useTheme } from './lib/ui';
-
-/** Exact integer with thousands separators, value counts here must not be rounded. */
-const formatCount = (value: number) => value.toLocaleString('en-US');
+import { colorAt, oklchCss, oklchToLinear } from './lib/colormap';
+import type { Axis, ColorScale, ThemeColors } from './lib/colormap';
+import { formatCount } from './lib/format';
+import { DataTable, Disclosure, Panel, Segmented, Slider, useTheme } from './lib/ui';
 
 /* ---------- Tadpole configuration, `tadpole.architecture.p3d` and paper Table 12 ---------- */
 
-export type Size = 'S' | 'B' | 'L';
+type Size = 'S' | 'B' | 'L';
 /** `hidden` = transformer width at 16³, latent channels are `4 · hidden`, `features` = conv widths (FED). */
 const SIZES: Record<Size, { hidden: number; features: readonly [number, number, number]; heads: number; groups: number; compression: number; parameters: string }> = {
   S: { hidden: 64, features: [32, 32, 64], heads: 4, groups: 16, compression: 16, parameters: '3.4 + 5.4 M' },
@@ -27,6 +25,8 @@ const WINDOW = 4;
 const latentChannels = (size: Size) => 4 * SIZES[size].hidden;
 /** Size every scene shows, the paper's headline model. */
 const SIZE: Size = 'B';
+const { hidden: HIDDEN, features: FEATURES, heads: HEADS } = SIZES[SIZE];
+const LATENT_CHANNELS = latentChannels(SIZE);
 
 /** Pillar height for a channel count: square root keeps 1 to 2,048 channels on one screen. */
 const pillarHeight = (channels: number) => 0.86 * Math.max(1, Math.sqrt(channels) / 4);
@@ -35,40 +35,52 @@ const pillarHeight = (channels: number) => 0.86 * Math.max(1, Math.sqrt(channels
 
 type Arrangement = 'volume' | 'crops' | 'batch' | 'downstream';
 type Part = 'Rearrange' | 'Encoder' | 'KL head' | 'Decoder' | 'Downstream';
+/** Plain-language headline and one sentence, shown above the scene. */
+type Lesson = { action: string; explanation: string };
 type Stage = {
-  title: string; part: Part; detail: (size: Size) => string; arrangement: Arrangement;
+  title: string; part: Part; detail: string; arrangement: Arrangement;
   /** Grid divisor per crop axis against the 64³ input crop. */
   divisor: number;
-  channels: (size: Size) => number;
+  channels: number;
   kl?: 'split' | 'sample';
+  lesson: Lesson;
 };
-const hidden = (factor: number) => (size: Size) => SIZES[size].hidden * factor;
-const feature = (index: 0 | 1) => (size: Size) => SIZES[size].features[index];
-const one = () => 1;
-const attention = (size: Size) => `2 blocks, ${SIZES[size].heads} heads, ${WINDOW}³ windows`;
+const ATTENTION = `2 blocks, ${HEADS} heads, ${WINDOW}³ windows`;
+const HALVE: Lesson = { action: 'Halve the grid', explanation: 'A stride-2 convolution: one eighth the positions, more features each.' };
+const ATTEND: Lesson = { action: 'Mix information without shrinking the grid', explanation: 'Features change, the shape does not.' };
+const UPSAMPLE: Lesson = { action: 'Turn features back into spatial detail', explanation: 'Pixel shuffle moves 8 channels into a 2 × 2 × 2 block, each axis doubles.' };
 const STAGES: Stage[] = [
-  { title: 'Input', part: 'Rearrange', detail: () => 'Fields', arrangement: 'volume', divisor: 1, channels: one },
-  { title: 'Cut into crops', part: 'Rearrange', detail: () => 'Split every axis', arrangement: 'crops', divisor: 1, channels: one },
-  { title: 'Fold into batch', part: 'Rearrange', detail: () => 'C and crops join B', arrangement: 'batch', divisor: 1, channels: one },
-  { title: 'Embed', part: 'Encoder', detail: () => '3³ conv', arrangement: 'batch', divisor: 1, channels: feature(0) },
-  { title: 'Conv ↓2', part: 'Encoder', detail: () => '3³ conv stride 2, 2 residual blocks', arrangement: 'batch', divisor: 2, channels: feature(1) },
-  { title: 'Conv ↓2', part: 'Encoder', detail: () => '3³ conv stride 2', arrangement: 'batch', divisor: 4, channels: hidden(1) },
-  { title: 'Attention', part: 'Encoder', detail: attention, arrangement: 'batch', divisor: 4, channels: hidden(1) },
-  { title: 'Conv ↓2', part: 'Encoder', detail: () => '3³ conv stride 2', arrangement: 'batch', divisor: 8, channels: hidden(2) },
-  { title: 'Attention', part: 'Encoder', detail: attention, arrangement: 'batch', divisor: 8, channels: hidden(2) },
-  { title: 'Conv ↓2', part: 'Encoder', detail: () => '3³ conv stride 2', arrangement: 'batch', divisor: 16, channels: hidden(4) },
-  { title: 'Attention', part: 'Encoder', detail: attention, arrangement: 'batch', divisor: 16, channels: hidden(4) },
-  { title: 'μ, log σ²', part: 'KL head', detail: () => '1×1 conv, split in two', arrangement: 'batch', divisor: 16, channels: hidden(8), kl: 'split' },
-  { title: 'Sample z', part: 'KL head', detail: () => 'z = μ + σ · ε', arrangement: 'batch', divisor: 16, channels: hidden(4), kl: 'sample' },
-  { title: 'Upsample', part: 'Decoder', detail: () => '3³ conv, pixel shuffle, 3³ conv', arrangement: 'batch', divisor: 8, channels: hidden(2) },
-  { title: 'Attention', part: 'Decoder', detail: attention, arrangement: 'batch', divisor: 8, channels: hidden(2) },
-  { title: 'Upsample', part: 'Decoder', detail: () => '3³ conv, pixel shuffle, 3³ conv', arrangement: 'batch', divisor: 4, channels: hidden(1) },
-  { title: 'Attention', part: 'Decoder', detail: (size) => `${attention(size)}, norm, 3³ conv`, arrangement: 'batch', divisor: 4, channels: hidden(1) },
-  { title: 'Upsample', part: 'Decoder', detail: () => '1×1 conv, pixel shuffle, 2 residual blocks', arrangement: 'batch', divisor: 2, channels: feature(1) },
-  { title: 'Upsample', part: 'Decoder', detail: () => '1×1 conv, pixel shuffle', arrangement: 'batch', divisor: 1, channels: feature(0) },
-  { title: 'Output conv', part: 'Decoder', detail: () => '3³ conv', arrangement: 'batch', divisor: 1, channels: one },
-  { title: 'Inverse rearrange', part: 'Rearrange', detail: () => 'Crops back in place', arrangement: 'volume', divisor: 1, channels: one },
-  { title: 'Latent layout', part: 'Downstream', detail: () => 'Tadpole-DFT input', arrangement: 'downstream', divisor: 16, channels: hidden(4) },
+  { title: 'Input', part: 'Rearrange', detail: 'Fields', arrangement: 'volume', divisor: 1, channels: 1,
+    lesson: { action: 'Start with separate scalar fields', explanation: 'Each volume is one variable of one sample.' } },
+  { title: 'Cut into crops', part: 'Rearrange', detail: 'Split every axis', arrangement: 'crops', divisor: 1, channels: 1,
+    lesson: { action: 'Separate the spatial crops', explanation: 'Same values, only moved apart.' } },
+  { title: 'Fold into batch', part: 'Rearrange', detail: 'C and crops join B', arrangement: 'batch', divisor: 1, channels: 1,
+    lesson: { action: 'Give every crop its own batch entry', explanation: 'Each crop is now an independent input to the same encoder.' } },
+  { title: 'Embed', part: 'Encoder', detail: '3³ conv', arrangement: 'batch', divisor: 1, channels: FEATURES[0],
+    lesson: { action: 'Replace each value with learned features', explanation: 'Same grid, more features per position.' } },
+  { title: 'Conv ↓2', part: 'Encoder', detail: '3³ conv stride 2, 2 residual blocks', arrangement: 'batch', divisor: 2, channels: FEATURES[1], lesson: HALVE },
+  { title: 'Conv ↓2', part: 'Encoder', detail: '3³ conv stride 2', arrangement: 'batch', divisor: 4, channels: HIDDEN, lesson: HALVE },
+  { title: 'Attention', part: 'Encoder', detail: ATTENTION, arrangement: 'batch', divisor: 4, channels: HIDDEN, lesson: ATTEND },
+  { title: 'Conv ↓2', part: 'Encoder', detail: '3³ conv stride 2', arrangement: 'batch', divisor: 8, channels: 2 * HIDDEN, lesson: HALVE },
+  { title: 'Attention', part: 'Encoder', detail: ATTENTION, arrangement: 'batch', divisor: 8, channels: 2 * HIDDEN, lesson: ATTEND },
+  { title: 'Conv ↓2', part: 'Encoder', detail: '3³ conv stride 2', arrangement: 'batch', divisor: 16, channels: 4 * HIDDEN, lesson: HALVE },
+  { title: 'Attention', part: 'Encoder', detail: ATTENTION, arrangement: 'batch', divisor: 16, channels: 4 * HIDDEN, lesson: ATTEND },
+  { title: 'μ, log σ²', part: 'KL head', detail: '1×1 conv, split in two', arrangement: 'batch', divisor: 16, channels: 8 * HIDDEN, kl: 'split',
+    lesson: { action: 'Describe a distribution at each latent position', explanation: 'Two pillars per position: a mean and a log-variance.' } },
+  { title: 'Sample z', part: 'KL head', detail: 'z = μ + σ · ε', arrangement: 'batch', divisor: 16, channels: 4 * HIDDEN, kl: 'sample',
+    lesson: { action: 'Sample the latent', explanation: 'z = μ + σ · ε. Everything the decoder gets passes through here.' } },
+  { title: 'Upsample', part: 'Decoder', detail: '3³ conv, pixel shuffle, 3³ conv', arrangement: 'batch', divisor: 8, channels: 2 * HIDDEN, lesson: UPSAMPLE },
+  { title: 'Attention', part: 'Decoder', detail: ATTENTION, arrangement: 'batch', divisor: 8, channels: 2 * HIDDEN, lesson: ATTEND },
+  { title: 'Upsample', part: 'Decoder', detail: '3³ conv, pixel shuffle, 3³ conv', arrangement: 'batch', divisor: 4, channels: HIDDEN, lesson: UPSAMPLE },
+  { title: 'Attention', part: 'Decoder', detail: `${ATTENTION}, norm, 3³ conv`, arrangement: 'batch', divisor: 4, channels: HIDDEN, lesson: ATTEND },
+  { title: 'Upsample', part: 'Decoder', detail: '1×1 conv, pixel shuffle, 2 residual blocks', arrangement: 'batch', divisor: 2, channels: FEATURES[1], lesson: UPSAMPLE },
+  { title: 'Upsample', part: 'Decoder', detail: '1×1 conv, pixel shuffle', arrangement: 'batch', divisor: 1, channels: FEATURES[0], lesson: UPSAMPLE },
+  { title: 'Output conv', part: 'Decoder', detail: '3³ conv', arrangement: 'batch', divisor: 1, channels: 1,
+    lesson: { action: 'Predict one value per position', explanation: 'A last convolution turns the features into the reconstructed field.' } },
+  { title: 'Inverse rearrange', part: 'Rearrange', detail: 'Crops back in place', arrangement: 'volume', divisor: 1, channels: 1,
+    lesson: { action: 'Put the reconstructed crops back', explanation: 'One volume per variable again, now holding the decoder’s values.' } },
+  { title: 'Latent layout', part: 'Downstream', detail: 'Tadpole-DFT input', arrangement: 'downstream', divisor: 16, channels: 4 * HIDDEN,
+    lesson: { action: 'Bring the variables back together', explanation: 'Crop latents return to their places, the variables stack at each position. Values are unchanged.' } },
 ];
 /** Stage ranges of the explorers: rearrange only, the full autoencoder, sampled latent to downstream layout. */
 const EXPLORER_STAGES = {
@@ -113,8 +125,8 @@ const cropIndex = (element: Element, cropsPerAxis: number) => (element.u * crops
 
 const HIDDEN_SCALE = 1e-3;
 
-function arrange(stage: Stage, toy: Toy, size: Size, elements: Element[]): { positions: Float32Array; scales: Float32Array } {
-  const { batch, channels, crop, factor } = toy;
+function arrange(stage: Stage, toy: Toy, elements: Element[]): { positions: Float32Array; scales: Float32Array } {
+  const { channels, crop, factor } = toy;
   const cropsPerAxis = TOY_EDGE / crop;
   const positions = new Float32Array(elements.length * 3);
   const scales = new Float32Array(elements.length * 3).fill(0.86);
@@ -136,7 +148,7 @@ function arrange(stage: Stage, toy: Toy, size: Size, elements: Element[]): { pos
     const q = coordinate(element, 'q', group);
     const [ci, cj, ck] = (['ci', 'cj', 'ck'] as const).map((name) => coordinate(element, name, group));
     if (stage.arrangement === 'downstream') {
-      const pillar = pillarHeight(stage.channels(size));
+      const pillar = pillarHeight(stage.channels);
       const pitch = pillar + 0.8;
       const spacing = 1.8;
       const width = 0.86 / channels;
@@ -145,7 +157,7 @@ function arrange(stage: Stage, toy: Toy, size: Size, elements: Element[]): { pos
       return;
     }
     const split = stage.kl === 'split';
-    const pillar = pillarHeight(stage.channels(size) / (split ? 2 : 1));
+    const pillar = pillarHeight(stage.channels / (split ? 2 : 1));
     const pitch = Math.max(1, pillar + 0.14);
     const center = (crop - 1) / 2;
     const x = cropIndex(element, cropsPerAxis) * (crop + 1.5) + center + ci - (cells - 1) / 2;
@@ -160,12 +172,11 @@ function arrange(stage: Stage, toy: Toy, size: Size, elements: Element[]): { pos
 
 /* ---------- Shared 3D primitives ---------- */
 
-type Palette = ReturnType<typeof themeColors>;
 /** Mix a linear color toward the surface, 0 keeps it, 1 is the surface. */
 const dim = (color: readonly number[], amount: number, surface: readonly number[]) => color.map((component, index) => component + (surface[index] - component) * amount);
 const linearColor = (rgb: readonly number[]) => COLOR.setRGB(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255, THREE.SRGBColorSpace).toArray();
 /** Learned features are neutral, with contrast measured from solid toward ink in either theme. */
-const featureGray = (palette: Palette, contrast: number, chroma = palette.solid[1]) => oklchToLinear([
+const featureGray = (palette: ThemeColors, contrast: number, chroma = palette.solid[1]) => oklchToLinear([
   palette.solid[0] + Math.sign(palette.ink[0] - palette.solid[0]) * contrast, chroma, palette.solid[2],
 ]);
 
@@ -207,7 +218,7 @@ function Voxels({ positions, scales, colors, onHover, onSelect }: {
       transition.current = { positions: shown.current.positions.slice(), scales: shown.current.scales.slice(), start: performance.now() };
     }
     invalidate();
-  }, [positions, scales]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [positions, scales]);
   useLayoutEffect(() => {
     const instances = mesh.current!;
     for (let index = 0; index < count; index++) instances.setColorAt(index, COLOR.setRGB(colors[index * 3], colors[index * 3 + 1], colors[index * 3 + 2]));
@@ -235,11 +246,15 @@ function Voxels({ positions, scales, colors, onHover, onSelect }: {
   </instancedMesh>;
 }
 
+/** Ink as a three.js color, for outlines and links. */
+function useInkColor() {
+  const { colors } = useTheme();
+  return useMemo(() => new THREE.Color(...oklchToLinear(colors.ink)), [colors]);
+}
+
 /** Box outline from `min` to `max` corner, in ink. */
 function Outline({ min, max }: { min: THREE.Vector3Tuple; max: THREE.Vector3Tuple }) {
-  const { theme } = useTheme();
-  const ink = themeColors(theme).ink;
-  const color = useMemo(() => new THREE.Color(...oklchToLinear(ink)), [ink]);
+  const color = useInkColor();
   return <lineSegments geometry={EDGES} position={min.map((value, axis) => (value + max[axis]) / 2) as THREE.Vector3Tuple}
     scale={min.map((value, axis) => max[axis] - value) as THREE.Vector3Tuple}>
     <lineBasicMaterial color={color} />
@@ -248,9 +263,7 @@ function Outline({ min, max }: { min: THREE.Vector3Tuple; max: THREE.Vector3Tupl
 
 /** Straight segments between consecutive point pairs. */
 function Segments({ points, opacity = 1 }: { points: number[]; opacity?: number }) {
-  const { theme } = useTheme();
-  const ink = themeColors(theme).ink;
-  const color = useMemo(() => new THREE.Color(...oklchToLinear(ink)), [ink]);
+  const color = useInkColor();
   const geometry = useMemo(() => new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(points, 3)), [points]);
   return <lineSegments geometry={geometry} renderOrder={1}>
     <lineBasicMaterial color={color} transparent opacity={opacity} depthTest={false} />
@@ -298,9 +311,8 @@ function Orbit() {
 
 /** Canvas on the panel surface: soft light, orbit on drag, no animation loop. */
 function Scene({ bounds, label, height = 380, children }: { bounds: THREE.Box3; label: string; height?: number; children: ReactNode }) {
-  const { theme } = useTheme();
-  const surface = themeColors(theme).surface;
-  const background = useMemo(() => oklchToLinear(surface), [surface]);
+  const { colors } = useTheme();
+  const background = useMemo(() => oklchToLinear(colors.surface), [colors]);
   return <div role="img" aria-label={label} style={{ height }} className="cursor-grab active:cursor-grabbing">
     <Canvas orthographic frameloop="demand" dpr={[1, 2]} camera={SCENE_CAMERA} gl={{ antialias: true }}>
       <color attach="background" args={background} />
@@ -336,14 +348,14 @@ function Notation({ text }: { text: string }) {
   return <>{base}{subscript && <sub>{subscript}</sub>}{rest}</>;
 }
 
-function shapeOf(stage: Stage, size: Size): Dimension[] {
+function shapeOf(stage: Stage): Dimension[] {
   const symbol = (text: string, axis: Axis, varies: Coordinate[] = []): AxisSymbol => ({ text, axis, varies });
   const batch = symbol('B', 'batch', ['b']);
   const channel = symbol('C', 'channel', ['c']);
   const latent = stage.divisor === DOWNSAMPLING;
   const space = (['X', 'Y', 'Z'] as const).map((name, axis) => ({ name, crop: (['u', 'v', 'w'] as const)[axis], cell: (['ci', 'cj', 'ck'] as const)[axis] }));
   const cropSpace = (name: string, cell: Coordinate) => symbol(latent ? `${name}_l` : stage.divisor > 1 ? `H_${name}/${stage.divisor}` : `H_${name}`, 'spatial', [cell]);
-  const channels = stage.channels(size);
+  const channels = stage.channels;
   const features: Dimension = latent && stage.kl === 'split' ? [symbol('2', 'feature'), symbol('C_l', 'feature', ['q'])]
     : latent ? [symbol('C_l', 'feature', ['q'])] : [symbol(String(channels), 'feature', channels > 1 ? ['q'] : [])];
   if (stage.arrangement === 'volume') return [[batch], [channel], ...space.map(({ name, crop, cell }) => [symbol(name, 'spatial', [crop, cell])])];
@@ -359,7 +371,7 @@ function symbolValue(symbol: AxisSymbol, stage: Stage, toy: Toy): number {
   if (symbol.text === 'C') return toy.channels;
   if (symbol.text === 'N') return cropsPerAxis ** 3;
   if ('UVW'.includes(symbol.text)) return cropsPerAxis;
-  if (symbol.text === 'C_l') return latentChannels(SIZE);
+  if (symbol.text === 'C_l') return LATENT_CHANNELS;
   if ('XYZ'.includes(symbol.text)) return cropsPerAxis * toy.crop;
   if (symbol.text.endsWith('_l')) return toy.crop / toy.factor;
   if (symbol.text.startsWith('H_')) return toy.crop / toyGroup(stage.divisor, toy.factor);
@@ -371,11 +383,11 @@ function symbolValue(symbol: AxisSymbol, stage: Stage, toy: Toy): number {
 type Highlight = { varies: Coordinate[] } | undefined;
 
 /** Field values in viridis while a stage holds values, gray once it holds learned features. */
-function elementColors(elements: Element[], toy: Toy, stage: Stage, selected: number | undefined, highlight: Highlight, palette: Palette): Float32Array {
+function elementColors(elements: Element[], toy: Toy, stage: Stage, selected: number | undefined, highlight: Highlight, palette: ThemeColors): Float32Array {
   const surface = oklchToLinear(palette.surface);
   const fields = toy.batch * toy.channels;
   const group = stage.arrangement === 'downstream' ? toy.factor : toyGroup(stage.divisor, toy.factor);
-  const showsValues = stage.channels(SIZE) === 1;
+  const showsValues = stage.channels === 1;
   const fixed: Coordinate[] = ['b', 'c', 'u', 'v', 'w', 'ci', 'cj', 'ck', 'q'];
   const anchor = selected === undefined ? undefined : elements[selected];
   const colors = new Float32Array(elements.length * 3);
@@ -398,9 +410,8 @@ function elementColors(elements: Element[], toy: Toy, stage: Stage, selected: nu
 
 /** Shape symbols with their toy sizes, hovering a symbol highlights the cubes along its axis. */
 function ShapeReadout({ stage, toy, onHighlight }: { stage: Stage; toy: Toy; onHighlight: (highlight: Highlight) => void }) {
-  const { theme } = useTheme();
-  const palette = themeColors(theme);
-  const shape = shapeOf(stage, SIZE);
+  const { colors: palette } = useTheme();
+  const shape = shapeOf(stage);
   const tuple = (render: (symbol: AxisSymbol) => ReactNode) => <>({shape.map((dimension, index) => <Fragment key={index}>{index > 0 && ', '}
     {dimension.map((symbol, part) => <Fragment key={part}>{part > 0 && '·'}{render(symbol)}</Fragment>)}</Fragment>)})</>;
   return <p className="text-base tabular-nums">
@@ -412,7 +423,7 @@ function ShapeReadout({ stage, toy, onHighlight }: { stage: Stage; toy: Toy; onH
   </p>;
 }
 
-function StageDiagram({ stages, active, size, onSelect }: { stages: number[]; active: number; size: Size; onSelect: (stage: number) => void }) {
+function StageDiagram({ stages, active, onSelect }: { stages: number[]; active: number; onSelect: (stage: number) => void }) {
   const groups: { part: Part; indices: number[] }[] = [];
   for (const index of stages) {
     const previous = groups.at(-1);
@@ -427,11 +438,11 @@ function StageDiagram({ stages, active, size, onSelect }: { stages: number[]; ac
         const edge = CROP / stage.divisor;
         return <Fragment key={index}>
           {position > 0 && <span aria-hidden className="text-ink-faint">→</span>}
-          <button type="button" onClick={() => onSelect(index)} aria-pressed={index === active} title={stage.detail(size)}
+          <button type="button" onClick={() => onSelect(index)} aria-pressed={index === active} title={stage.detail}
             className={`rounded-lg px-2 py-1 text-left ${index === active ? 'bg-ink text-paper' : 'bg-paper hover:bg-hover-strong'}`}>
             <span className="block font-medium">{stage.title}</span>
             <span className={`block tabular-nums ${index === active ? 'text-paper/80' : 'text-ink-muted'}`}>
-              {stage.arrangement === 'batch' ? `${stage.channels(size)} × ${edge}³` : stage.arrangement === 'downstream' ? `C·${latentChannels(size)} × ${edge}³` : `1 × ${CROP}³`}
+              {stage.arrangement === 'batch' ? `${stage.channels} × ${edge}³` : stage.arrangement === 'downstream' ? `C·${LATENT_CHANNELS} × ${edge}³` : `1 × ${CROP}³`}
             </span>
           </button>
         </Fragment>;
@@ -442,50 +453,6 @@ function StageDiagram({ stages, active, size, onSelect }: { stages: number[]; ac
 
 const COUNT_OPTIONS = [1, 2, 3].map((value) => ({ value, label: String(value) }));
 
-/** Plain-language headline and one sentence per stage, shown above the scene. */
-function stageLesson(stage: Stage): { action: string; explanation: string } {
-  if (stage.arrangement === 'downstream') return {
-    action: 'Bring the variables back together',
-    explanation: 'Crop latents return to their places, the variables stack at each position. Values are unchanged.',
-  };
-  if (stage.part === 'Rearrange') {
-    if (stage.title === 'Inverse rearrange') return {
-      action: 'Put the reconstructed crops back',
-      explanation: 'One volume per variable again, now holding the decoder’s values.',
-    };
-    if (stage.arrangement === 'volume') return {
-      action: 'Start with separate scalar fields',
-      explanation: 'Each volume is one variable of one sample.',
-    };
-    if (stage.arrangement === 'crops') return {
-      action: 'Separate the spatial crops',
-      explanation: 'Same values, only moved apart.',
-    };
-    return {
-      action: 'Give every crop its own batch entry',
-      explanation: 'Each crop is now an independent input to the same encoder.',
-    };
-  }
-  if (stage.kl === 'split') return {
-    action: 'Describe a distribution at each latent position',
-    explanation: 'Two pillars per position: a mean and a log-variance.',
-  };
-  if (stage.kl === 'sample') return {
-    action: 'Sample the latent',
-    explanation: 'z = μ + σ · ε. Everything the decoder gets passes through here.',
-  };
-  if (stage.title === 'Attention') return {
-    action: 'Mix information without shrinking the grid',
-    explanation: 'Features change, the shape does not.',
-  };
-  if (stage.part === 'Decoder') return stage.title === 'Output conv'
-    ? { action: 'Predict one value per position', explanation: 'A last convolution turns the features into the reconstructed field.' }
-    : { action: 'Turn features back into spatial detail', explanation: 'Pixel shuffle moves 8 channels into a 2 × 2 × 2 block, each axis doubles.' };
-  return stage.title === 'Embed'
-    ? { action: 'Replace each value with learned features', explanation: 'Same grid, more features per position.' }
-    : { action: 'Halve the grid', explanation: 'A stride-2 convolution: one eighth the positions, more features each.' };
-}
-
 /**
  * Toy tensor animated through `stages`, with Tadpole-B sizes.
  *
@@ -493,8 +460,7 @@ function stageLesson(stage: Stage): { action: string; explanation: string } {
  * - Toy edge 8, crop 4 or 8 and factor 4 stand in for Tadpole's 64³ crops and factor 16
  */
 export function TensorExplorer({ range, diagram = false, label }: { range: keyof typeof EXPLORER_STAGES; diagram?: boolean; label: string }) {
-  const { theme } = useTheme();
-  const palette = themeColors(theme);
+  const { colors: palette } = useTheme();
   const stages = EXPLORER_STAGES[range];
   const [fields, setFields] = useState({ batch: 1, channels: range === 'network' ? 1 : 2 });
   const toy = useMemo<Toy>(() => ({ ...fields, crop: range === 'network' ? 8 : 4, factor: 4 }), [fields, range]);
@@ -503,7 +469,7 @@ export function TensorExplorer({ range, diagram = false, label }: { range: keyof
   const [highlight, setHighlight] = useState<Highlight>(undefined);
   const elements = useMemo(() => toyElements(toy), [toy]);
   const layouts = useMemo(() => stages.map((index) => {
-    const layout = arrange(STAGES[index], toy, SIZE, elements);
+    const layout = arrange(STAGES[index], toy, elements);
     if (range === 'network') {
       // Keep shrinking grids centered while the camera and world scale stay fixed.
       const extent = boundsOf([layout]);
@@ -514,7 +480,7 @@ export function TensorExplorer({ range, diagram = false, label }: { range: keyof
   }), [stages, toy, elements, range]);
   const bounds = useMemo(() => boundsOf(layouts), [layouts]);
   const stage = STAGES[stages[position]];
-  const lesson = stageLesson(stage);
+  const { lesson } = stage;
   const anchor = selected ?? (highlight ? 0 : undefined);
   const colors = useMemo(() => elementColors(elements, toy, stage, anchor, highlight, palette), [elements, toy, stage, anchor, highlight, palette]);
   const updateFields = (next: Partial<typeof fields>) => {
@@ -522,7 +488,7 @@ export function TensorExplorer({ range, diagram = false, label }: { range: keyof
     setSelected(undefined);
   };
   const edge = CROP / stage.divisor;
-  const channels = stage.channels(SIZE);
+  const { channels } = stage;
   const valueRatio = (edge ** 3 * channels) / CROP ** 3;
   return <Panel className="space-y-4 p-4">
     <div className="flex flex-wrap items-start justify-between gap-3">
@@ -547,7 +513,7 @@ export function TensorExplorer({ range, diagram = false, label }: { range: keyof
       {range !== 'rearrange' && <figcaption className="text-xs text-ink-muted">Colored = field value · gray = learned features</figcaption>}
     </figure>
     <div className="space-y-1.5">
-      <p className="text-xs"><span className="font-medium">{stage.title}</span> <span className="text-ink-muted">{stage.detail(SIZE)}</span></p>
+      <p className="text-xs"><span className="font-medium">{stage.title}</span> <span className="text-ink-muted">{stage.detail}</span></p>
       <Slider label="Stage" min={0} max={stages.length - 1} step={1} values={[position]} onChange={([next]) => setPosition(next)} />
     </div>
     {range !== 'network' && <div className="flex flex-wrap items-center gap-x-6 gap-y-3 text-xs">
@@ -555,12 +521,13 @@ export function TensorExplorer({ range, diagram = false, label }: { range: keyof
       <span className="flex items-center gap-2">Variables (C) <Segmented label="Variables per sample" value={fields.channels} onChange={(channels) => updateFields({ channels })} options={COUNT_OPTIONS} /></span>
     </div>}
     {range === 'rearrange' && <ShapeReadout stage={stage} toy={toy} onHighlight={setHighlight} />}
-    {diagram && <Disclosure label="Full network · select a layer"><div className="pt-3"><StageDiagram stages={stages} active={stages[position]} size={SIZE} onSelect={(index) => setPosition(stages.indexOf(index))} /></div></Disclosure>}
+    {diagram && <Disclosure label="Full network · select a layer"><div className="pt-3"><StageDiagram stages={stages} active={stages[position]} onSelect={(index) => setPosition(stages.indexOf(index))} /></div></Disclosure>}
   </Panel>;
 }
 
 /** Configuration of every size. */
 export function SizeTable() {
+  const sizes = Object.keys(SIZES) as Size[];
   const rows: [string, (value: Size) => ReactNode][] = [
     ['Conv widths (FED)', (value) => SIZES[value].features.join(', ')],
     ['Transformer widths', (value) => [1, 2, 4].map((factor) => SIZES[value].hidden * factor).join(', ')],
@@ -570,23 +537,15 @@ export function SizeTable() {
     ['Compression 64³ / (C_l · 4³)', (value) => `${SIZES[value].compression}×`],
     ['Parameters, encoder + decoder', (value) => SIZES[value].parameters],
   ];
-  return <Panel className="max-w-3xl overflow-x-auto">
-    <table className="w-full text-left text-xs tabular-nums">
-      <caption className="sr-only">Tadpole configurations</caption>
-      <thead className="shadow-[inset_0_-1px_0_var(--divider-soft)]">
-        <tr>
-          <th scope="col" className="px-4 py-2 font-medium text-ink-muted">Shared: 2 blocks per stage, {WINDOW}³ windows, MLP ratio 4</th>
-          {(['S', 'B', 'L'] as const).map((value) => <th key={value} scope="col" className="px-4 py-2 text-right font-medium">{value}</th>)}
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map(([name, value]) => <tr key={name}>
-          <th scope="row" className="px-4 py-1.5 font-normal text-ink-muted"><Notation text={name} /></th>
-          {(['S', 'B', 'L'] as const).map((column) => <td key={column} className="px-4 py-1.5 text-right">{value(column)}</td>)}
-        </tr>)}
-      </tbody>
-    </table>
-  </Panel>;
+  return <DataTable className="max-w-3xl" caption="Tadpole configurations" head={<>
+    <th scope="col" className="px-4 py-2 font-medium">Shared: 2 blocks per stage, {WINDOW}³ windows, MLP ratio 4</th>
+    {sizes.map((value) => <th key={value} scope="col" className="px-4 py-2 text-right font-medium text-ink">{value}</th>)}
+  </>}>
+    {rows.map(([name, value]) => <tr key={name}>
+      <th scope="row" className="px-4 py-1.5 font-normal text-ink-muted"><Notation text={name} /></th>
+      {sizes.map((column) => <td key={column} className="px-4 py-1.5 text-right">{value(column)}</td>)}
+    </tr>)}
+  </DataTable>;
 }
 
 /* ---------- Convolution: one kernel, from a 2D slice to a 3D volume to stride 2 ---------- */
@@ -681,7 +640,7 @@ export function ConvolutionScene() {
   const outputPoint: THREE.Vector3Tuple = strided ? [CONV_OFFSET + center[0] / 2 + 2, center[1] / 2 + 2, center[2] / 2 + 2] : [CONV_OFFSET + center[0], center[1], center[2] + (depth ? 0 : 0.35)];
   const reads = OFFSETS.flatMap((dx) => OFFSETS.flatMap((dy) => (depth ? OFFSETS : [0]).map((dz) => inConvGrid(center[0] + dx, center[1] + dy, center[2] + dz))));
   const padded = reads.filter((inside) => !inside).length;
-  const [inputChannels, outputChannels] = SIZES[SIZE].features;
+  const [inputChannels, outputChannels] = FEATURES;
   const outputEdge = CONV_EDGE / stride;
   const outputIndex = center.map((value) => value / stride);
   const axes = depth ? ['x', 'y', 'z'] : ['x', 'y'];
@@ -735,8 +694,7 @@ const ATTENTION_COORDINATES: THREE.Vector3Tuple[] = Array.from({ length: ATTENTI
 
 /** The same query and window expand from a planar teaching example into spatial attention. */
 export function AttentionScene() {
-  const { theme } = useTheme();
-  const palette = themeColors(theme);
+  const { theme, colors: palette } = useTheme();
   const [step, setStep] = useState(0);
   const [edge, setEdge] = useState(8);
   const [query, setQuery] = useState<THREE.Vector3Tuple>([0, 3, 0]);
@@ -749,7 +707,7 @@ export function AttentionScene() {
   const [sx, sy, sz] = start;
   const plane = step === 0;
   const wholeGrid = step === 2;
-  const width = SIZES[SIZE].hidden * 2 ** ATTENTION_LEVELS.indexOf(edge);
+  const width = HIDDEN * 2 ** ATTENTION_LEVELS.indexOf(edge);
   const data = useMemo(() => {
     const baseAngle = ([x, y, z]: readonly number[]) => x * 0.83 + y * 1.37 + z * 0.59;
     // Unit two-component features, distinct query/key rotations and a toy position bias.
@@ -879,10 +837,10 @@ export function AttentionScene() {
       </div>
     </div>
     <Disclosure label="Heads" className="space-y-3">
-      <p>Tadpole-{SIZE} splits the {width} features per point over {SIZES[SIZE].heads} heads. Each head compares the same partners on its own slice of the features, so it can attend to different things.</p>
+      <p>Tadpole-{SIZE} splits the {width} features per point over {HEADS} heads. Each head compares the same partners on its own slice of the features, so it can attend to different things.</p>
       <div className="max-w-xs space-y-1.5">
         <p>Head {head + 1}</p>
-        <Slider label="Attention head" min={0} max={SIZES[SIZE].heads - 1} step={1} values={[head]} onChange={([next]) => setHead(next)} />
+        <Slider label="Attention head" min={0} max={HEADS - 1} step={1} values={[head]} onChange={([next]) => setHead(next)} />
       </div>
     </Disclosure>
   </Panel>;
@@ -901,8 +859,7 @@ const COOLDATA_STAGES = ['Voxels', 'Height collapses', 'Latent cells'] as const;
  * - The stages squeeze the 16 voxel layers into one cell height, then merge each block into its 512-feature pillar
  */
 export function CoolDataLatent({ config, field }: { config: Config; field: Field }) {
-  const { theme } = useTheme();
-  const palette = themeColors(theme);
+  const { colors: palette } = useTheme();
   const [nx, ny, nz] = config.dimensions;
   const [cx, cy, cz] = [nx, ny, nz].map((voxels) => voxels / COARSE);
   const [stage, setStage] = useState(0);
@@ -923,7 +880,7 @@ export function CoolDataLatent({ config, field }: { config: Config; field: Field
     }
     return { values, solid };
   }, [field, nx, ny, cx, cy, cz]);
-  const pillar = pillarHeight(512);
+  const pillar = pillarHeight(LATENT_CHANNELS);
   const layout = useMemo(() => {
     const count = cx * cy * cz;
     const positions = new Float32Array(count * 3);
@@ -989,7 +946,7 @@ export function CoolDataLatent({ config, field }: { config: Config; field: Field
     <div className="space-y-1.5">
       <div className="flex items-baseline justify-between gap-3 text-xs tabular-nums">
         <span>{cell
-          ? <>Latent cell ({cell[0]}, {cell[1]}, 0) ← voxels x {cell[0] * DOWNSAMPLING}–{cell[0] * DOWNSAMPLING + DOWNSAMPLING - 1}, y {cell[1] * DOWNSAMPLING}–{cell[1] * DOWNSAMPLING + DOWNSAMPLING - 1}, z 0–{nz - 1}: {formatCount(DOWNSAMPLING ** 3)} voxels → <span style={{ color: oklchCss(palette.axes.feature) }}>512</span> features</>
+          ? <>Latent cell ({cell[0]}, {cell[1]}, 0) ← voxels x {cell[0] * DOWNSAMPLING}–{cell[0] * DOWNSAMPLING + DOWNSAMPLING - 1}, y {cell[1] * DOWNSAMPLING}–{cell[1] * DOWNSAMPLING + DOWNSAMPLING - 1}, z 0–{nz - 1}: {formatCount(DOWNSAMPLING ** 3)} voxels → <span style={{ color: oklchCss(palette.axes.feature) }}>{LATENT_CHANNELS}</span> features</>
           : <span className="text-ink-muted">Hover a voxel or a pillar for its latent cell. Drawn {COARSE}× coarser per axis, {formatCount(cx * cy * cz)} of {formatCount(nx * ny * nz)} voxels</span>}</span>
         <span className="shrink-0 text-ink-muted">{COOLDATA_STAGES[stage]}</span>
       </div>

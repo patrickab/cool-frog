@@ -8,8 +8,8 @@
   "status": "complete",
   "hub": {
     "repo_id": "the-fruit-dude/cool-frog",
-    "commit_hash_hub": "05530d86cc9a1dc51e8de7b6558ee4245c7ef837",
-    "run_root": "experiments/02_cooldata-value-distribution",
+    "commit_hash_hub": "274c023ac2b0fc6f9c52967eb7732128f862f35a",
+    "run_root": "experiments/01_cooldata-value-distribution",
     "files": [
       "results/design_stats.parquet",
       "results/histograms.npz"

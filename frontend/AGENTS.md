@@ -7,7 +7,7 @@ Clean, modern minimalism. Every style must serve a purpose: structure, state, hi
 - No decoration: no glows, gradients (except colormaps), logos, eyebrow slogans or marketing copy
 - Motion only to show where an element goes or what changes about it. Triggered by the user, never autoplay, auto-rotate or camera flights
 - Text states facts or actions only. Status: "4 of 12 matching designs · seed 42", not "Ready to explore"
-- Data is the only colorful element, UI chrome stays neutral. Exception: the tensor-axis hues in `themeColors` (`lib/colormap.ts`), never for chrome
+- Data is the only colorful element, UI chrome stays neutral. Exception: the tensor-axis hues in `THEME_COLORS` (`lib/colormap.ts`), never for chrome
 - Show what the user controls or needs to read, nothing pinned or highlighted without a stated reason
 - Prefer one control over two (dual-thumb range slider, not min and max sliders)
 - Colors: role tokens from `src/style.css` only, never raw colors in components. `ink-muted` keeps ≥ 4.5:1 contrast on `paper` and `hover-strong`
@@ -20,13 +20,15 @@ Clean, modern minimalism. Every style must serve a purpose: structure, state, hi
 - `TensorScenes`: React Three Fiber, lazy-loaded through `Lazy3D` so three.js stays out of the first page load. Stage shapes in `STAGES` were traced with forward hooks on `tadpole.architecture.p3d`, change them only after re-tracing
 - Views: the subtitle `Select` switches Cool Overview (default), Cool Flowfields, Cool Dataframe and Cool Autoencoder (`#overview`/`#flow`/`#dataset`/`#autoencoder`). All stay mounted (`hidden`) so switching keeps state
 - Training monitor: separate page `monitor.html` (`src/monitor/`), started by `run-frontend.sh --monitor`. Talks only to the local hub `coolfrog.api.monitor_hub` (`/api/hosts`, port 8011): it keeps the SSH hosts in gitignored `monitor-hosts.json`, opens one tunnel per host to the training's `coolfrog.lib.monitor` (port 8020) and passes `/api/hosts/monitor` through. Passwords never reach the page
-- Overview: `TOPICS` form the sidebar via `SIDEBAR_GROUPS`. Step ids are unique across topics, numbering restarts per topic
+- Monitor layout, after gigachad-bot's sidebar: Hosts as a chevron tree group (collapsed, "+" adds a host, Enter confirms), Progress (count, hairline meter, elapsed · left), every other state key as folded groups (nested dicts nest, e.g. `configs`), GPUs last (open), one line per GPU of load, memory GiB and °C over a hairline load meter, a click shows the model. Content: the charts two per row, then one collapsed panel per table (newest 500 rows, fetched while open)
+- Monitor data: polls `/api/hosts/monitor/state`, refetches a charted table only when its row count changed. Charts follow `chartGroups` (mirror of `coolfrog.lib.dashboard.chart_groups`): first column is x, columns sharing a name up to the last `/` share a chart, tables with most rows first. Plotly (`plotly.js-basic-dist-min`, lazy-loaded in `monitor/LineChart.tsx`): raw values, one y axis, log when values span decades (switchable), x from 0 to the largest value of that x column across tables, line gaps at missing/non-finite values, unified hover, zoom kept across polls, SVG export, gigachad-bot's muted hues as rgb, grid `--chart-grid`
+- Overview: `TOPICS` form the sidebar via `SIDEBAR_GROUPS`. Step ids are unique across topics, numbering restarts per topic. Prose lives in `Overview.tsx`, static figures and tables in `OverviewFigures.tsx`, 3D scenes in `TensorScenes`
 - Overview prose with numbers (`SHOWCASES` design ids, zero-shot results, fine-tuning parameter counts) was measured, changing the source means re-measuring. Toy content (convolution blob, attention scores, LoRA matrices) is labeled once as toy, never as real weights
 - Tadpole teaching assumes the reader knows autoencoders. Main text carries the argument, a `Disclosure` answers one "why" or "how"
 
 ## Components
 
-Reuse `src/lib/ui.tsx` before writing new markup: `Panel` (the only container style), `Badge`, `Disclosure`, `Layout`, `Segmented` (exclusive choices, ≤ 6 options), `Select` (never native `<select>`), `Slider`, `RangeControl`, `Colorbar`. `FieldControls` in `Gallery.tsx` drives one gallery's render mode, field, Z slice and legend.
+Reuse `src/lib/ui.tsx` before writing new markup: `Panel` (the only container style), `ErrorPanel`, `SectionHeading` (title, count, Reset), `DataTable`, `Disclosure`, `Layout`, `Segmented` (exclusive choices, ≤ 6 options), `Select` (never native `<select>`), `Slider`, `RangeControl`, `Colorbar`. `FieldControls` in `Gallery.tsx` drives one gallery's render mode, field, Z slice and legend, `SliceControl` is its Z slider.
 
 ## Typography and spacing
 
@@ -37,7 +39,8 @@ Reuse `src/lib/ui.tsx` before writing new markup: `Panel` (the only container st
 
 ## Layout
 
-- Sidebar (`w-72`) at the far left, sticky, holds all view inputs. Long lists go into a collapsed `Disclosure`
+- Sidebar (`w-72`) at the far left, sticky, holds all view inputs, folds away through the panel icon next to the title (stays mounted, remembered in `localStorage`). Long lists go into a collapsed `Disclosure`
+- Theme switch at the top right of the content, gigachad-bot's sun/moon button and bloom transition (`switchColors` in `lib/ui.tsx`, CSS in `style.css`). Icons from `lucide-react`
 - Toolbar above the content: view controls and the color legend left, status text right
 - Gallery: two cards per row, one below `lg`
 - Dataset table fills the viewport height and scrolls endlessly, never paged. Only visible rows render, rows load in `BLOCK_SIZE` blocks from `/api/dataset/rows`, counts and histograms come from `/api/dataset/summary`

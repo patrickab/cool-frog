@@ -6,7 +6,7 @@ Measure the fluid value distribution of every channel over all CoolData designs:
 
 ## Result
 
-All 56916 designs at 800x160x32, the training grid, 4 h 21 min sweep on cube1. Analysis and plots: [`notebooks/02_cooldata_value_distribution.ipynb`](../../notebooks/02_cooldata_value_distribution.ipynb).
+All 56916 designs at 800x160x32, the training grid, 4 h 21 min sweep on cube1. Analysis and plots: [`notebooks/01_cooldata_value_distribution.ipynb`](../../notebooks/01_cooldata_value_distribution.ipynb).
 
 - [`results/excluded_designs.csv`](results/excluded_designs.csv): `design_id` and `reason` of every design breaking the outlier rule
 - [`results/normalization_stats.csv`](results/normalization_stats.csv): `channel`, `transform`, `low`, `high`, read by `NormalizationStats.load`
@@ -28,7 +28,7 @@ All 56916 designs at 800x160x32, the training grid, 4 h 21 min sweep on cube1. A
 
 - 33 entirely: T median 630 to 4701 K, 15 designs reach exactly 100 K or 5000 K, likely the solver's temperature clamps
 - 277 locally: half of them in under 0.008 % of their fluid voxels, 13 in more than 1 %
-- All 26 designs excluded by the 10 % sweep at 1600x320x64 ([`02_cooldata-value-distribution_partial`](../02_cooldata-value-distribution_partial)) are among them
+- All 26 designs excluded by the 10 % sweep at 1600x320x64 ([`01_cooldata-value-distribution_partial`](../01_cooldata-value-distribution_partial)) are among them
 
 Without them the tails collapse, e.g. q0.9999 of T 3524 → 344 K, of k 188 → 72 m²/s².
 
@@ -56,6 +56,6 @@ Compared with the 10 % sweep, the bounds move by up to 8 % of their range: T hig
 
 ## Conclusion
 
-- Exclude the 310 flagged designs as physically implausible, likely diverged simulations. The 10 % sweep caught only the 26 in its share, the full-dataset fine-tuning trained on the other 284 and its train MSE spiked by up to 10³.
+- Exclude the 310 flagged designs as physically implausible, likely diverged simulations. The 10 % sweep caught only the 26 in its share.
 - Keep k and ε on a log scale and normalize every channel by q0.001 / q0.999 of the curated designs, unclipped: the trade-off of the 10 % sweep holds on the full dataset, peaks stay at 41 and below.
 - Training on every host uses this normalization and exclusion list (`PATH_VALUE_DISTRIBUTION` in `src/coolfrog/experiments/autoencoding.py`), the 10 % sweep stays as a record only.

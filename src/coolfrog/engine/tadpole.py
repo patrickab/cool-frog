@@ -1,6 +1,7 @@
 """Tadpole autoencoder wrapper for FlowFields."""
 
 from functools import partial
+import logging
 from pathlib import Path
 
 from einops import rearrange
@@ -18,9 +19,8 @@ from torch.utils.checkpoint import checkpoint
 
 from coolfrog.lib.config import TadpoleConfig
 from coolfrog.lib.datatypes import FlowField, LatentFlowField
-from coolfrog.lib.log import get_logger
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 TADPOLE_REPO = "thuerey-group/Tadpole"
 # must match the `tadpole` code rev in pyproject.toml, weight revisions change state dict keys

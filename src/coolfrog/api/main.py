@@ -3,6 +3,7 @@
 import asyncio
 from collections.abc import Callable
 from functools import cache
+import logging
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -19,7 +20,9 @@ from coolfrog.engine.model_evaluation import nrmse, spectral_loss
 from coolfrog.engine.tadpole import Tadpole
 from coolfrog.lib.config import Grid, TadpoleConfig
 from coolfrog.lib.datatypes import CHANNELS, PARAM_COLUMNS, PARAM_UNITS, SURFACE_CHANNELS, FlowField, NormalizationStats
-from coolfrog.lib.log import get_logger, setup_logging
+from coolfrog.lib.experiment import TABLE_SUFFIXES, experiment_folders, read_meta, result_tables
+from coolfrog.lib.log import setup_logging
+from coolfrog.lib.metrics import frame_payload
 
 app = FastAPI(title="Coolfrog")
 GRID = Grid(latent_scale=1)
@@ -28,7 +31,7 @@ LOCAL_SOURCE = Path("data/cooldata")
 DATASET_COLUMNS = ("design_id", *PARAM_COLUMNS)
 HISTOGRAM_BINS = 40
 setup_logging()
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 # VTK readers share state, so uncached designs queue here and abandoned requests are skipped
 VTK_QUEUE = asyncio.Lock()
 
@@ -170,6 +173,24 @@ class ReconstructionMetrics(BaseModel):
     spectral_loss: list[float]
 
 
+class ExperimentSummary(BaseModel):
+    """One `experiments/<NN>_<name>/` folder, meta fields None before its first run wrote `meta.json`."""
+
+    folder: str
+    title: str
+    status: str | None
+    date: str | None
+    commit_hash_git: str | None
+    tables: list[str]
+
+
+class ResultTable(BaseModel):
+    """Rows of one results table, non-finite floats as null."""
+
+    columns: list[str]
+    rows: list[list[int | float | str | bool | None]]
+
+
 @app.exception_handler(Exception)
 async def server_error(_request: Request, exc: Exception) -> JSONResponse:
     """Show download, voxelization and other server failures in the browser."""
@@ -266,7 +287,7 @@ async def fields(request: Request, design_id: int, channel: Annotated[int, Query
 @app.get("/api/reconstruction/{design_id}", response_class=Response)
 async def reconstruction(request: Request, design_id: int, channel: Annotated[int, Query(ge=0, lt=len(CHANNELS))] = 0) -> Response:
     """Zero-shot Tadpole-B reconstruction of one channel, laid out like `/api/fields` with the simulation's fluid mask."""
-    cached = reconstruction_path(design_id).exists() and CoolData.is_cached(design_id, GRID)
+    cached = is_reconstruction_cached(design_id)
     flow, reconstructed = await _load(request, cached, load_reconstruction, design_id)
     return _field_response(reconstructed[channel], flow, channel)
 
@@ -274,7 +295,7 @@ async def reconstruction(request: Request, design_id: int, channel: Annotated[in
 @app.get("/api/reconstruction/{design_id}/metrics")
 async def reconstruction_metrics(request: Request, design_id: int) -> ReconstructionMetrics:
     """NRMSE and spectral loss of the zero-shot reconstruction, `coolfrog.engine.model_evaluation` definitions."""
-    cached = reconstruction_path(design_id).exists() and CoolData.is_cached(design_id, GRID)
+    cached = is_reconstruction_cached(design_id)
     flow, reconstructed = await _load(request, cached, load_reconstruction, design_id)
     reference = flow.unsqueeze(0)
     stats = NormalizationStats.from_flowfields([reference])
@@ -284,6 +305,41 @@ async def reconstruction_metrics(request: Request, design_id: int) -> Reconstruc
         nrmse=nrmse(prediction, reference).row(0)[1:],
         spectral_loss=spectral_loss(prediction, reference).row(0)[1:],
     )
+
+
+@app.get("/api/experiments")
+def experiments() -> list[ExperimentSummary]:
+    """Every experiment with the tables in its `results/`, live runs included, trackers rewritten while they log."""
+    summaries = []
+    for folder in experiment_folders():
+        meta = read_meta(folder) if (folder / "meta.json").exists() else {}
+        path_readme = folder / "README.md"
+        title = path_readme.read_text().partition("\n")[0].removeprefix("# ") if path_readme.exists() else folder.name
+        summaries.append(
+            ExperimentSummary(
+                folder=folder.name,
+                title=title,
+                status=meta.get("status"),
+                date=meta.get("date"),
+                commit_hash_git=meta.get("commit_hash_git"),
+                tables=result_tables(folder),
+            )
+        )
+    return summaries
+
+
+@app.get("/api/experiments/{folder}/tables/{table:path}")
+def experiment_table(folder: str, table: str) -> ResultTable:
+    """One table of `/api/experiments`, e.g. `latent_scale_2/train.parquet`, non-finite floats as null."""
+    folders = {path.name: path for path in experiment_folders()}
+    if folder not in folders:
+        raise HTTPException(404, f"Unknown experiment {folder}")
+    path_results = (folders[folder] / "results").resolve()
+    path_table = (path_results / table).resolve()
+    if not (path_table.is_relative_to(path_results) and path_table.suffix in TABLE_SUFFIXES and path_table.is_file()):
+        raise HTTPException(404, f"No table {table} in {folder}")
+    frame = pl.read_parquet(path_table) if path_table.suffix == ".parquet" else pl.read_csv(path_table)
+    return ResultTable(**frame_payload(frame))
 
 
 def _field_response(values: torch.Tensor, flow: FlowField, channel: int) -> Response:
@@ -303,6 +359,11 @@ def tadpole() -> Tadpole:
 def reconstruction_path(design_id: int) -> Path:
     voxels_x, voxels_y, voxels_z = GRID.shape
     return CACHE_DIR / f"tadpole_b_zero_shot_{voxels_x}x{voxels_y}x{voxels_z}" / f"{design_id}.pt"
+
+
+def is_reconstruction_cached(design_id: int) -> bool:
+    """Check if both the reconstruction and its simulation load from disk."""
+    return reconstruction_path(design_id).exists() and CoolData.is_cached(design_id, GRID)
 
 
 def load_reconstruction(design_id: int) -> tuple[FlowField, torch.Tensor]:

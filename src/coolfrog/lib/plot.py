@@ -5,7 +5,6 @@ from collections.abc import Sequence
 from matplotlib import colormaps
 from matplotlib.figure import Figure
 import numpy as np
-import pyvista as pv
 
 from coolfrog.lib.config import Grid
 from coolfrog.lib.datatypes import CHANNELS, Channel, FlowField
@@ -47,34 +46,6 @@ def plot_slices(  # noqa: PLR0913
             figure.colorbar(image, ax=axis, fraction=0.02, pad=0.01)
     figure.suptitle(f"design {int(reference.design_id[sample_index])}, z index {z_index}")
     return figure
-
-
-def plot_volume(
-    reference: FlowField,
-    prediction: FlowField,
-    grid: Grid,
-    channel: Channel = Channel.PRESSURE,
-    sample_index: int = 0,
-) -> "pv.Plotter":
-    """Linked 3D orthogonal slices of reference, prediction and |error|, returned unshown."""
-    reference_volumes, prediction_volumes, fluid = _sample_volumes(reference, prediction, sample_index)
-    channel_index = CHANNELS.index(channel)
-    reference_volume, prediction_volume = reference_volumes[channel_index], prediction_volumes[channel_index]
-    color_range = (reference_volume[fluid].min(), reference_volume[fluid].max())
-    panels = (
-        ("reference", reference_volume, "plasma", color_range),
-        ("prediction", prediction_volume, "plasma", color_range),
-        ("|error|", np.abs(prediction_volume - reference_volume), "magma", None),
-    )
-    plotter = pv.Plotter(shape=(1, 3))
-    for column, (title, volume, colormap, limits) in enumerate(panels):
-        label = f"{title} {channel.value}"
-        image = pv.ImageData(dimensions=grid.shape, spacing=grid.spacing)
-        image.point_data[label] = np.where(fluid, volume, np.nan).ravel(order="F")
-        plotter.subplot(0, column)
-        plotter.add_mesh(image.slice_orthogonal(), scalars=label, cmap=colormap, clim=limits, nan_color=SOLID_COLOR)
-    plotter.link_views()
-    return plotter
 
 
 def _sample_volumes(reference: FlowField, prediction: FlowField, sample_index: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

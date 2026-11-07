@@ -13,6 +13,14 @@ wait_for_port() {
   done
 }
 
+# Exit when 127.0.0.1:$1 is already taken, wait_for_port would mistake that listener for ours
+require_free_port() {
+  if (echo > "/dev/tcp/127.0.0.1/$1") 2>/dev/null; then
+    echo "Port $1 is in use, stop the old process first: fuser -k $1/tcp" >&2
+    exit 1
+  fi
+}
+
 case ${1:-} in
   '') api=coolfrog.api.main port=8010 page= ;;
   --monitor) api=coolfrog.api.monitor_hub port=8011 page=monitor.html ;;
@@ -22,8 +30,11 @@ esac
 uv sync
 [[ -d frontend/node_modules ]] || npm --prefix frontend ci
 
-# Stop the whole process group, including npm's vite child, on any exit
-trap 'trap - EXIT INT TERM; kill 0' EXIT INT TERM
+require_free_port "$port"
+require_free_port 5173
+
+# Stop the whole process group, including npm's vite child, on any exit or closed terminal
+trap 'trap - EXIT INT TERM HUP; kill 0' EXIT INT TERM HUP
 
 uv run uvicorn "$api:app" --host 127.0.0.1 --port "$port" --reload --reload-dir src &
 wait_for_port "$port" $! API

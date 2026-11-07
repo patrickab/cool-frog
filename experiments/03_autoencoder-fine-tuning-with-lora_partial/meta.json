@@ -12,8 +12,8 @@
   ],
   "hub": {
     "repo_id": "the-fruit-dude/cool-frog",
-    "commit_hash_hub": "9c3acd0d2e41d51ac79d0fc94b73aac337e7f6c1",
-    "run_root": "experiments/04_autoencoder-fine-tuning-with-lora_partial",
+    "commit_hash_hub": "274c023ac2b0fc6f9c52967eb7732128f862f35a",
+    "run_root": "experiments/03_autoencoder-fine-tuning-with-lora_partial",
     "files": [
       "results/latent_scale_2/adapter.pt",
       "results/latent_scale_2/metrics.parquet",

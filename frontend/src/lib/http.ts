@@ -1,5 +1,5 @@
 /** Fetch `url`, POSTing `body` as JSON when given, throw the server's `detail` or text unless OK. */
-export async function fetchOk(url: string, signal: AbortSignal, body?: unknown): Promise<Response> {
+export async function fetchOk(url: string, { signal, body }: { signal?: AbortSignal; body?: unknown } = {}): Promise<Response> {
   const response = await fetch(url, {
     signal,
     ...(body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
@@ -14,6 +14,6 @@ export async function fetchOk(url: string, signal: AbortSignal, body?: unknown):
   throw new Error(message || `Request failed (${response.status})`);
 }
 
-export async function fetchJson<T>(url: string, signal: AbortSignal, body?: unknown): Promise<T> {
-  return (await fetchOk(url, signal, body)).json() as Promise<T>;
+export async function fetchJson<T>(url: string, init?: { signal?: AbortSignal; body?: unknown }): Promise<T> {
+  return (await fetchOk(url, init)).json() as Promise<T>;
 }
