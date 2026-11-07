@@ -25,7 +25,7 @@ Bulk data matching `experiments/.gitignore` (`*.npz`, `*.parquet`, `*.pt`, `*.sa
 | SIGKILL | stays with status `running`, trackers hold their last save, at most 30 s old | untouched |
 
 - Push failed or crashed run with useful results: `push_experiment(HuggingFaceHub(), folder)` by hand
-- Fresh clone: `pull_experiment(HuggingFaceHub(), folder)` restores the large files of a live or archived run
+- `pull_experiment(HuggingFaceHub(), folder)` copies the large files of a live or archived run into `folder`, overwriting local copies: the Hub is the source of truth. Default: the commit `meta.json` pins, `commit_hash_hub=HEAD` the latest upload at the folder's path, a hash that commit. Notebooks call it at the top
 - Load weights pinned to their run: `hub.download(HubEntry.from_dict(meta["hub"]).file("results/adapter.pt"))`
 
 ## Status, resume and stages

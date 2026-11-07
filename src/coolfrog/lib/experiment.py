@@ -672,16 +672,32 @@ def push_experiment(hub: HuggingFaceHub, folder: Path) -> HubEntry | None:
     return entry
 
 
-def pull_experiment(hub: HuggingFaceHub, folder: Path) -> Path:
-    """Restore the large files of an experiment run from its `meta.json["hub"]`, return `folder`.
+def pull_experiment(hub: HuggingFaceHub, folder: Path, commit_hash_hub: str | None = None) -> Path:
+    """Copy the large files of an experiment run from Hugging Face into `folder`, overwriting local copies, return `folder`.
 
     - `folder` is a live run `experiments/<NN>_<name>/` or an archived one `.../history/<date>_<commit>/`
-    - Every file of the `HubEntry` is downloaded at its commit into `folder / <file>`
+    - `meta.json` stays as is, also when the pulled files come from another commit than it pins
+
+    Parameters
+    ----------
+    commit_hash_hub : str | None
+        None -> the run's own files, at the commit pinned in `meta.json["hub"]`
+        `HEAD` ("main") -> whatever lies at the folder's repository path now
+        str -> whatever lay at the folder's repository path at that Hugging Face commit
     """
     entry = HubEntry.from_dict(read_meta(folder)["hub"])
     if entry.repo_id != hub.repo_id:
         raise ValueError(f"{folder} was pushed to {entry.repo_id}, not {hub.repo_id}")
-    for file in entry.files:
-        (folder / file).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy(hub.download(entry.file(file)), folder / file)
+    if commit_hash_hub is None:
+        files = {file: entry.file(file) for file in entry.files}
+    else:
+        run_root = repository_path(folder)
+        files = {file: HubFile(f"{run_root}/{file}", commit_hash_hub) for file in hub.list_files(run_root, commit_hash_hub)}
+        if not files:
+            raise FileNotFoundError(f"No files under {run_root} at Hugging Face commit {commit_hash_hub}")
+    for file, hub_file in files.items():
+        path_local = folder / file
+        path_local.parent.mkdir(parents=True, exist_ok=True)
+        path_local.unlink(missing_ok=True)  # earlier pulls copied the cache's read-only permissions
+        shutil.copyfile(hub.download(hub_file), path_local)
     return folder

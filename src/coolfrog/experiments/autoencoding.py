@@ -1,6 +1,6 @@
-"""Shared setup of the autoencoding experiments 03 (zero-shot) and 04 (LoRA): data, validation split, metric tables.
+"""Shared setup of the zero-shot and LoRA fine-tuning autoencoding experiments: data, validation split, metric tables.
 
-- Both evaluate the same curated validation designs, 04 sets its own data, model and training configs
+- Both evaluate the same curated validation designs, the fine-tuning sets its own data, model and training configs
 - Imported by the experiment scripts, not an experiment itself
 """
 

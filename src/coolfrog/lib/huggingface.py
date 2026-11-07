@@ -6,8 +6,8 @@
 Examples
 --------
 >>> hub = HuggingFaceHub()  # token from HF_TOKEN
->>> ADAPTER = HubFile("experiments/03_autoencoder-fine-tuning-with-lora/results/latent_scale_4/adapter.pt")  # latest upload
->>> PINNED_ADAPTER = HubFile("experiments/03_autoencoder-fine-tuning-with-lora/results/latent_scale_4/adapter.pt", commit_hash_hub="3f2a9c1")
+>>> ADAPTER = HubFile("experiments/03_autoencoder-fine-tuning-with-lora_partial/results/latent_scale_4/adapter.pt")  # latest upload
+>>> PINNED_ADAPTER = HubFile("experiments/03_autoencoder-fine-tuning-with-lora_partial/results/latent_scale_4/adapter.pt", commit_hash_hub="274c023")
 >>> model.load_adapter(hub.download(PINNED_ADAPTER))
 """  # noqa: E501, the pinned example keeps its full repository path on one line
 
@@ -64,6 +64,12 @@ class HuggingFaceHub:
         """Local path of a file at its commit, downloaded on first access, refetched when the latest upload changed."""
         revision = file.commit_hash_hub or HEAD
         return Path(hf_hub_download(self.repo_id, file.path_in_repo, revision=revision, token=self.token))
+
+    def list_files(self, folder: str, revision: str = HEAD) -> list[str]:
+        """Files under repository `folder` at `revision`, relative to it, without its `history/` archive."""
+        prefix = f"{folder}/"
+        paths = self.api.list_repo_files(self.repo_id, revision=revision)
+        return [path.removeprefix(prefix) for path in paths if path.startswith(prefix) and not path.startswith(f"{prefix}history/")]
 
     def commit(self, uploads: Mapping[str, Path], moves: Mapping[str, str], message: str) -> str:
         """Move and upload files in one commit, return its hash.
