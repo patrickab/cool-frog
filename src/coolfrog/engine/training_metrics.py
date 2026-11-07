@@ -71,9 +71,9 @@ class TrainingMetrics:
         self.updates_per_epoch = config.updates_per_epoch(n_train_designs)
         self.log_every = log_every
         self.tracker = tracker
-        self.tracker.set_progress(TRAINING_PROGRESS, 0, self.updates)
-        if config.epochs is not None:
+        if config.epochs is not None:  # bars show in creation order: epochs, training, validation
             self.tracker.set_progress(EPOCHS_PROGRESS, 0, config.epochs)
+        self.tracker.set_progress(TRAINING_PROGRESS, 0, self.updates)
         self.tracker.update_state({EPOCH_STATE: {"updates": self.updates_per_epoch}})
         self._window = WindowMean()
         self._tick = time.perf_counter()
