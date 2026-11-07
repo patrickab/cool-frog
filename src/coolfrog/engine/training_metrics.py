@@ -35,13 +35,14 @@ class TrainingMetrics:
 
     Examples
     --------
-    >>> metrics = TrainingMetrics(TrainConfig(updates=100))
+    >>> metrics = TrainingMetrics(TrainConfig(updates=100), batch_size=8)
     >>> metrics.log_update(1, mse=0.1, spectral=0.4, kl=3.0, learning_rate=5e-5)
     >>> metrics.to_frame().write_parquet(path_run / "metrics.parquet")
     """
 
-    def __init__(self, config: TrainConfig, title: str = "Fine-tuning", log_every: int = 50) -> None:
+    def __init__(self, config: TrainConfig, batch_size: int, title: str = "Fine-tuning", log_every: int = 50) -> None:
         self.config = config
+        self.batch_size = batch_size
         self.log_every = log_every
         self.tracker = MetricTracker()
         self.tracker.set_progress(TRAINING_PROGRESS, 0, config.updates)
@@ -130,7 +131,7 @@ class TrainingMetrics:
             step_header="Update",
             progress_bars=(TRAINING_PROGRESS, VALIDATION_PROGRESS),
             summary=(
-                f"[dim]batch[/] {config.crops_per_step}x{config.accumulation_steps} crops · "
+                f"[dim]batch[/] {config.designs_per_update} designs per update, {self.batch_size} per pass and GPU · "
                 f"[dim]lr[/] {scientific(config.learning_rate)} ({config.warmup_updates} warmup) · "
                 f"[dim]wd[/] {scientific(config.weight_decay)} · [dim]kl weight[/] {scientific(config.kl_weight)} · "
                 f"[dim]validate every[/] {config.validate_every} · [dim]train values: mean over[/] {self.log_every} updates"

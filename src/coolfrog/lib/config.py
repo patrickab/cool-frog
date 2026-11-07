@@ -177,12 +177,10 @@ class TrainConfig:
     Attributes
     ----------
     updates : int
-        Optimizer steps, each over `crops_per_step * accumulation_steps` crops.
-    crops_per_step : int
-        Single-channel crops per forward/backward pass, bounded by VRAM (8 at 64³ on 12 GB), 1 for whole domains.
-    accumulation_steps : int
-        Passes summed into one update over all GPUs, effective batch = `crops_per_step * accumulation_steps`.
-        Under `torchrun` each GPU runs `accumulation_steps / n_gpus` of them, which must divide evenly.
+        Optimizer steps, each over `designs_per_update` crops.
+    designs_per_update : int
+        Crops summed into one update over all GPUs, one crop per loaded design.
+        Each GPU runs `designs_per_update / (DataConfig.batch_size * n_gpus)` passes, which must divide evenly.
     learning_rate, weight_decay : float
         AdamW, linear warmup over `warmup_updates`, constant afterwards.
     kl_weight : float
@@ -194,8 +192,7 @@ class TrainConfig:
     """
 
     updates: int = 14_000
-    crops_per_step: int = 8
-    accumulation_steps: int = 4
+    designs_per_update: int = 32
     learning_rate: float = 5e-5
     warmup_updates: int = 1000
     weight_decay: float = 1e-15
