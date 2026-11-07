@@ -103,7 +103,7 @@ def fine_tune_autoencoder(  # noqa: PLR0913, model, data, stats, config, checkpo
     - Stop key `q` in the dashboard raises KeyboardInterrupt
     - Under `torchrun` every process runs it on its GPU: rank 0 alone writes, shows the dashboard and serves the monitor
     """
-    metrics = TrainingMetrics(config, train_loader.batch_size, tracker)
+    metrics = TrainingMetrics(config, train_loader.batch_size, len(train_loader.dataset), tracker)
     path_checkpoints.mkdir(parents=True, exist_ok=True)
     with serve_monitor(tracker) if is_main_process() else nullcontext():
         run_dashboard(
@@ -123,6 +123,7 @@ def _train(  # noqa: PLR0913, the arguments of fine_tune_autoencoder plus its me
 ) -> None:
     """Training loop, data-parallel under `torchrun`.
 
+    - `metrics.updates` updates, `TrainConfig.updates` or its `epochs` over the `train_loader` designs
     - `designs_per_update` crops per update in total, `train_loader.batch_size` per pass on each process
     - Passes per process = `designs_per_update / (batch_size * n_gpus)`, so an update is the same on any GPU count
     - Every process starts from rank 0's LoRA initialization, gradients and logged losses are averaged over the processes
@@ -151,7 +152,7 @@ def _train(  # noqa: PLR0913, the arguments of fine_tune_autoencoder plus its me
     validate(0)
     batches = endless(train_loader)
     model.train()
-    for update in range(1, config.updates + 1):
+    for update in range(1, metrics.updates + 1):
         loss_sums = torch.zeros(3, device=device)  # MSE, spectral loss, KL
         for _ in range(passes):
             crops = next(batches).to(device, non_blocking=True)
@@ -169,6 +170,6 @@ def _train(  # noqa: PLR0913, the arguments of fine_tune_autoencoder plus its me
         optimizer.zero_grad(set_to_none=True)
         train_mse, train_spectral, train_kl = (average_values(loss_sums) / passes).tolist()
         metrics.log_update(update, train_mse, train_spectral, train_kl, learning_rate)
-        if update % config.validate_every == 0 or update == config.updates:
+        if update % config.validate_every == 0 or update == metrics.updates:
             logger.info("update %d train MSE %.3e", update, train_mse)
             validate(update)

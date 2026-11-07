@@ -1,6 +1,7 @@
 """Frozen run configuration."""
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 import random
 import socket
@@ -176,8 +177,10 @@ class TrainConfig:
 
     Attributes
     ----------
-    updates : int
-        Optimizer steps, each over `designs_per_update` crops.
+    updates : int | None
+        Optimizer steps, each over `designs_per_update` crops. Exactly one of `updates` and `epochs` is set.
+    epochs : int | None
+        Passes over the training designs, `updates` = `epochs` x `updates_per_epoch`.
     designs_per_update : int
         Crops summed into one update over all GPUs, one crop per loaded design.
         Each GPU runs `designs_per_update / (DataConfig.batch_size * n_gpus)` passes, which must divide evenly.
@@ -189,10 +192,23 @@ class TrainConfig:
         Updates between validation runs, update 0 = zero-shot.
     """
 
-    updates: int = 14_000
+    updates: int | None = None
+    epochs: int | None = None
     designs_per_update: int = 32
     learning_rate: float = 5e-5
     warmup_updates: int = 1000
     weight_decay: float = 1e-15
     kl_weight: float = 1e-6
     validate_every: int = 1000
+
+    def __post_init__(self) -> None:
+        if (self.updates is None) == (self.epochs is None):
+            raise ValueError(f"Set exactly one of updates ({self.updates}) and epochs ({self.epochs})")
+
+    def updates_per_epoch(self, n_train_designs: int) -> int:
+        """Updates to see every training design once, the last one may be partial."""
+        return math.ceil(n_train_designs / self.designs_per_update)
+
+    def total_updates(self, n_train_designs: int) -> int:
+        """`updates`, or `epochs` x `updates_per_epoch` when epochs are set."""
+        return self.updates if self.updates is not None else self.epochs * self.updates_per_epoch(n_train_designs)

@@ -67,7 +67,7 @@ MODEL_CONFIG = TadpoleConfig(
     activation_checkpointing=False,  # latent scale 1 fits without it, saves the recompute in backward
 )
 TRAIN_CONFIG = TrainConfig(
-    updates=10_000,
+    epochs=10,
     designs_per_update=32,
     learning_rate=5e-5,
     warmup_updates=1000,
@@ -82,7 +82,7 @@ def training_row(train: pl.DataFrame, latent_scale: int) -> dict[str, float]:
     last = train.tail(1).row(0, named=True)
     return {
         "latent_scale": latent_scale,
-        "updates": TRAIN_CONFIG.updates,
+        "updates": last["update"],  # resolved from `TRAIN_CONFIG.epochs` when set
         "training time [h]": training_hours(train),
         "final train MSE": last["mse"],
         "final train spectral loss": last["spectral_loss"],
