@@ -1,6 +1,6 @@
 """Run tracking: named tables that grow row by row plus one free-form state dictionary, read by dashboards and the API.
 
-- Tables: one per logging rhythm, e.g. `train` every 50 updates, `validation` one row per design and channel
+- Tables: one per logging rhythm, e.g. `train` every 10 updates, `validation` one row per design and channel
 - State: anything that is not a series over time, e.g. title, configs, progress, debug values
 """
 

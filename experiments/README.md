@@ -61,7 +61,7 @@ tracker.update_state({"debug": {"cuda_allocated_gib": 6.2}})      # anything not
 - Parquet, so the tables go to Hugging Face on success
 - The terminal dashboard and the web monitor show any tracker, the web monitor draws `train` and `validation` (as medians over designs, also for runs without `validation_medians`) with their `plots.py` functions
 - Rank 0 writes, the other ranks get an unpersisted tracker
-- Fine-tuning tables (`TrainingMetrics`, `SCHEMAS`): `train` (`TRAIN_SCHEMA`, means over 50 updates), `validation` (`VALIDATION_SCHEMA`, one row per update, design and channel symbol) and `validation_medians` (`VALIDATION_MEDIANS_SCHEMA`, medians over designs per update and channel, computed on the training host by `plots.validation_medians`)
+- Fine-tuning tables (`TrainingMetrics`, `SCHEMAS`): `train` (`TRAIN_SCHEMA`, means over 10 updates), `validation` (`VALIDATION_SCHEMA`, one row per update, design and channel symbol) and `validation_medians` (`VALIDATION_MEDIANS_SCHEMA`, medians over designs per update and channel, computed on the training host by `plots.validation_medians`)
 
 Live API of a training (`coolfrog.lib.monitor`, through the hub as `/api/hosts/monitor/<path>?address=...`):
 

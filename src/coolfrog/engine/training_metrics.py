@@ -1,13 +1,16 @@
 """Tables of one fine-tuning run: windowed training means, validation per design and channel, and its medians over designs."""
 
-from collections.abc import Collection, Iterator, Mapping
+from collections.abc import Iterator, Mapping
 import logging
 import time
 
 import polars as pl
+from torch.utils.data import DataLoader
 
 from coolfrog.engine.model_evaluation import MSE, SPECTRAL_LOSS
 from coolfrog.lib.config import TrainConfig
+from coolfrog.lib.datatypes import FlowField
+from coolfrog.lib.distributed import all_gather_objects, world_size
 from coolfrog.lib.metrics import Tracker, WindowMean
 from coolfrog.lib.plots import (
     CHANNEL_LABELS,
@@ -48,7 +51,7 @@ class TrainingMetrics:
     - `train` table (`TRAIN_SCHEMA`): training values averaged over `log_every` updates, plus the final one
     - `validation` table (`VALIDATION_SCHEMA`): every metric per update, design and channel
     - `validation_medians` table (`VALIDATION_MEDIANS_SCHEMA`): their medians over designs per update and channel
-    - Progress bars: updates done, designs done of the running or last validation
+    - Progress bars: updates done, designs done over all GPUs of the running or last validation
 
     Examples
     --------
@@ -56,7 +59,7 @@ class TrainingMetrics:
     >>> metrics.log_update(1, mse=0.1, spectral=0.4, kl=3.0, learning_rate=5e-5)
     """
 
-    def __init__(self, config: TrainConfig, batch_size: int, tracker: Tracker, log_every: int = 50) -> None:
+    def __init__(self, config: TrainConfig, batch_size: int, tracker: Tracker, log_every: int = 10) -> None:
         self.config = config
         self.batch_size = batch_size
         self.log_every = log_every
@@ -76,14 +79,21 @@ class TrainingMetrics:
         if update % self.log_every == 0 or update == self.config.updates:
             self.tracker.append(TRAIN, {"update": update, **self._window.flush()})
 
-    def track_validation[T](self, designs: Collection[T]) -> Iterator[T]:
-        """Yield validation `designs` while advancing the validation bar, training clock paused, KeyboardInterrupt on stop."""
+    def track_validation(self, loader: DataLoader[FlowField]) -> Iterator[FlowField]:
+        """Yield this GPU's validation batches while advancing the validation bar, training clock paused, KeyboardInterrupt on stop.
+
+        - Bar counts designs over all GPUs: the total gathered once, done = this GPU's designs x GPUs, exact at the end
+        """
+        total = sum(all_gather_objects(len(loader.dataset)))  # every rank calls this, `evaluate` also gathers on all ranks
         self.tracker.pause_progress(TRAINING_PROGRESS)
         try:
-            self.tracker.set_progress(VALIDATION_PROGRESS, 0, len(designs))
-            for completed, design in enumerate(designs, start=1):
-                yield design
-                self.tracker.set_progress(VALIDATION_PROGRESS, completed, len(designs))
+            self.tracker.set_progress(VALIDATION_PROGRESS, 0, total)
+            completed = 0
+            for batch in loader:
+                yield batch
+                completed += batch.batch_size[0]
+                self.tracker.set_progress(VALIDATION_PROGRESS, min(completed * world_size(), total), total)
+            self.tracker.set_progress(VALIDATION_PROGRESS, total, total)
         finally:
             self.tracker.resume_progress(TRAINING_PROGRESS)
 

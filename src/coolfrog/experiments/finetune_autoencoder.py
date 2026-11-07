@@ -3,7 +3,7 @@
 `--resume` continues an unfinished run. On several GPUs: `torchrun --standalone --nproc_per_node <n_gpus> -m <this module>`.
 One `Stage` per latent scale, `results/latent_scale_<n>/`:
 
-- `train.parquet` (Hugging Face): train MSE, spectral loss, KL, learning rate and seconds per update, mean over 50 updates
+- `train.parquet` (Hugging Face): train MSE, spectral loss, KL, learning rate and seconds per update, mean over 10 updates
 - `validation.parquet` (Hugging Face): NRMSE, MSE and spectral loss per validation update, design and channel
 - `validation_medians.parquet` (Hugging Face): medians over designs of `validation.parquet` per validation update and channel
 - `state.json`: title and configs, progress of the last save, all tables rewritten while training runs
@@ -64,7 +64,7 @@ MODEL_CONFIG = TadpoleConfig(
     decoder_state=LORA_RANK,
     encoder_crop_size=None,  # whole domains in training and validation, no tiles
     max_internal_batchsize=1,  # one scalar field per encoder/decoder call
-    activation_checkpointing=True,  # whole-domain backward needs it to fit in GPU memory
+    activation_checkpointing=False,  # latent scale 1 fits without it, saves the recompute in backward
 )
 TRAIN_CONFIG = TrainConfig(
     updates=10_000,
@@ -73,7 +73,7 @@ TRAIN_CONFIG = TrainConfig(
     warmup_updates=1000,
     weight_decay=1e-15,
     kl_weight=1e-6,
-    validate_every=1000,
+    validate_every=200,
 )
 
 
