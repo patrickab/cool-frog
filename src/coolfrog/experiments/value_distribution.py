@@ -19,7 +19,7 @@ GOAL = (
 )
 HYPOTHESIS = None
 
-DATA_CONFIG = DataConfig(grid=Grid(latent_scale=4), batch_size=1, num_workers=8)  # ~3.3 GB peak per worker
+DATA_CONFIG = DataConfig(grid=Grid(latent_scale=2), batch_size=1, num_workers=8)  # 800x160x32, the training grid
 N_BINS = 2048
 QUANTILES = (1e-4, 1e-3, 1e-2, 0.5, 0.99, 0.999, 0.9999)
 # Outlier rule: a design is excluded when any fluid voxel breaks it
