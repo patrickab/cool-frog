@@ -1,4 +1,4 @@
-"""Tables of one fine-tuning run: windowed training means, validation per design and channel, its aggregates."""
+"""Tables of one fine-tuning run: windowed training means and validation per design and channel."""
 
 from collections.abc import Collection, Iterator, Mapping
 import logging
@@ -8,59 +8,37 @@ import polars as pl
 
 from coolfrog.engine.model_evaluation import MSE, SPECTRAL_LOSS
 from coolfrog.lib.config import TrainConfig
-from coolfrog.lib.datatypes import CHANNELS
 from coolfrog.lib.metrics import Tracker, WindowMean
+from coolfrog.lib.plots import CHANNEL_LABELS, TRAIN, TRAIN_SCHEMA, VALIDATION, VALIDATION_SCHEMA
 
 logger = logging.getLogger(__name__)
 
-TRAIN, VALIDATION, VALIDATION_AGGREGATES = "train", "validation", "validation_aggregates"  # table names
-STATISTICS = ("median", "mean")  # aggregates over designs, median first as a few bad designs dominate the mean
+SCHEMAS = {TRAIN: TRAIN_SCHEMA, VALIDATION: VALIDATION_SCHEMA}  # tracker schemas of the tables, see `Tracker`
 TRAINING_PROGRESS, VALIDATION_PROGRESS = "Training", "Validation"  # progress bar labels
 
 
-def aggregate_name(metric: str, statistic: str, channel: str) -> str:
-    """Column of `validation_aggregates`, e.g. `nrmse/median/p` for channel `p [Pa]`, one chart per `nrmse/median`.
-
-    - Without the unit, its `/` (`m/s`) would split the chart group
-    """
-    return f"{metric}/{statistic}/{channel.partition(' [')[0]}"
-
-
 def validation_rows(update: int, per_design_tables: Mapping[str, pl.DataFrame]) -> pl.DataFrame:
-    """`evaluate` tables as one row per design and channel: `update`, `design_id`, `channel`, one column per metric."""
-    channels = [channel.value for channel in CHANNELS]
+    """`evaluate` tables as `VALIDATION_SCHEMA` rows, one per design and channel, channels as symbols like `p`."""
+    symbols = {label: symbol for symbol, label in CHANNEL_LABELS.items()}
     long_tables = [
-        table.unpivot(on=channels, index="design_id", variable_name="channel", value_name=metric)
+        table.rename(symbols).unpivot(on=list(symbols.values()), index="design_id", variable_name="channel", value_name=metric)
         for metric, table in per_design_tables.items()
     ]  # same design and channel order in every table, `evaluate` sorts by design_id
     metrics = pl.concat([long_tables[0], *(table.drop("design_id", "channel") for table in long_tables[1:])], how="horizontal")
-    return metrics.select(pl.lit(update).alias("update"), pl.all())
-
-
-def aggregate_row(update: int, rows: pl.DataFrame, metrics: Collection[str]) -> dict[str, float]:
-    """One `validation_aggregates` row: every statistic of every metric per channel over the designs of `rows`."""
-    per_channel = rows.group_by("channel", maintain_order=True).agg(
-        getattr(pl.col(metric), statistic)().alias(f"{metric}/{statistic}") for metric in metrics for statistic in STATISTICS
-    )
-    aggregates: dict[str, float] = {"update": update}
-    for record in per_channel.iter_rows(named=True):
-        channel = record.pop("channel")
-        aggregates |= {aggregate_name(*name.split("/"), channel): value for name, value in record.items()}
-    return aggregates
+    metrics = metrics.with_columns(update=pl.lit(update))
+    return metrics.select(pl.col(name).cast(dtype) for name, dtype in VALIDATION_SCHEMA.items())
 
 
 class TrainingMetrics:
     """Logging of one `fine_tune_autoencoder` run into `tracker`, keyed by update.
 
-    - `train` table: training values averaged over `log_every` updates, plus the final one
-    - `validation` table: every metric per update, design and channel, aggregates are computed from it
-    - `validation_aggregates` table: median and mean over the designs per metric and channel, one row per validation,
-      computed once when the validation ends
+    - `train` table (`TRAIN_SCHEMA`): training values averaged over `log_every` updates, plus the final one
+    - `validation` table (`VALIDATION_SCHEMA`): every metric per update, design and channel, aggregated by its readers
     - Progress bars: updates done, designs done of the running or last validation
 
     Examples
     --------
-    >>> metrics = TrainingMetrics(TrainConfig(updates=100), batch_size=8, tracker=Tracker())
+    >>> metrics = TrainingMetrics(TrainConfig(updates=100), batch_size=8, tracker=Tracker(schemas=SCHEMAS))
     >>> metrics.log_update(1, mse=0.1, spectral=0.4, kl=3.0, learning_rate=5e-5)
     """
 
@@ -96,17 +74,13 @@ class TrainingMetrics:
             self.tracker.resume_progress(TRAINING_PROGRESS)
 
     def log_validation(self, update: int, per_design_tables: Mapping[str, pl.DataFrame]) -> None:
-        """Append every design and channel of the `evaluate` tables, then their aggregates.
+        """Append every design and channel of the `evaluate` tables, log the channel mean of their medians over designs.
 
         - Resets the update timer, validation time does not count as update time
         """
         rows = validation_rows(update, per_design_tables)
-        aggregates = aggregate_row(update, rows, per_design_tables)
         self.tracker.extend(VALIDATION, rows)
-        self.tracker.append(VALIDATION_AGGREGATES, aggregates)
-        channel_mean = {
-            metric: sum(aggregates[aggregate_name(metric, "median", channel.value)] for channel in CHANNELS) / len(CHANNELS)
-            for metric in (MSE, SPECTRAL_LOSS)
-        }
-        logger.info("update %d validation median MSE %.3e spectral loss %.3e, mean over channels", update, *channel_mean.values())
+        medians = rows.group_by("channel").agg(pl.col(MSE, SPECTRAL_LOSS).median())
+        channel_mean = medians.select(pl.col(MSE, SPECTRAL_LOSS).mean()).row(0)
+        logger.info("update %d validation median MSE %.3e spectral loss %.3e, mean over channels", update, *channel_mean)
         self._tick = time.perf_counter()

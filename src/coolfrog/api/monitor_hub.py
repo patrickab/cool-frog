@@ -11,6 +11,7 @@ from collections import defaultdict
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+import http
 import http.client
 import json
 import logging
@@ -28,8 +29,10 @@ import urllib.request
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
+import polars as pl
 from pydantic import BaseModel, Field
 
+from coolfrog.lib import plots
 from coolfrog.lib.log import setup_logging
 from coolfrog.lib.monitor import MONITOR_PORT
 
@@ -192,15 +195,12 @@ def remove_host(target: HostAddress) -> list[HostInfo]:
     return save_hosts([host for host in load_hosts() if host.address != target.address])
 
 
-@app.get("/api/hosts/monitor/{path:path}")
-def monitor(request: Request, path: str, address: str) -> Response:
-    """`coolfrog.lib.monitor` endpoint `/api/<path>` of the training on `address`, passed through unchanged.
+def forward(address: str, path: str, query: str = "") -> Response:
+    """`coolfrog.lib.monitor` endpoint `/api/<path>` of the training on `address`, its errors passed through, 502 without training.
 
-    - e.g. `/api/hosts/monitor/state?address=...`, `/api/hosts/monitor/tables/train?address=...&tail=200`
-    - Connects on the first poll and reconnects once SSH exited, e.g. after the host rebooted
+    Connects on the first request and reconnects once SSH exited, e.g. after the host rebooted.
     """
     port = tunnel_port(find_host(address))
-    query = urllib.parse.urlencode([(key, value) for key, value in request.query_params.multi_items() if key != "address"])
     url = f"http://127.0.0.1:{port}/api/{urllib.parse.quote(path)}" + (f"?{query}" if query else "")
     try:
         with urllib.request.urlopen(url, timeout=REQUEST_TIMEOUT_SECONDS) as response:
@@ -209,3 +209,28 @@ def monitor(request: Request, path: str, address: str) -> Response:
         return Response(error.read(), status_code=error.code, media_type="application/json")
     except (urllib.error.URLError, http.client.HTTPException, ConnectionError, TimeoutError) as error:
         raise HTTPException(502, f"No training serves the monitor on {address} port {MONITOR_PORT}") from error
+
+
+@app.get("/api/hosts/monitor/figures/{table:path}.svg")
+def table_figure(table: str, address: str, dark: bool = False) -> Response:
+    """`plots.figure_for_table` of the training's `table` on `address` as SVG, 404 when the table has nothing to plot."""
+    forwarded = forward(address, f"tables/{table}")
+    if forwarded.status_code != http.HTTPStatus.OK:
+        return forwarded
+    payload = json.loads(forwarded.body)
+    frame = pl.DataFrame(payload["rows"], schema=payload["columns"], orient="row", infer_schema_length=None)  # columns may start null
+    with plots.plot_theme(dark):
+        figure = plots.figure_for_table(table, frame)
+        if figure is None:
+            raise HTTPException(404, f"Nothing to plot in table {table}")
+        return Response(plots.svg_bytes(figure), media_type="image/svg+xml")
+
+
+@app.get("/api/hosts/monitor/{path:path}")
+def monitor(request: Request, path: str, address: str) -> Response:
+    """`coolfrog.lib.monitor` endpoint `/api/<path>` of the training on `address`, passed through unchanged.
+
+    e.g. `/api/hosts/monitor/state?address=...`, `/api/hosts/monitor/tables/train?address=...&tail=200`
+    """
+    query = urllib.parse.urlencode([(key, value) for key, value in request.query_params.multi_items() if key != "address"])
+    return forward(address, path, query)

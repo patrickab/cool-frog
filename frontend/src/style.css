@@ -22,8 +22,6 @@
   --danger: oklch(52% 0.22 25);
   /* Solid voxels use the same role in canvas and WebGL renderers. */
   --solid: oklch(84% 0.012 85);
-  /* Plot gridlines: opaque, about 12% ink over surface, Plotly can't parse color-mix() */
-  --chart-grid: rgb(225, 223, 218);
 
   /* Derived */
   --divider: color-mix(in oklab, var(--ink) 24%, transparent);
@@ -54,7 +52,6 @@
   --surface-elevated: oklch(19% 0.008 70);
   --danger: oklch(68% 0.20 25);
   --solid: oklch(40% 0.008 70);
-  --chart-grid: rgb(47, 44, 40);
   --divider: color-mix(in oklab, var(--ink) 22%, transparent);
   --divider-soft: color-mix(in oklab, var(--ink) 11%, transparent);
   --shadow-sm: 0 1px 2px color-mix(in oklab, var(--shadow-color) 40%, transparent),

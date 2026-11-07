@@ -69,10 +69,14 @@ class Progress:
 
 
 class Table:
-    """Rows stored per column, a column first seen in a later row is None in the earlier ones."""
+    """Rows stored per column, a column first seen in a later row is None in the earlier ones.
 
-    def __init__(self) -> None:
-        self._columns: dict[str, list[Any]] = {}
+    - `schema` given -> its columns from the start, `to_frame` returns exactly it
+    """
+
+    def __init__(self, schema: pl.Schema | None = None) -> None:
+        self.schema = schema
+        self._columns: dict[str, list[Any]] = {name: [] for name in schema or ()}
         self._types: dict[str, str] = {}
         self.rows = 0
 
@@ -98,13 +102,16 @@ class Table:
     def to_frame(self, tail: int | None = None, start: int = 0) -> pl.DataFrame:
         if tail is not None:
             start = max(self.rows - tail, start)
-        return pl.DataFrame({name: values[start:] for name, values in self._columns.items()}, strict=False)
+        columns = {name: values[start:] for name, values in self._columns.items()}
+        return pl.DataFrame(columns, schema=self.schema) if self.schema is not None else pl.DataFrame(columns, strict=False)
 
 
 class Tracker:
     """Thread-safe tables and state of one run, saved into `folder` while it logs.
 
     - `append` adds one row to a table, created on first use, `extend` adds the rows of a frame
+    - `schemas` (table name -> schema) fix the columns and types of those tables: `append` and `extend` raise ValueError
+      for a row with other columns or a value the schema cannot hold, `frame` returns exactly the schema
     - `update_state` sets top-level state keys, `snapshot` is a JSON-ready copy with progress and table infos
     - `set_progress`, `pause_progress`, `resume_progress` drive progress bars, shown as the snapshot's `progress`
     - `request_stop` makes the next `append` or `set_progress` raise `KeyboardInterrupt`, the cancellation point of a
@@ -120,8 +127,11 @@ class Tracker:
     >>> tracker.frame("train")
     """
 
-    def __init__(self, folder: Path | None = None, state: Mapping[str, Any] | None = None) -> None:
+    def __init__(
+        self, folder: Path | None = None, state: Mapping[str, Any] | None = None, schemas: Mapping[str, pl.Schema] | None = None
+    ) -> None:
         self.folder = folder
+        self.schemas = dict(schemas or {})
         self._lock = threading.Lock()
         self._save_lock = threading.Lock()
         self._saved_at = time.monotonic()
@@ -136,11 +146,14 @@ class Tracker:
         self.extend(table, [row])
 
     def extend(self, table: str, rows: pl.DataFrame | Sequence[Mapping[str, Any]]) -> None:
-        """Add `rows` to `table`, KeyboardInterrupt after `request_stop`."""
+        """Add `rows` to `table`, KeyboardInterrupt after `request_stop`, ValueError for rows not matching its schema."""
         self.raise_if_stopped()
-        rows = rows.iter_rows(named=True) if isinstance(rows, pl.DataFrame) else rows
+        rows = list(rows.iter_rows(named=True)) if isinstance(rows, pl.DataFrame) else rows
+        schema = self.schemas.get(table)
+        if schema is not None:
+            check_rows(table, rows, schema)
         with self._lock:
-            target = self._tables.setdefault(table, Table())
+            target = self._tables.setdefault(table, Table(schema))
             for row in rows:
                 target.append(row)
             self.version += 1
@@ -256,6 +269,17 @@ def _checked_state(values: Mapping[str, Any]) -> dict[str, Any]:
     if reserved:
         raise ValueError(f"Reserved state keys {reserved}, the snapshot sets them")
     return dict(values)
+
+
+def check_rows(table: str, rows: Sequence[Mapping[str, Any]], schema: pl.Schema) -> None:
+    """ValueError for a row of `table` whose columns differ from `schema` or holding a value of another type."""
+    for row in rows:
+        if row.keys() != schema.keys():
+            raise ValueError(f"Row of table {table!r} has columns {list(row)}, its schema {list(schema)}")
+    try:  # column-wise like `Table.to_frame`, rows of dicts would turn an unknown enum value into null
+        pl.DataFrame({name: [row[name] for row in rows] for name in schema}, schema=schema)
+    except (TypeError, pl.exceptions.PolarsError) as error:
+        raise ValueError(f"Row of table {table!r} does not fit its schema {schema}") from error
 
 
 def write_atomically(path: Path, write: Callable[[Path], object]) -> None:

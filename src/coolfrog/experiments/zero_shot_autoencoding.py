@@ -29,7 +29,7 @@ from coolfrog.experiments.autoencoding import (
 from coolfrog.lib.experiment import run_experiment, write_configs
 from coolfrog.lib.huggingface import HuggingFaceHub
 from coolfrog.lib.log import track
-from coolfrog.lib.plot import plot_slices
+from coolfrog.lib.plots import plot_slices
 
 TITLE = "Zero-shot Tadpole reconstruction on CoolData"
 GOAL = (

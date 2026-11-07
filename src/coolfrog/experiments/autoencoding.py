@@ -35,8 +35,8 @@ def curated_metadata() -> CoolMetadata:
 
 
 def data_config(latent_scale: int) -> DataConfig:
-    """Grid of `latent_scale`, 2 designs per training pass."""
-    return DataConfig(grid=Grid(latent_scale=latent_scale), batch_size=2, num_workers=6)
+    """Grid of `latent_scale`, 4 designs per training pass."""
+    return DataConfig(grid=Grid(latent_scale=latent_scale), batch_size=4, num_workers=6)
 
 
 def tadpole_config(latent_scale: int, finetune_state: FinetuneState) -> TadpoleConfig:

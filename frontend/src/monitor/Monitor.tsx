@@ -1,11 +1,10 @@
 import { useEffect, useState } from 'react';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { Plus } from 'lucide-react';
-import { addHost, fetchHosts, fetchState, fetchTable, removeHost } from './api';
-import type { Cell, Gpu, HostInfo, MonitorState, ProgressState, TableData, TableInfo } from './api';
-import { LineChart } from './LineChart';
+import { addHost, fetchHosts, fetchState, fetchTable, figureUrl, removeHost } from './api';
+import type { Gpu, HostInfo, MonitorState, ProgressState, TableData, TableInfo } from './api';
 import { errorMessage, formatCount } from '../lib/format';
-import { ErrorPanel, Layout, Panel } from '../lib/ui';
+import { ErrorPanel, HEADING, Layout, Panel, useTheme } from '../lib/ui';
 
 const POLL_MILLISECONDS = 2000;
 const SELECTED_HOST_KEY = 'coolfrog-monitor-host';
@@ -13,45 +12,19 @@ const MIB_PER_GIB = 1024;
 const TABLE_TAIL = 500; // rows a table panel shows, the per-design validation table grows by ~900 per validation
 const SHOWN_ELSEWHERE = new Set(['title', 'progress', 'tables', 'gpus']); // state keys with their own sidebar block
 
-/**
- * Charts of one table: (group, its columns), the first column is x, none when a column holds strings or booleans.
- * Mirrors `coolfrog.lib.dashboard.chart_groups`: `mse` gets its own chart, `nrmse/median/Vx` joins `nrmse/median`, `/loss` stays whole.
- */
-function chartGroups(info: TableInfo): [string, string[]][] {
-  if (Object.values(info.columns).some((type) => type === 'str' || type === 'bool')) return [];
-  const groups = new Map<string, string[]>();
-  for (const name of Object.keys(info.columns).slice(1)) {
-    const cut = name.lastIndexOf('/');
-    const group = cut > 0 ? name.slice(0, cut) : name;
-    groups.set(group, [...(groups.get(group) ?? []), name]);
-  }
-  return [...groups];
-}
+type Monitored = { state?: MonitorState; error?: string };
 
-type Monitored = { state?: MonitorState; tables: Record<string, TableData>; error?: string };
-
-/**
- * State of the training on `host` every `POLL_MILLISECONDS`, plus every charted table, refetched only when its row count changed.
- * Keeps the last data while the host is unreachable.
- */
+/** State of the training on `host` every `POLL_MILLISECONDS`, keeps the last state while the host is unreachable. */
 function useMonitor(host: string | undefined): Monitored {
-  const [result, setResult] = useState<Monitored>({ tables: {} });
+  const [result, setResult] = useState<Monitored>({});
   useEffect(() => {
-    setResult({ tables: {} });
+    setResult({});
     if (!host) return;
     const controller = new AbortController();
-    const tables: Record<string, TableData> = {};
-    const fetchedRows: Record<string, number> = {};
     let timer: number | undefined;
     const poll = async () => {
       try {
-        const state = await fetchState(host, controller.signal);
-        const stale = Object.entries(state.tables).filter(([name, info]) => chartGroups(info).length > 0 && fetchedRows[name] !== info.rows);
-        await Promise.all(stale.map(async ([name, info]) => {
-          tables[name] = await fetchTable(host, name, controller.signal);
-          fetchedRows[name] = info.rows;
-        }));
-        setResult({ state, tables: { ...tables } });
+        setResult({ state: await fetchState(host, controller.signal) });
       } catch (error) {
         if (controller.signal.aborted) return;
         setResult((previous) => ({ ...previous, error: errorMessage(error) }));
@@ -62,6 +35,18 @@ function useMonitor(host: string | undefined): Monitored {
     return () => { controller.abort(); window.clearTimeout(timer); };
   }, [host]);
   return result;
+}
+
+/** The hub's matplotlib figure of one table, reloaded when rows were added, hidden when the table has nothing to plot. */
+function TableFigure({ host, name, rows }: { host: string; name: string; rows: number }) {
+  const { theme } = useTheme();
+  const url = figureUrl(host, name, theme === 'dark', rows);
+  const [failedUrl, setFailedUrl] = useState<string>();
+  if (failedUrl === url) return null;
+  return <Panel className="space-y-2 p-4">
+    <h2 className={HEADING}>{name}</h2>
+    <img src={url} alt={`${name} curves`} onError={() => setFailedUrl(url)} className="h-auto w-full" />
+  </Panel>;
 }
 
 /** Hairline meter under a GPU or progress row, as gigachad-bot's usage meters. */
@@ -276,19 +261,6 @@ function HostsSection({ selected, onSelect }: { selected: string | undefined; on
   </SidebarSection>;
 }
 
-/** Largest x per x-column name over the fetched charted tables, charts sharing an x column span 0 to it so validations line up with training. */
-function lastSteps(tables: Record<string, TableData>): Record<string, number> {
-  const steps: Record<string, number> = {};
-  for (const table of Object.values(tables)) {
-    const xName = table.columns[0];
-    steps[xName] = table.rows.reduce((largest, row) => {
-      const step = Number(row[0]);
-      return Number.isFinite(step) && step > largest ? step : largest;
-    }, steps[xName] ?? 0);
-  }
-  return steps;
-}
-
 export default function Monitor() {
   const [host, setHost] = useState<string | undefined>(() => {
     try { return localStorage.getItem(SELECTED_HOST_KEY) ?? undefined; } catch { return undefined; }
@@ -296,20 +268,10 @@ export default function Monitor() {
   useEffect(() => {
     try { if (host) localStorage.setItem(SELECTED_HOST_KEY, host); } catch { /* Keep the in-memory selection when storage is unavailable. */ }
   }, [host]);
-  const { state, tables, error } = useMonitor(host);
+  const { state, error } = useMonitor(host);
   useEffect(() => { document.title = state?.title ? `Coolfrog · ${state.title}` : 'Coolfrog · Training monitor'; }, [state?.title]);
   const progress = Object.entries(state?.progress ?? {});
-  const xMaxes = lastSteps(tables);
-  // Most rows first, as `coolfrog.lib.dashboard.charted_tables`: `train` before `validation_aggregates`
-  const charted = Object.entries(state?.tables ?? {}).sort(([, first], [, second]) => second.rows - first.rows);
-  const charts = charted.flatMap(([name, info]) => {
-    const table = tables[name];
-    if (!table) return [];
-    const column = (columnName: string) => table.rows.map((row): Cell => row[table.columns.indexOf(columnName)]);
-    return chartGroups(info).map(([group, columns]) => <LineChart key={`${name}/${group}`} title={`${name} · ${group}`} xLabel={table.columns[0]}
-      yLabel={group} x={column(table.columns[0]) as number[]} xMax={xMaxes[table.columns[0]] ?? 0}
-      series={columns.map((columnName) => ({ label: columnName.slice(group.length + 1) || columnName, values: column(columnName) as (number | null)[] }))} />);
-  });
+  const tables = Object.entries(state?.tables ?? {}); // order of first append, `train` before `validation`
 
   const sidebar = <Panel className="py-2">
     <nav aria-label="Hosts" className="px-2 pb-2"><HostsSection selected={host} onSelect={setHost} /></nav>
@@ -324,8 +286,8 @@ export default function Monitor() {
     {error && <ErrorPanel message={error} />}
     {state && host
       ? <>
-        <div className="grid gap-5 lg:grid-cols-2">{charts}</div>
-        {Object.entries(state.tables).map(([name, info]) => <TablePanel key={name} host={host} name={name} info={info} />)}
+        <div className="grid gap-5 lg:grid-cols-2">{tables.map(([name, info]) => <TableFigure key={name} host={host} name={name} rows={info.rows} />)}</div>
+        {tables.map(([name, info]) => <TablePanel key={name} host={host} name={name} info={info} />)}
       </>
       : !error && <Panel className={`grid h-40 place-items-center text-xs text-ink-muted ${host ? 'animate-pulse' : ''}`}>
         <span>{host ? `Connecting to ${host}…` : 'Open Hosts in the sidebar and add an SSH host to watch its training'}</span>

@@ -30,3 +30,6 @@ export const fetchState = (address: string, signal: AbortSignal) => fetchJson<Mo
 /** One table of the training on `address`, its last `tail` rows when given. */
 export const fetchTable = (address: string, name: string, signal: AbortSignal, tail?: number) =>
   fetchJson<TableData>(monitorUrl(address, `tables/${encodeURIComponent(name)}`, tail ? `&tail=${tail}` : ''), { signal });
+/** SVG of the hub's matplotlib figure of one table, `rows` only busts the browser cache once the table grew. */
+export const figureUrl = (address: string, name: string, dark: boolean, rows: number) =>
+  monitorUrl(address, `figures/${encodeURIComponent(name)}.svg`, `&dark=${Number(dark)}&rows=${rows}`);

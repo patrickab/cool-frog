@@ -442,7 +442,7 @@ def run_experiment(  # noqa: PLR0913, the public entry point of every experiment
     ...     if not stage.is_complete():
     ...         train(stage.track({"title": TITLE}))  # its tables persist while it logs
     ...         stage.save({"adapter.pt": model.adapter()})
-    ...     run.publish("nrmse", summarize(stage.load("validation_aggregates.parquet")))
+    ...     run.publish("nrmse", summarize(stage.load("validation.parquet")))
     """
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")  # read once, at CUDA initialization
     init_distributed()  # initializes CUDA, so after the allocator setting
@@ -574,16 +574,17 @@ class Stage:
         """Whether `save` finished for this stage."""
         return self.path_marker.exists()
 
-    def track(self, state: Mapping[str, Any] | None = None) -> Tracker:
-        """Empty tracker starting with `state`, saved into the stage folder while it logs and when the run ends, rank 0 only.
+    def track(self, state: Mapping[str, Any] | None = None, schemas: Mapping[str, pl.Schema] | None = None) -> Tracker:
+        """Empty tracker starting with `state` and `schemas`, saved into the stage folder while it logs and when the run ends.
 
+        - Rank 0 only saves
         - A rerun of an interrupted stage starts it anew and overwrites the partial files
         """
         folder = self.folder if is_main_process() else None
         if folder is not None:
             for path in [*folder.glob("*.parquet"), folder / "state.json"]:
                 path.unlink(missing_ok=True)
-        self.tracker = Tracker(folder, state)
+        self.tracker = Tracker(folder, state, schemas)
         return self.tracker
 
     def save_tracker(self) -> None:

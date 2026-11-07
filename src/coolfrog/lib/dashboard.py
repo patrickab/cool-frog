@@ -76,7 +76,7 @@ def is_log_scale(values: list[float]) -> bool:
 
 
 def charted_tables(infos: dict[str, dict[str, Any]]) -> list[str]:
-    """Tables with charts, most rows first: the main log, e.g. `train`, before rarer ones like `validation_aggregates`."""
+    """Tables with charts, most rows first: the main log, e.g. `train`, before rarer ones."""
     charted = [name for name, info in infos.items() if chart_groups(info["columns"])]
     return sorted(charted, key=lambda name: -infos[name]["rows"])
 

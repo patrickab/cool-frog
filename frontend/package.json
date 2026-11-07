@@ -13,14 +13,12 @@
     "@kitware/vtk.js": "^37.4.2",
     "@react-three/fiber": "^9.8.2",
     "lucide-react": "^1.70.0",
-    "plotly.js-basic-dist-min": "^3.7.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "three": "^0.186.1"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.0",
-    "@types/plotly.js": "^3.0.15",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "@types/three": "^0.186.0",

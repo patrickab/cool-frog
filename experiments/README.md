@@ -45,21 +45,23 @@ train = stage.load("train.parquet")
 
 ## Tracking
 
-`stage.track(state)` returns a `Tracker` (`src/coolfrog/lib/metrics.py`): named tables plus one free-form state dict, nothing to save by hand at the end.
+`stage.track(state, schemas)` returns a `Tracker` (`src/coolfrog/lib/metrics.py`): named tables plus one free-form state dict, nothing to save by hand at the end.
 
 ```python
-tracker = stage.track({"title": TITLE, "configs": configs_state([DATA_CONFIG, MODEL_CONFIG, TRAIN_CONFIG])})
+tracker = stage.track({"title": TITLE, "configs": configs_state([DATA_CONFIG, MODEL_CONFIG, TRAIN_CONFIG])}, SCHEMAS)
 tracker.append("train", {"update": 50, "mse": 1.2e-3})          # one table per logging rhythm
 tracker.extend("validation", per_design_rows)                     # rows of a DataFrame
 tracker.update_state({"debug": {"cuda_allocated_gib": 6.2}})      # anything not tracked over time
 ```
 
-- Tables: the first column is x. Every other column becomes a chart, columns sharing a name up to the last `/` share one (`nrmse/median/Vx`, `nrmse/median/Vy` -> `nrmse/median`), tables with string columns are not charted
+- Schemas: `schemas` (table name -> `pl.Schema`) fix the columns and types of those tables, `append` and `extend` raise `ValueError` for a row with other columns or a value the schema cannot hold, `frame` returns exactly the schema. Tables without one take any columns
+- Plots: `src/coolfrog/lib/plots.py` holds every non-image plot with its input schema, e.g. `TRAIN_SCHEMA` and `VALIDATION_SCHEMA` with `training_curves` and `validation_curves`, used by scripts, notebooks and the web monitor alike
+- Other tables: the first column is x. Every other column becomes a chart, columns sharing a name up to the last `/` share one (`nrmse/median/Vx`, `nrmse/median/Vy` -> `nrmse/median`), tables with string columns are not charted
 - Saved as `<table>.parquet` plus `state.json` in the stage folder, atomically, at most every 30 s while logging and on every exit of the `with` block except SIGKILL
 - Parquet, so the tables go to Hugging Face on success
-- The terminal dashboard and the web monitor show any tracker the same way, no per-run layout
+- The terminal dashboard and the web monitor show any tracker, the web monitor draws `train` and `validation` with their `plots.py` functions
 - Rank 0 writes, the other ranks get an unpersisted tracker
-- Fine-tuning tables (`TrainingMetrics`): `train` (means over 50 updates), `validation` (one row per update, design and channel), `validation_aggregates` (median and mean per metric and channel, computed once per validation)
+- Fine-tuning tables (`TrainingMetrics`, `SCHEMAS`): `train` (`TRAIN_SCHEMA`, means over 50 updates) and `validation` (`VALIDATION_SCHEMA`, one row per update, design and channel symbol). No aggregates table: `validation_curves` and the scripts aggregate over designs themselves
 
 Live API of a training (`coolfrog.lib.monitor`, through the hub as `/api/hosts/monitor/<path>?address=...`):
 
