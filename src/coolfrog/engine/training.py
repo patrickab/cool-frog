@@ -1,6 +1,7 @@
 """Fine-tuning of the Tadpole autoencoder on random single-channel crops."""
 
 from collections.abc import Iterable, Iterator
+from contextlib import nullcontext
 from dataclasses import dataclass
 import itertools
 from pathlib import Path
@@ -18,6 +19,7 @@ from coolfrog.lib.dashboard import run_dashboard
 from coolfrog.lib.datatypes import FlowField, NormalizationStats
 from coolfrog.lib.distributed import average_gradients, average_values, broadcast_parameters, is_main_process, world_size
 from coolfrog.lib.log import get_logger
+from coolfrog.lib.monitor import serve_monitor
 
 logger = get_logger(__name__)
 
@@ -96,17 +98,19 @@ def fine_tune_autoencoder(  # noqa: PLR0913, model, data, stats, config, checkpo
     - Writes `model.adapter()` to `path_checkpoints/adapter_update_<update>.pt` after every validation
     - Logs the spectral loss of the training crops next to the MSE they are trained on
     - Runs under the live terminal dashboard titled `title`, plainly when there is no terminal
+    - Serves the same charts and the GPU stats to the web monitor meanwhile, see `coolfrog.lib.monitor`
     - Stop key `q` in the dashboard raises KeyboardInterrupt
-    - Under `torchrun` every process runs it on its GPU: rank 0 alone writes and shows the dashboard, see `_train`
+    - Under `torchrun` every process runs it on its GPU: rank 0 alone writes, shows the dashboard and serves the monitor
     """
     metrics = TrainingMetrics(config, title)
     path_checkpoints.mkdir(parents=True, exist_ok=True)
-    run_dashboard(
-        metrics.tracker,
-        metrics.spec,
-        lambda: _train(model, train_loader, validation_loader, stats, metrics, path_checkpoints),
-        enabled=is_main_process(),
-    )
+    with serve_monitor(metrics.tracker, metrics.spec) if is_main_process() else nullcontext():
+        run_dashboard(
+            metrics.tracker,
+            metrics.spec,
+            lambda: _train(model, train_loader, validation_loader, stats, metrics, path_checkpoints),
+            enabled=is_main_process(),
+        )
     return metrics
 
 

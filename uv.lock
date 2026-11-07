@@ -802,6 +802,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "cooldata" },
+    { name = "fastapi" },
     { name = "h5py" },
     { name = "hdf5plugin" },
     { name = "plotext" },
@@ -811,11 +812,6 @@ dependencies = [
     { name = "tadpole" },
     { name = "tensordict" },
     { name = "textual" },
-]
-
-[package.optional-dependencies]
-web = [
-    { name = "fastapi" },
     { name = "uvicorn" },
 ]
 
@@ -832,7 +828,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "cooldata", git = "https://github.com/peteole/flow_field_dataset" },
-    { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.115" },
+    { name = "fastapi", specifier = ">=0.115" },
     { name = "h5py", specifier = ">=3.16.0" },
     { name = "hdf5plugin", specifier = ">=7.1.0" },
     { name = "plotext", specifier = ">=6.1.0" },
@@ -842,9 +838,8 @@ requires-dist = [
     { name = "tadpole", git = "https://github.com/tum-pbs/Tadpole?rev=cbab649d8c428e4eb4ed4d41bea1a1e72f73a4d9" },
     { name = "tensordict", specifier = ">=0.14" },
     { name = "textual", specifier = ">=8.2.8" },
-    { name = "uvicorn", marker = "extra == 'web'", specifier = ">=0.34" },
+    { name = "uvicorn", specifier = ">=0.34" },
 ]
-provides-extras = ["web"]
 
 [package.metadata.requires-dev]
 dev = [

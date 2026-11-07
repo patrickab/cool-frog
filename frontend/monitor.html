@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f5eee0" />
+    <script>
+      // Resolve the saved preference before the first paint, same as index.html.
+      let preference = 'system'
+      try {
+        const saved = localStorage.getItem('coolfrog-theme')
+        if (saved === 'light' || saved === 'dark') preference = saved
+      } catch { /* Storage can be unavailable in private or restricted contexts. */ }
+      const theme = preference === 'system' ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : preference
+      document.documentElement.dataset.themePreference = preference
+      document.documentElement.dataset.theme = theme
+      document.querySelector('meta[name="theme-color"]').content = theme === 'dark' ? '#161410' : '#f5eee0'
+    </script>
+    <meta name="description" content="Live metrics and GPU utilization of a running Coolfrog training." />
+    <title>Coolfrog · Training monitor</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/monitor/main.tsx"></script>
+  </body>
+</html>

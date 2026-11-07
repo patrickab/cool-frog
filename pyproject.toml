@@ -4,6 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
   "cooldata",
+  "fastapi>=0.115",
   "h5py>=3.16.0",
   "hdf5plugin>=7.1.0",
   "plotext>=6.1.0",
@@ -13,11 +14,6 @@ dependencies = [
   "tadpole",
   "tensordict>=0.14",
   "textual>=8.2.8",
-]
-
-[project.optional-dependencies]
-web = [
-  "fastapi>=0.115",
   "uvicorn>=0.34",
 ]
 
