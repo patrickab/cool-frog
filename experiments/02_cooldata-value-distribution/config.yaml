@@ -1,0 +1,7 @@
+DataConfig:
+  batch_size: 1
+  cache: true
+  grid:
+    latent_scale: 2
+  num_workers: 8
+  source: null
