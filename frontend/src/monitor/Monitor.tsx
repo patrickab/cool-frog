@@ -3,7 +3,7 @@ import type { FormEvent } from 'react';
 import { addHost, fetchHosts, fetchMonitor, removeHost } from './api';
 import type { Chart, Gpu, HostInfo, MonitorState, Progress } from './api';
 import { errorMessage, formatNumber, formatTick } from '../lib/format';
-import { HEADING, Layout, Panel } from '../lib/ui';
+import { Badge, HEADING, Layout, Panel } from '../lib/ui';
 
 const POLL_MILLISECONDS = 2000;
 const SELECTED_HOST_KEY = 'coolfrog-monitor-host';
@@ -174,8 +174,8 @@ function LineChart({ chart, lastStep }: { chart: Chart; lastStep: number }) {
 // Page
 // ---------------------------------------------------------------------------
 
-/** Configured SSH hosts: pick the watched one, add one (address, optional password) or remove one. */
-function HostsPanel({ selected, onSelect }: { selected: string | undefined; onSelect: (address: string | undefined) => void }) {
+/** Sidebar section of the configured SSH hosts: pick the watched one, add one (address, optional password) or remove one. */
+function HostsSection({ selected, onSelect }: { selected: string | undefined; onSelect: (address: string | undefined) => void }) {
   const [hosts, setHosts] = useState<HostInfo[]>();
   const [error, setError] = useState<string>();
   const [address, setAddress] = useState('');
@@ -201,17 +201,17 @@ function HostsPanel({ selected, onSelect }: { selected: string | undefined; onSe
   };
   const inputClass = 'w-full rounded-lg bg-paper px-2.5 py-1.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-divider';
 
-  return <Panel className="space-y-3 p-4">
-    <h2 className={HEADING}>Hosts</h2>
+  return <section className="space-y-3 p-4">
+    <div className="flex items-center justify-between"><h2 className={HEADING}>Hosts</h2>{hosts && <Badge>{hosts.length}</Badge>}</div>
     {hosts?.length === 0 && <p className="text-xs text-ink-muted">No hosts in monitor-hosts.json yet</p>}
-    {hosts && hosts.length > 0 && <ul className="space-y-1">
-      {hosts.map((host) => <li key={host.address} className="flex items-center gap-2">
+    {hosts && hosts.length > 0 && <ul className="space-y-0.5 text-xs">
+      {hosts.map((host) => <li key={host.address} className="flex items-center gap-1">
         <button aria-pressed={host.address === selected} onClick={() => onSelect(host.address)}
-          className={`min-w-0 flex-1 truncate rounded-lg px-2.5 py-1 text-left text-xs transition hover:text-ink ${host.address === selected ? 'bg-surface-elevated text-ink shadow-[var(--shadow-sm)]' : 'text-ink-muted'}`}>
+          className={`min-w-0 flex-1 truncate rounded-lg px-2.5 py-1.5 text-left transition hover:bg-hover hover:text-ink ${host.address === selected ? 'bg-hover-strong text-ink' : 'text-ink-muted'}`}>
           {host.address}{host.has_password && <span className="text-ink-muted"> · password</span>}
         </button>
         <button aria-label={`Remove ${host.address}`} onClick={() => void update((signal) => removeHost(host.address, signal))}
-          className="shrink-0 text-[11px] text-ink-muted transition hover:text-ink">Remove</button>
+          className="shrink-0 rounded-lg px-2 py-1.5 text-[11px] text-ink-muted transition hover:bg-hover hover:text-ink">Remove</button>
       </li>)}
     </ul>}
     <form onSubmit={(event) => void add(event)} className="space-y-2">
@@ -220,10 +220,10 @@ function HostsPanel({ selected, onSelect }: { selected: string | undefined; onSe
       <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} aria-label="SSH password, optional"
         placeholder="Password, empty = SSH keys" autoComplete="new-password" className={inputClass} />
       <button type="submit" disabled={!address.trim()}
-        className="w-full rounded-xl border border-divider-soft py-1.5 text-xs text-ink-muted transition hover:border-divider hover:text-ink disabled:opacity-40">Add host</button>
+        className="w-full rounded-xl bg-ink py-2 text-sm font-medium text-paper transition hover:opacity-90 disabled:opacity-40">Add host</button>
     </form>
     {error && <p role="alert" className="text-xs text-danger">{error}</p>}
-  </Panel>;
+  </section>;
 }
 
 export default function Monitor() {
@@ -238,20 +238,20 @@ export default function Monitor() {
   const nav = <p className="mt-1 text-sm text-ink-muted">Training monitor{state && ` · ${state.title}`}</p>;
   const status = state && [host, state.last_step !== null && `${state.step_header} ${formatNumber(state.last_step)}`, `polled every ${POLL_MILLISECONDS / 1000} s`].filter(Boolean).join(' · ');
 
-  const sidebar = <>
-    <HostsPanel selected={host} onSelect={setHost} />
-    {state && state.progress.length > 0 && <Panel className="space-y-4 p-4">
+  const sidebar = <Panel className="divide-y divide-divider-soft">
+    <HostsSection selected={host} onSelect={setHost} />
+    {state && state.progress.length > 0 && <section className="space-y-4 p-4">
       <h2 className={HEADING}>Progress</h2>
       <ul className="space-y-4">{state.progress.map((progress) => <ProgressRow key={progress.label} progress={progress} />)}</ul>
       {state.summary && <p className="text-xs leading-5 text-ink-muted">{state.summary}</p>}
-    </Panel>}
-    {state && <Panel className="space-y-4 p-4">
-      <h2 className={HEADING}>GPUs</h2>
+    </section>}
+    {state && <section className="space-y-4 p-4">
+      <div className="flex items-center justify-between"><h2 className={HEADING}>GPUs</h2><Badge>{state.gpus.length}</Badge></div>
       {state.gpus.length
         ? <ul className="space-y-4">{state.gpus.map((gpu) => <GpuRow key={gpu.index} gpu={gpu} />)}</ul>
         : <p className="text-xs text-ink-muted">No nvidia-smi on the training host</p>}
-    </Panel>}
-  </>;
+    </section>}
+  </Panel>;
 
   return <Layout nav={nav} sidebar={sidebar}>
     <div className="flex flex-wrap items-center gap-3">
