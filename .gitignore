@@ -14,3 +14,6 @@ build/
 data/
 node_modules/
 *.tsbuildinfo
+
+# Training monitor SSH hosts, may hold passwords
+monitor-hosts.json

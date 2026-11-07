@@ -7,6 +7,8 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
-    proxy: { '/api': 'http://127.0.0.1:8010' },
+    // First match wins: the training monitor hub (`run-frontend.sh --monitor`) before the dataset API
+    proxy: { '/api/hosts': 'http://127.0.0.1:8011', '/api': 'http://127.0.0.1:8010' },
   },
+  build: { rollupOptions: { input: ['index.html', 'monitor.html'] } },
 });
