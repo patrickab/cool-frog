@@ -1,4 +1,4 @@
-"""LoRA-32 fine-tuning of Tadpole-B on whole curated domains at 2x, then 1x, compared to zero-shot on the same validation designs.
+"""LoRA-32 fine-tuning of Tadpole-B on whole curated domains at 2x, compared to zero-shot on the same validation designs.
 
 `--resume` continues an unfinished run. On several GPUs: `torchrun --standalone --nproc_per_node <n_gpus> -m <this module>`.
 One `Stage` per latent scale, `results/latent_scale_<n>/`:
@@ -51,16 +51,16 @@ from coolfrog.lib.plot import plot_slices
 
 TITLE = "Autoencoder fine-tuning with LoRA"
 GOAL = (
-    "Fine-tune Tadpole-B with rank-32 LoRA on whole single-channel domains, no crops or tiles, at 400x80x16 and "
-    "800x160x32, and compare both to zero-shot on the same validation designs."
+    "Fine-tune Tadpole-B with rank-32 LoRA on whole single-channel domains, no crops or tiles, at 800x160x32, and compare "
+    "it to zero-shot on the same validation designs."
 )
-HYPOTHESIS = "LoRA-32 lowers the validation NRMSE of every channel below zero-shot at both resolutions."
+HYPOTHESIS = "LoRA-32 lowers the validation NRMSE of every channel below zero-shot."
 
 LORA_RANK = 32
 MODEL = f"LoRA-{LORA_RANK}"
 DEVICE = "cuda"
 RESUME = "--resume" in sys.argv  # continue an unfinished run, complete latent scale stages are loaded, not rerun
-LATENT_SCALES = (2, 1)  # 2x first, its voxel cache exists, 1x waits on `build.lock` until its cache is built
+LATENT_SCALES = (2,)
 
 MODEL_CONFIG = TadpoleConfig(
     size="B",
@@ -68,13 +68,12 @@ MODEL_CONFIG = TadpoleConfig(
     encoder_state=LORA_RANK,
     decoder_state=LORA_RANK,
     encoder_crop_size=None,  # whole domains in training and validation, no tiles
-    max_internal_batchsize=1,  # one scalar field per encoder/decoder call, whole domains fill the 12 GB
-    activation_checkpointing=True,  # whole-domain backward only fits at latent scale 1 without it
+    max_internal_batchsize=1,  # one scalar field per encoder/decoder call
+    activation_checkpointing=True,  # whole-domain backward needs it to fit in GPU memory
 )
 TRAIN_CONFIG = TrainConfig(
-    updates=22_500,
-    crops_per_step=1,  # one whole single-channel domain per pass
-    accumulation_steps=4,
+    updates=10_000,
+    designs_per_update=32,
     learning_rate=5e-5,
     warmup_updates=1000,
     weight_decay=1e-15,
@@ -85,8 +84,8 @@ TRAIN_CONFIG = TrainConfig(
 
 
 def data_config(latent_scale: int) -> DataConfig:
-    """Grid of `latent_scale`, one design per training pass, as each pass uses a single domain."""
-    return DataConfig(grid=Grid(latent_scale=latent_scale), source=None, cache=True, batch_size=1, num_workers=6)
+    """Grid of `latent_scale`, two single-channel domains per training pass on each GPU."""
+    return DataConfig(grid=Grid(latent_scale=latent_scale), source=None, cache=True, batch_size=2, num_workers=6)
 
 
 def training_row(metrics: pl.DataFrame, latent_scale: int) -> dict[str, float]:
@@ -166,7 +165,7 @@ def fine_tune(latent_scale: int, path_stage: Path) -> dict[str, object]:
 
     train, validation = train_validation_split(metadata, config)
     log.info("%d train and %d validation designs on grid %s", len(train), len(validation), config.grid.shape)
-    whole_domains = RandomCrops(stats, MODEL_CONFIG.encoder_crop_size, TRAIN_CONFIG.crops_per_step)
+    whole_domains = RandomCrops(stats, MODEL_CONFIG.encoder_crop_size)
     train_loader = create_dataloader(train, config, shuffle=True, collate_fn=whole_domains)
     loader = validation_loader(validation, config)
 

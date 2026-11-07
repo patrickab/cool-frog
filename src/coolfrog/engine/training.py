@@ -26,44 +26,43 @@ logger = get_logger(__name__)
 
 @dataclass(frozen=True)
 class RandomCrops:
-    """Collate designs into `count` random, normalized single-channel crops of edge `crop_size`, inside a loader worker.
+    """Collate designs into one random, normalized single-channel crop of edge `crop_size` each, inside a loader worker.
 
     - Crops before normalizing, so the full designs are never copied
-    - `crop_size=None` takes whole single-channel domains, `count=1` then backpropagates one scalar field per pass
+    - `crop_size=None` takes whole single-channel domains
+    - The loader's `batch_size` is the number of crops per pass
     """
 
     stats: NormalizationStats
     crop_size: int | None
-    count: int
 
     def __call__(self, designs: list[FlowField]) -> FlowField:
-        crops, channel_index = random_crops(torch.stack(designs), self.crop_size, self.count)
+        crops, channel_index = random_crops(torch.stack(designs), self.crop_size)
         return crops.normalize(self.stats.select_channels(channel_index))
 
 
-def random_crops(batch: FlowField, crop_size: int | None, count: int) -> tuple[FlowField, torch.Tensor]:
-    """Random single-channel crops of edge `crop_size` plus each crop's channel index, axes shorter than `crop_size` kept whole.
+def random_crops(batch: FlowField, crop_size: int | None) -> tuple[FlowField, torch.Tensor]:
+    """One random single-channel crop of edge `crop_size` per design plus its channel index, axes shorter than `crop_size` kept whole.
 
-    - Each crop comes from a random design, channel and position of `batch`
+    - Each crop comes from a random channel and position of its design
     - `crop_size=None` keeps every axis whole
-    - Returns (count, 1, X, Y, Z) crops and their (count,) channel indices
+    - Returns (n_designs, 1, X, Y, Z) crops and their (n_designs,) channel indices
     """
     n_designs, n_channels, *grid_shape = batch.fields.shape
     crop_shape = grid_shape if crop_size is None else [min(crop_size, voxels) for voxels in grid_shape]
-    design_index = torch.randint(n_designs, (count,))
-    channel_index = torch.randint(n_channels, (count,))
-    starts = [torch.randint(voxels - crop + 1, (count,)).tolist() for voxels, crop in zip(grid_shape, crop_shape, strict=True)]
+    channel_index = torch.randint(n_channels, (n_designs,))
+    starts = [torch.randint(voxels - crop + 1, (n_designs,)).tolist() for voxels, crop in zip(grid_shape, crop_shape, strict=True)]
     fields, masks = [], []
-    for crop_index, (design, channel) in enumerate(zip(design_index.tolist(), channel_index.tolist(), strict=True)):
-        window = tuple(slice(start[crop_index], start[crop_index] + crop) for start, crop in zip(starts, crop_shape, strict=True))
+    for design, channel in enumerate(channel_index.tolist()):
+        window = tuple(slice(start[design], start[design] + crop) for start, crop in zip(starts, crop_shape, strict=True))
         fields.append(batch.fields[design, channel : channel + 1][(..., *window)])
         masks.append(batch.mask[design][window])
     crops = FlowField(
         fields=torch.stack(fields),
         mask=torch.stack(masks),
-        design_id=batch.design_id[design_index],
-        params=batch.params[design_index],
-        batch_size=[count],
+        design_id=batch.design_id,
+        params=batch.params,
+        batch_size=[n_designs],
     )
     return crops, channel_index
 
@@ -102,7 +101,7 @@ def fine_tune_autoencoder(  # noqa: PLR0913, model, data, stats, config, checkpo
     - Stop key `q` in the dashboard raises KeyboardInterrupt
     - Under `torchrun` every process runs it on its GPU: rank 0 alone writes, shows the dashboard and serves the monitor
     """
-    metrics = TrainingMetrics(config, title)
+    metrics = TrainingMetrics(config, train_loader.batch_size, title)
     path_checkpoints.mkdir(parents=True, exist_ok=True)
     with serve_monitor(metrics.tracker, metrics.spec) if is_main_process() else nullcontext():
         run_dashboard(
@@ -124,17 +123,22 @@ def _train(  # noqa: PLR0913, the arguments of fine_tune_autoencoder plus its me
 ) -> None:
     """Training loop, data-parallel under `torchrun`.
 
-    - `accumulation_steps` passes per update in total, split evenly over the processes, so updates match a single GPU
+    - `designs_per_update` crops per update in total, `train_loader.batch_size` per pass on each process
+    - Passes per process = `designs_per_update / (batch_size * n_gpus)`, so an update is the same on any GPU count
     - Every process starts from rank 0's LoRA initialization, gradients and logged losses are averaged over the processes
     """
     config = metrics.config
-    if config.accumulation_steps % world_size():
-        raise ValueError(f"accumulation_steps {config.accumulation_steps} must split evenly over {world_size()} GPUs")
-    passes = config.accumulation_steps // world_size()
+    designs_per_pass = metrics.batch_size * world_size()
+    if config.designs_per_update % designs_per_pass:
+        raise ValueError(
+            f"designs_per_update {config.designs_per_update} must split evenly into passes of "
+            f"batch size {metrics.batch_size} on {world_size()} GPUs"
+        )
+    passes = config.designs_per_update // designs_per_pass
     device = next(model.parameters()).device
     autocast_dtype = HOST_CONFIG.autocast_dtype
     logger.info("Training forward passes in %s", "float32" if autocast_dtype is None else f"{autocast_dtype} autocast")
-    logger.info("%d passes per update on each of %d GPUs", passes, world_size())
+    logger.info("%d passes of %d designs per update on each of %d GPUs", passes, metrics.batch_size, world_size())
     parameters = list(model.trainable_parameters().values())
     broadcast_parameters(parameters)
     optimizer, scheduler = create_optimizer(parameters, config)
