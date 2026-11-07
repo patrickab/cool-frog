@@ -16,8 +16,8 @@ from coolfrog.lib.datatypes import CHANNELS, FlowField, NormalizationStats
 from coolfrog.lib.experiment import PATH_EXPERIMENTS
 
 LATENT_SCALES = (2, 4)  # 800x160x32 with 32³ tiles first, then 1600x320x64 with 64³ tiles
-# Normalization and exclusion list of experiment 02, measured on 10 % of the designs, also used on the full dataset
-PATH_VALUE_DISTRIBUTION = PATH_EXPERIMENTS / "02_cooldata-value-distribution_partial" / "results"
+# Normalization and exclusion list of experiment 02 on the full dataset, used on every host
+PATH_VALUE_DISTRIBUTION = PATH_EXPERIMENTS / "02_cooldata-value-distribution" / "results"
 N_VALIDATION_DESIGNS = 128
 MEDIAN = 0.5
 
