@@ -29,5 +29,7 @@ uv run uvicorn "$api:app" --host 127.0.0.1 --port "$port" --reload --reload-dir 
 wait_for_port "$port" $! API
 # Host, port and strictPort come from frontend/package.json and vite.config.ts
 npm --prefix frontend run dev &
+wait_for_port 5173 $! Vite
+# Printed after Vite's own banner, whose bare http://127.0.0.1:5173/ is the explorer
 echo "Coolfrog: http://127.0.0.1:5173/$page"
 wait -n
