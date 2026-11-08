@@ -6,11 +6,11 @@ import polars as pl
 import torch
 
 from coolfrog.engine.tadpole import Tadpole
-from coolfrog.lib.datatypes import CHANNELS, FlowField, NormalizationStats
+from coolfrog.lib.datatypes import CHANNELS, FlowField, LatentFlowField, NormalizationStats
 from coolfrog.lib.distributed import all_gather_objects
 
 SPATIAL_DIMS = (-3, -2, -1)
-NRMSE, MSE, SPECTRAL_LOSS = "nrmse", "mse", "spectral_loss"  # keys of `evaluate`
+NRMSE, MSE, SPECTRAL_LOSS, KL = "nrmse", "mse", "spectral_loss", "kl"  # keys of `evaluate`
 
 
 def nrmse(prediction: FlowField, reference: FlowField) -> pl.DataFrame:
@@ -25,10 +25,15 @@ def nrmse(prediction: FlowField, reference: FlowField) -> pl.DataFrame:
 
 def mse(prediction: FlowField, reference: FlowField) -> pl.DataFrame:
     """Fluid-voxel MSE per design and channel, in normalized units like the training loss."""
+    return _per_channel_table(field_mse(prediction, reference), reference)
+
+
+def field_mse(prediction: FlowField, reference: FlowField) -> torch.Tensor:
+    """(B, C) fluid-voxel MSE per field."""
     fluid = reference.mask.unsqueeze(-4)
     fluid_count = fluid.sum(dim=SPATIAL_DIMS, keepdim=True)
     squared_error = (prediction.fields.float() - reference.fields).square()
-    return _per_channel_table((_fluid_sum(squared_error, fluid) / fluid_count).squeeze(SPATIAL_DIMS), reference)
+    return (_fluid_sum(squared_error, fluid) / fluid_count).squeeze(SPATIAL_DIMS)
 
 
 def spectral_distance(prediction: FlowField, reference: FlowField) -> torch.Tensor:
@@ -51,24 +56,31 @@ def fluid_mse(prediction: FlowField, reference: FlowField) -> torch.Tensor:
     return torch.where(fluid, squared_error, 0.0).sum() / fluid.sum()
 
 
+def field_kl(latent: LatentFlowField) -> torch.Tensor:
+    """(B, C) mean KL divergence to the prior per field, over all latent cells."""
+    return latent.kl_divergence().flatten(2).mean(dim=2)
+
+
 def evaluate(model: Tadpole, flowfields: Iterable[FlowField], stats: NormalizationStats) -> dict[str, pl.DataFrame]:
-    """NRMSE, MSE and spectral loss per design and channel on the full domain, float32, latent mean decoded.
+    """NRMSE, MSE, spectral loss and KL divergence per design and channel on the full domain, float32, latent mean decoded.
 
     - Under `torchrun` each process evaluates its share of the designs, every process gets all rows sorted by `design_id`
     """
     device = next(model.parameters()).device
     was_training = model.training
     model.eval()
-    nrmse_tables, mse_tables, spectral_tables = [], [], []
+    nrmse_tables, mse_tables, spectral_tables, kl_tables = [], [], [], []
     with torch.no_grad():
         for flowfield in flowfields:
             reference = flowfield.to(device).normalize(stats)
-            prediction = model.decode(model.encode(reference))
+            latent = model.encode(reference)
+            prediction = model.decode(latent)
             nrmse_tables.append(nrmse(prediction, reference))  # scale-invariant: physical units, log10 space for log channels
             mse_tables.append(mse(prediction, reference))  # in normalized units, like the training loss
             spectral_tables.append(spectral_loss(prediction, reference))  # in normalized units
+            kl_tables.append(_per_channel_table(field_kl(latent), reference))
     model.train(was_training)
-    local_tables = {NRMSE: nrmse_tables, MSE: mse_tables, SPECTRAL_LOSS: spectral_tables}
+    local_tables = {NRMSE: nrmse_tables, MSE: mse_tables, SPECTRAL_LOSS: spectral_tables, KL: kl_tables}
     gathered = all_gather_objects({metric: pl.concat(tables) for metric, tables in local_tables.items()})
     return {metric: pl.concat(tables[metric] for tables in gathered).sort("design_id") for metric in local_tables}
 

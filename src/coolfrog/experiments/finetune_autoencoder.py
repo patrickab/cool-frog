@@ -3,11 +3,10 @@
 `--resume` continues an unfinished run. On several GPUs: `torchrun --standalone --nproc_per_node <n_gpus> -m <this module>`.
 One `Stage` per latent scale, `results/latent_scale_<n>/`:
 
-- `train.parquet` (Hugging Face): train MSE, spectral loss, KL, learning rate and seconds per update, mean over 10 updates
-- `validation.parquet` (Hugging Face): NRMSE, MSE and spectral loss per validation update, design and channel
-- `validation_medians.parquet` (Hugging Face): medians over designs of `validation.parquet` per validation update and channel
+- `metrics.parquet` (Hugging Face): per update every train sample and per validation every design, each one channel, see
+  `METRICS_SCHEMA`
 - `state.json`: title and configs, progress of the last save, all tables rewritten while training runs
-- `per_design.parquet` (Hugging Face): the final validation of `validation.parquet` in the layout of `per_design_frame`
+- `per_design.parquet` (Hugging Face): the final validation of `metrics.parquet` in the layout of `per_design_frame`
 - `adapter.pt` (Hugging Face): LoRA weights
 - `checkpoints/adapter_update_<update>.pt` (Hugging Face): LoRA weights after every validation
 - `training_curves.png`, `validation_curves.png`, `slices_first_validation_design.png`, `config.yaml`, `stage.json`
@@ -23,10 +22,10 @@ import polars as pl
 import torch
 
 from coolfrog.engine.cooldata import CoolMetadata, create_dataloader
-from coolfrog.engine.model_evaluation import MSE, NRMSE, SPECTRAL_LOSS
+from coolfrog.engine.model_evaluation import KL, MSE, NRMSE, SPECTRAL_LOSS
 from coolfrog.engine.tadpole import Tadpole
 from coolfrog.engine.training import RandomCrops, fine_tune_autoencoder
-from coolfrog.engine.training_metrics import SCHEMAS, TRAIN, VALIDATION, VALIDATION_MEDIANS
+from coolfrog.engine.training_metrics import SCHEMAS
 from coolfrog.experiments.autoencoding import (
     curated_metadata,
     data_config,
@@ -40,8 +39,8 @@ from coolfrog.lib.config import TadpoleConfig, TrainConfig
 from coolfrog.lib.datatypes import NormalizationStats
 from coolfrog.lib.experiment import Stage, run_experiment, write_configs
 from coolfrog.lib.huggingface import HuggingFaceHub
-from coolfrog.lib.metrics import configs_state
-from coolfrog.lib.plots import CHANNEL_LABELS, STYLE, plot_slices, training_curves, validation_curves
+from coolfrog.lib.metrics import aggregate, configs_state
+from coolfrog.lib.plots import CHANNEL_LABELS, METRICS, STYLE, TRAIN, VALIDATION, plot_slices, training_curves, validation_curves
 
 TITLE = "Autoencoder fine-tuning with LoRA"
 GOAL = (
@@ -77,24 +76,27 @@ TRAIN_CONFIG = TrainConfig(
 )
 
 
-def training_row(train: pl.DataFrame, latent_scale: int) -> dict[str, float]:
-    """Row of the README training table."""
-    last = train.tail(1).row(0, named=True)
+def training_row(metrics: pl.DataFrame, latent_scale: int) -> dict[str, float]:
+    """Row of the README training table, final values are means over the last update's samples."""
+    train = metrics.filter(pl.col("split") == TRAIN)
+    last = train.filter(pl.col("update") == train["update"].max())
     return {
         "latent_scale": latent_scale,
-        "updates": last["update"],  # resolved from `TRAIN_CONFIG.epochs` when set
+        "updates": last["update"][0],  # resolved from `TRAIN_CONFIG.epochs` when set
         "training time [h]": training_hours(train),
-        "final train MSE": last["mse"],
-        "final train spectral loss": last["spectral_loss"],
-        "final KL": last["kl"],
+        "final train MSE": last[MSE].mean(),
+        "final train spectral loss": last[SPECTRAL_LOSS].mean(),
+        "final KL": last[KL].mean(),
     }
 
 
-def zero_shot_medians(medians: pl.DataFrame, latent_scale: int) -> pl.DataFrame:
+def zero_shot_medians(metrics: pl.DataFrame, latent_scale: int) -> pl.DataFrame:
     """Validation medians over designs at update 0, where LoRA is still the identity, in the layout of `quantile_table`."""
+    zero_shot = metrics.filter((pl.col("split") == VALIDATION) & (pl.col("update") == 0))
     medians = (
-        medians.filter(pl.col("update") == 0)
-        .unpivot(on=[NRMSE, MSE, SPECTRAL_LOSS], index="channel", variable_name="metric")
+        aggregate(zero_shot, "channel", [NRMSE, MSE, SPECTRAL_LOSS])
+        .select("channel", *(pl.col(f"{metric}/median").alias(metric) for metric in (NRMSE, MSE, SPECTRAL_LOSS)))
+        .unpivot(index="channel", variable_name="metric")
         .with_columns(pl.col("channel").cast(pl.String).replace_strict(CHANNEL_LABELS))
         .pivot(on="channel", index="metric", values="value")
     )
@@ -108,13 +110,13 @@ def zero_shot_medians(medians: pl.DataFrame, latent_scale: int) -> pl.DataFrame:
 
 
 def training_hours(train: pl.DataFrame) -> float:
-    """Optimizer time without validation: mean seconds per update of each logged window times its updates."""
-    windows = train.select("update", "seconds_per_update").with_columns(pl.col("update").diff().fill_null(pl.col("update")))
-    return (windows["update"] * windows["seconds_per_update"]).sum() / 3600
+    """Optimizer time without validation, every update counted once."""
+    return train.group_by("update").agg(pl.col("seconds_per_update").first())["seconds_per_update"].sum() / 3600
 
 
-def final_per_design(validation: pl.DataFrame, latent_scale: int) -> pl.DataFrame:
+def final_per_design(metrics: pl.DataFrame, latent_scale: int) -> pl.DataFrame:
     """The last validation, after the final update, in the layout of `per_design_frame`."""
+    validation = metrics.filter(pl.col("split") == VALIDATION)
     final = validation.filter(pl.col("update") == validation["update"].max())
     final = final.with_columns(pl.col("channel").cast(pl.String).replace_strict(CHANNEL_LABELS))
     tables = {
@@ -144,16 +146,14 @@ def fine_tune(latent_scale: int, stage: Stage, metadata: CoolMetadata, stats: No
     with torch.no_grad():
         reference = next(iter(loader)).to(DEVICE).normalize(stats)
         prediction = model.decode(model.encode(reference))
+    metrics = tracker.frame(METRICS)
     with mpl.rc_context(STYLE):
-        curves = {
-            "training_curves.png": training_curves(tracker.frame(TRAIN)),
-            "validation_curves.png": validation_curves(tracker.frame(VALIDATION_MEDIANS)),
-        }
+        curves = {"training_curves.png": training_curves(metrics), "validation_curves.png": validation_curves(metrics)}
         for figure in curves.values():
             figure.suptitle(f"{MODEL} at latent scale {latent_scale}")
         slices = plot_slices(reference, prediction, config.grid)
     return {
-        "per_design.parquet": final_per_design(tracker.frame(VALIDATION), latent_scale),
+        "per_design.parquet": final_per_design(metrics, latent_scale),
         "adapter.pt": model.adapter(),
         **curves,
         "slices_first_validation_design.png": slices,
@@ -173,10 +173,10 @@ with run_experiment(TITLE, GOAL, HYPOTHESIS, [MODEL_CONFIG, TRAIN_CONFIG], hub=H
             log.info("Latent scale %d: training", latent_scale)
             stage.save(fine_tune(latent_scale, stage, metadata, stats))
             torch.cuda.empty_cache()
-        train = stage.load(f"{TRAIN}.parquet")
+        metrics = stage.load(f"{METRICS}.parquet")
         per_design_tables.append(stage.load("per_design.parquet"))
-        zero_shot_tables.append(zero_shot_medians(stage.load(f"{VALIDATION_MEDIANS}.parquet"), latent_scale))
-        training_rows.append(training_row(train, latent_scale))
+        zero_shot_tables.append(zero_shot_medians(metrics, latent_scale))
+        training_rows.append(training_row(metrics, latent_scale))
 
     per_design = pl.concat(per_design_tables)
     zero_shot = pl.concat(zero_shot_tables)

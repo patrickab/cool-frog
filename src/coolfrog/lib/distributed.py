@@ -67,14 +67,6 @@ def average_gradients(parameters: Iterable[nn.Parameter]) -> None:
         gradient.copy_(reduced.view_as(gradient))
 
 
-def average_values(values: torch.Tensor) -> torch.Tensor:
-    """Mean of `values` over the processes, e.g. the train losses of one update."""
-    if distributed.is_initialized():
-        distributed.all_reduce(values)
-        values /= world_size()
-    return values
-
-
 def all_gather_objects[T](local: T) -> list[T]:
     """Every process's `local`, in rank order, picklable objects such as polars tables."""
     if not distributed.is_initialized():

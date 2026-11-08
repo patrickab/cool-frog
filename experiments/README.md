@@ -49,24 +49,26 @@ train = stage.load("train.parquet")
 
 ```python
 tracker = stage.track({"title": TITLE, "configs": configs_state([DATA_CONFIG, MODEL_CONFIG, TRAIN_CONFIG])}, SCHEMAS)
-tracker.append("train", {"update": 50, "mse": 1.2e-3})          # one table per logging rhythm
-tracker.extend("validation", per_design_rows)                     # rows of a DataFrame
+tracker.append("progress", {"step": 50, "loss": 1.2e-3})        # one row
+tracker.extend("metrics", per_design_rows)                       # rows of a DataFrame
 tracker.update_state({"debug": {"cuda_allocated_gib": 6.2}})      # anything not tracked over time
 ```
 
 - Schemas: `schemas` (table name -> `pl.Schema`) fix the columns and types of those tables, `append` and `extend` raise `ValueError` for a row with other columns or a value the schema cannot hold, `frame` returns exactly the schema. Tables without one take any columns
-- Plots: `src/coolfrog/lib/plots.py` holds every non-image plot with its input schema, e.g. `TRAIN_SCHEMA` and `VALIDATION_MEDIANS_SCHEMA` with `training_curves` and `validation_curves`, used by scripts, notebooks and the web monitor alike
-- Other tables: the first column is x. Every other column becomes a chart, columns sharing a name up to the last `/` share one (`nrmse/median/Vx`, `nrmse/median/Vy` -> `nrmse/median`), tables with string columns are not charted
+- Plots: `src/coolfrog/lib/plots.py` holds every non-image plot with its input schema, e.g. `METRICS_SCHEMA` with `training_curves` and `validation_curves`, used by scripts, notebooks and the web monitor alike
+- Other tables: the first column is x and must be numeric, every other numeric column becomes a series, non-numeric columns are skipped. Columns sharing a name up to the last `/` share a panel (`nrmse/median/Vx`, `nrmse/median/Vy` -> `nrmse/median`)
+- Aggregates: `aggregate(frame, by, metrics)` (`src/coolfrog/lib/metrics.py`) gives min, p01, p25, median, p75, p99, max and mean of each metric per group as `<metric>/<statistic>` columns, e.g. per update and channel, per design or per range of updates
 - Saved as `<table>.parquet` plus `state.json` in the stage folder, atomically, at most every 30 s while logging and on every exit of the `with` block except SIGKILL
 - Parquet, so the tables go to Hugging Face on success
-- The terminal dashboard and the web monitor show any tracker, the web monitor draws `train` and `validation` (as medians over designs, also for runs without `validation_medians`) with their `plots.py` functions
+- The terminal dashboard and the web monitor show any tracker. The terminal charts only tables without string columns, so not `metrics`
 - Rank 0 writes, the other ranks get an unpersisted tracker
-- Fine-tuning tables (`TrainingMetrics`, `SCHEMAS`): `train` (`TRAIN_SCHEMA`, means over 10 updates), `validation` (`VALIDATION_SCHEMA`, one row per update, design and channel symbol) and `validation_medians` (`VALIDATION_MEDIANS_SCHEMA`, medians over designs per update and channel, computed on the training host by `plots.validation_medians`)
+- Fine-tuning table (`TrainingMetrics`, `SCHEMAS`): `metrics` (`METRICS_SCHEMA`) with one row per train sample of every update and per validation design, each a single channel, `split` = `train` | `validation`. Columns a split does not measure are null: `nrmse` on train rows, `learning_rate` and `seconds_per_update` on validation rows
+- Fine-tuning curves: train = mean over the update's samples (gray, one run) plus its EMA (log space for positive values), validation = median over designs per channel with a fixed color and marker per channel (`channel_style`). Okabe-Ito colorway, every line kind named in a legend
 
 Live API of a training (`coolfrog.lib.monitor`, through the hub as `/api/hosts/monitor/<path>?address=...`):
 
 - `GET /api/state`: the state plus `progress`, `tables` (row count and column types per table) and `gpus`
-- `GET /api/tables/<name>?tail=<n>`: columns and rows, non-finite floats as null
+- `GET /api/tables/<name>?start=<row>&tail=<n>`: columns and rows from row `start` on, at most the last `tail`, non-finite floats as null. The hub caches the rows it plotted and fetches only newer ones
 
 ## API
 

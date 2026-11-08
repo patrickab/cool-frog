@@ -40,9 +40,9 @@ Concepts: [system-overview.md](system-overview.md). Data flow and contracts: [ar
 │   │   ├── cooldata.py           # CoolMetadata, CoolDataShard, CoolData, build_voxel_cache, create_dataloader, SurfaceMesh
 │   │   ├── design_rows.csv       # design_id -> official metadata row, run, batch (large, do not read whole)
 │   │   ├── tadpole.py            # Tadpole module: tiles, solid filling, slabs, checkpointing, LoRA adapter I/O, weight pins
-│   │   ├── model_evaluation.py   # nrmse, mse, spectral_loss tables, fluid_mse loss, evaluate (gathers ranks)
+│   │   ├── model_evaluation.py   # nrmse, mse, spectral_loss tables, per-field mse/kl, fluid_mse loss, evaluate (gathers ranks)
 │   │   ├── training.py           # RandomCrops, create_optimizer, endless, fine_tune_autoencoder, _train loop
-│   │   └── training_metrics.py   # TrainingMetrics: train/validation tracker tables, progress bars
+│   │   └── training_metrics.py   # TrainingMetrics, TrainSamples: the `metrics` tracker table, progress bars
 │   ├── experiments/
 │   │   ├── autoencoding.py       # shared setup: curated metadata, stats, validation split (128 designs), quantile tables
 │   │   ├── value_distribution.py # experiment 01: histograms, outlier rule, normalization stats
@@ -53,11 +53,11 @@ Concepts: [system-overview.md](system-overview.md). Data flow and contracts: [ar
 │       ├── datatypes.py          # Channel, SurfaceChannel, PARAM_COLUMNS, NormalizationStats, FlowField, LatentFlowField
 │       ├── experiment.py         # run_experiment, Stage, publish, history, resume/undo, push/pull_experiment, HubEntry
 │       ├── huggingface.py        # HuggingFaceHub (HF_TOKEN), HubFile, single-commit uploads and moves
-│       ├── metrics.py            # Tracker, Table, Progress, write_atomically, configs_state, frame_payload, WindowMean
+│       ├── metrics.py            # Tracker, Table, Progress, write_atomically, configs_state, frame_payload, aggregate
 │       ├── dashboard.py          # Textual/plotext terminal dashboard, run_dashboard
 │       ├── monitor.py            # loopback FastAPI of a live Tracker on port 8020, nvidia-smi readings
-│       ├── distributed.py        # torchrun helpers: rank, barrier, broadcast, gradient/value averaging, all_gather_objects
-│       ├── plots.py              # every non-image plot, table schemas (TRAIN_SCHEMA, VALIDATION_SCHEMA, ...), STYLE, plot_theme
+│       ├── distributed.py        # torchrun helpers: rank, barrier, broadcast, gradient averaging, all_gather_objects
+│       ├── plots.py              # every non-image plot, table schemas (METRICS_SCHEMA, ...), STYLE, plot_theme
 │       └── log.py                # Rich logging on stderr, run.log file handler, progress bars, track
 ├── frontend/
 │   ├── AGENTS.md                 # canonical UI rules, code layout, components, verification
@@ -112,7 +112,7 @@ Concepts: [system-overview.md](system-overview.md). Data flow and contracts: [ar
 | Normalization or exclusions | Rerun `src/coolfrog/experiments/value_distribution.py`. Consumers read `PATH_VALUE_DISTRIBUTION` in `src/coolfrog/experiments/autoencoding.py` |
 | Channels or parameters | `src/coolfrog/lib/datatypes.py` (`Channel`, `PARAM_COLUMNS`), then `CGNS_ARRAYS` in `src/coolfrog/engine/cooldata.py`, `CHANNEL_LABELS` users in `src/coolfrog/lib/plots.py`. Existing shards and normalization CSVs become invalid |
 | CoolData revision | `HF_REVISION` in `src/coolfrog/engine/cooldata.py`. `design_rows.csv` maps rows of that revision |
-| Metric | `src/coolfrog/engine/model_evaluation.py`, `evaluate` keys, `VALIDATION_SCHEMA` and `VALIDATION_PANELS` in `src/coolfrog/lib/plots.py`, `validation_rows` in `src/coolfrog/engine/training_metrics.py` |
+| Metric | `src/coolfrog/engine/model_evaluation.py`, `evaluate` keys, `METRICS_SCHEMA` and `TRAIN_PANELS` / `VALIDATION_PANELS` in `src/coolfrog/lib/plots.py`, `TrainSamples` and `validation_rows` in `src/coolfrog/engine/training_metrics.py` |
 | Tracker table or plot | Schema and figure in `src/coolfrog/lib/plots.py`, `figure_for_table` for the monitor |
 | Explorer endpoint | `src/coolfrog/api/main.py` plus types/fetcher in `frontend/src/api.ts` |
 | Monitor endpoint | `src/coolfrog/lib/monitor.py` (training side), `src/coolfrog/api/monitor_hub.py` (proxy), `frontend/src/monitor/api.ts` |

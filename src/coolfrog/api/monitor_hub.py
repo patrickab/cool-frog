@@ -40,6 +40,7 @@ HOSTS_PATH = Path("monitor-hosts.json")
 TUNNEL_TIMEOUT_SECONDS = 15
 REQUEST_TIMEOUT_SECONDS = 10
 SSHPASS_WRONG_PASSWORD = 5  # exit code of `sshpass`
+TABLE_CACHE: dict[tuple[str, str], pl.DataFrame] = {}  # (address, table) -> rows fetched so far, for `cached_table`
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -211,14 +212,35 @@ def forward(address: str, path: str, query: str = "") -> Response:
         raise HTTPException(502, f"No training serves the monitor on {address} port {MONITOR_PORT}") from error
 
 
+def fetch_frame(address: str, table: str, start: int) -> pl.DataFrame:
+    """Rows of the training's `table` from row `start` on, HTTPException with the training's status when it answers an error."""
+    forwarded = forward(address, f"tables/{table}", f"start={start}")
+    if forwarded.status_code != http.HTTPStatus.OK:
+        raise HTTPException(forwarded.status_code, forwarded.body.decode())
+    payload = json.loads(forwarded.body)
+    return pl.DataFrame(payload["rows"], schema=payload["columns"], orient="row", infer_schema_length=None)  # columns may start null
+
+
+def cached_table(address: str, table: str) -> pl.DataFrame:
+    """All rows of the training's `table`, only rows after the cached ones cross the tunnel.
+
+    - The last cached row is fetched again, if it differs, e.g. a new run started, the cache refills from row 0
+    """
+    key = (address, table)
+    cached = TABLE_CACHE.get(key)
+    if cached is not None and cached.height:
+        new = fetch_frame(address, table, start=cached.height - 1)
+        if new.height and new.row(0) == cached.row(-1):
+            TABLE_CACHE[key] = pl.concat([cached, new.slice(1)], how="vertical_relaxed")
+            return TABLE_CACHE[key]
+    TABLE_CACHE[key] = fetch_frame(address, table, start=0)
+    return TABLE_CACHE[key]
+
+
 @app.get("/api/hosts/monitor/figures/{table:path}.svg")
 def table_figure(table: str, address: str, dark: bool = False) -> Response:
     """`plots.figure_for_table` of the training's `table` on `address` as SVG, 404 when the table has nothing to plot."""
-    forwarded = forward(address, f"tables/{table}")
-    if forwarded.status_code != http.HTTPStatus.OK:
-        return forwarded
-    payload = json.loads(forwarded.body)
-    frame = pl.DataFrame(payload["rows"], schema=payload["columns"], orient="row", infer_schema_length=None)  # columns may start null
+    frame = cached_table(address, table)
     with plots.plot_theme(dark):
         figure = plots.figure_for_table(table, frame)
         if figure is None:

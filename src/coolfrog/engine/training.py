@@ -12,13 +12,13 @@ from torch import nn
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader, DistributedSampler
 
-from coolfrog.engine.model_evaluation import evaluate, fluid_mse, spectral_distance
+from coolfrog.engine.model_evaluation import KL, MSE, SPECTRAL_LOSS, evaluate, field_kl, field_mse, fluid_mse, spectral_distance
 from coolfrog.engine.tadpole import Tadpole
-from coolfrog.engine.training_metrics import TrainingMetrics
+from coolfrog.engine.training_metrics import TrainingMetrics, TrainSamples
 from coolfrog.lib.config import HOST_CONFIG, TrainConfig
 from coolfrog.lib.dashboard import run_dashboard
 from coolfrog.lib.datatypes import FlowField, NormalizationStats
-from coolfrog.lib.distributed import average_gradients, average_values, broadcast_parameters, is_main_process, world_size
+from coolfrog.lib.distributed import average_gradients, broadcast_parameters, is_main_process, world_size
 from coolfrog.lib.metrics import Tracker
 from coolfrog.lib.monitor import serve_monitor
 
@@ -32,14 +32,15 @@ class RandomCrops:
     - Crops before normalizing, so the full designs are never copied
     - `crop_size=None` takes whole single-channel domains
     - The loader's `batch_size` is the number of crops per pass
+    - Yields (crops, their (n_designs,) channel indices)
     """
 
     stats: NormalizationStats
     crop_size: int | None
 
-    def __call__(self, designs: list[FlowField]) -> FlowField:
+    def __call__(self, designs: list[FlowField]) -> tuple[FlowField, torch.Tensor]:
         crops, channel_index = random_crops(torch.stack(designs), self.crop_size)
-        return crops.normalize(self.stats.select_channels(channel_index))
+        return crops.normalize(self.stats.select_channels(channel_index)), channel_index
 
 
 def random_crops(batch: FlowField, crop_size: int | None) -> tuple[FlowField, torch.Tensor]:
@@ -126,7 +127,7 @@ def _train(  # noqa: PLR0913, the arguments of fine_tune_autoencoder plus its me
     - `metrics.updates` updates, `TrainConfig.updates` or its `epochs` over the `train_loader` designs
     - `designs_per_update` crops per update in total, `train_loader.batch_size` per pass on each process
     - Passes per process = `designs_per_update / (batch_size * n_gpus)`, so an update is the same on any GPU count
-    - Every process starts from rank 0's LoRA initialization, gradients and logged losses are averaged over the processes
+    - Every process starts from rank 0's LoRA initialization, gradients are averaged and per-crop losses gathered over the processes
     """
     config = metrics.config
     designs_per_pass = metrics.batch_size * world_size()
@@ -153,23 +154,22 @@ def _train(  # noqa: PLR0913, the arguments of fine_tune_autoencoder plus its me
     batches = endless(train_loader)
     model.train()
     for update in range(1, metrics.updates + 1):
-        loss_sums = torch.zeros(3, device=device)  # MSE, spectral loss, KL
+        samples = TrainSamples()
         for _ in range(passes):
-            crops = next(batches).to(device, non_blocking=True)
+            crops, channel_index = next(batches)
+            crops = crops.to(device, non_blocking=True)
             with torch.autocast(device.type, dtype=autocast_dtype, enabled=autocast_dtype is not None):
                 prediction, latent = model(crops)
             mse, kl = fluid_mse(prediction, crops), latent.kl_divergence().mean()
             ((mse + config.kl_weight * kl) / passes).backward()  # gradient = mean over this process's passes
-            with torch.no_grad():  # monitored only, the loss stays fluid MSE
-                spectral = spectral_distance(prediction.detach(), crops).mean()
-                loss_sums += torch.stack([mse.detach().float(), spectral.float(), kl.detach().float()])
+            with torch.no_grad():  # logged per crop, the loss stays the fluid MSE pooled over the pass
+                losses = {MSE: field_mse(prediction, crops), SPECTRAL_LOSS: spectral_distance(prediction, crops), KL: field_kl(latent)}
+                samples.add(crops.design_id, channel_index, {name: values[:, 0] for name, values in losses.items()})
         average_gradients(parameters)  # mean over all passes of all processes
         learning_rate = optimizer.param_groups[0]["lr"]  # used by this update, the scheduler then sets the next
         optimizer.step()
         scheduler.step()
         optimizer.zero_grad(set_to_none=True)
-        train_mse, train_spectral, train_kl = (average_values(loss_sums) / passes).tolist()
-        metrics.log_update(update, train_mse, train_spectral, train_kl, learning_rate)
+        metrics.log_update(update, samples, learning_rate)
         if update % config.validate_every == 0 or update == metrics.updates:
-            logger.info("update %d train MSE %.3e", update, train_mse)
             validate(update)

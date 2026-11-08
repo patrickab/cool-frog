@@ -1,7 +1,7 @@
 """Web monitor of a running `Tracker`: FastAPI on 127.0.0.1 in a daemon thread, read by `coolfrog.api.monitor_hub`.
 
 - `GET /api/state`: `Tracker.snapshot` plus `gpus`, the `nvidia-smi` readings at request time
-- `GET /api/tables/{name}`: one table as columns and rows, `tail` limits it to its last rows
+- `GET /api/tables/{name}`: one table as columns and rows, from row `start` on, `tail` limits it to its last rows
 - Loopback only, remote machines reach it through an SSH tunnel
 """
 
@@ -72,10 +72,10 @@ def create_monitor_app(tracker: Tracker) -> FastAPI:
         return tracker.snapshot() | {"gpus": [gpu.model_dump() for gpu in query_gpus()]}
 
     @app.get("/api/tables/{name:path}")
-    def table(name: str, tail: int | None = Query(default=None, ge=1)) -> dict[str, list[Any]]:
+    def table(name: str, tail: int | None = Query(default=None, ge=1), start: int = Query(default=0, ge=0)) -> dict[str, list[Any]]:
         if name not in tracker.table_names():
             raise HTTPException(404, f"No table {name}")
-        return frame_payload(tracker.frame(name, tail))
+        return frame_payload(tracker.frame(name, tail, start))
 
     return app
 

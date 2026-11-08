@@ -1,12 +1,13 @@
 """Run tracking: named tables that grow row by row plus one free-form state dictionary, read by dashboards and the API.
 
-- Tables: one per logging rhythm, e.g. `train` every 10 updates, `validation` one row per design and channel
+- Tables: one per logging rhythm or row layout, e.g. `metrics` with one row per training sample or validation design and channel
 - State: anything that is not a series over time, e.g. title, configs, progress, debug values
 """
 
 from collections.abc import Callable, Mapping, Sequence
 import copy
 from dataclasses import asdict, dataclass, replace
+from functools import partial
 import json
 import math
 from pathlib import Path
@@ -301,20 +302,32 @@ def frame_payload(frame: pl.DataFrame) -> dict[str, list[Any]]:
     return {"columns": frame.columns, "rows": rows}
 
 
-class WindowMean:
-    """Running means of named values, `flush` returns and resets them: loss averaged over the last N updates."""
+STATISTICS: dict[str, Callable[[pl.Expr], pl.Expr]] = {  # name -> reduction of one column, linear quantiles like `Series.median`
+    "min": pl.Expr.min,
+    "p01": partial(pl.Expr.quantile, quantile=0.01, interpolation="linear"),
+    "p25": partial(pl.Expr.quantile, quantile=0.25, interpolation="linear"),
+    "median": pl.Expr.median,
+    "p75": partial(pl.Expr.quantile, quantile=0.75, interpolation="linear"),
+    "p99": partial(pl.Expr.quantile, quantile=0.99, interpolation="linear"),
+    "max": pl.Expr.max,
+    "mean": pl.Expr.mean,
+}
 
-    def __init__(self) -> None:
-        self._sums: dict[str, float] = {}
-        self._count = 0
 
-    def add(self, values: Mapping[str, float]) -> None:
-        for name, value in values.items():
-            self._sums[name] = self._sums.get(name, 0.0) + value
-        self._count += 1
+def aggregate(frame: pl.DataFrame, by: str | Sequence[str], metrics: Sequence[str]) -> pl.DataFrame:
+    """`n` and `STATISTICS` of each metric per group of `by`: the `by` columns, group size `n`, `<metric>/<statistic>`, nulls skipped.
 
-    def flush(self) -> dict[str, float]:
-        """Mean of everything added since the last flush, empty when nothing was added."""
-        means = {name: total / self._count for name, total in self._sums.items()}
-        self._sums, self._count = {}, 0
-        return means
+    - Groups keep their order of first appearance
+    - Ranges are groups of a derived column, e.g. `frame.with_columns(block=pl.col("update") // 1000)` and `by="block"`
+
+    Examples
+    --------
+    >>> aggregate(metrics, by=["split", "update", "channel"], metrics=["mse", "kl"])  # columns `mse/median`, `kl/p99`, ...
+    >>> aggregate(metrics.filter(pl.col("split") == "validation"), by="design_id", metrics=["nrmse"])  # hardest designs
+    """
+    statistics = (
+        statistic(pl.col(metric).cast(pl.Float64)).alias(f"{metric}/{name}")
+        for metric in metrics
+        for name, statistic in STATISTICS.items()
+    )
+    return frame.group_by(by, maintain_order=True).agg(pl.len().alias("n"), *statistics)

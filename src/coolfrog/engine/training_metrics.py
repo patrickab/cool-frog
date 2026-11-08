@@ -1,58 +1,67 @@
-"""Tables of one fine-tuning run: windowed training means, validation per design and channel, and its medians over designs."""
+"""The `metrics` table of one fine-tuning run: every train sample and every validation design, per channel."""
 
 from collections.abc import Iterator, Mapping
+from dataclasses import dataclass, field
 import logging
 import time
 
 import polars as pl
+import torch
 from torch.utils.data import DataLoader
 
-from coolfrog.engine.model_evaluation import MSE, SPECTRAL_LOSS
+from coolfrog.engine.model_evaluation import KL, MSE, SPECTRAL_LOSS
 from coolfrog.lib.config import TrainConfig
 from coolfrog.lib.dashboard import duration
 from coolfrog.lib.datatypes import FlowField
 from coolfrog.lib.distributed import all_gather_objects, world_size
-from coolfrog.lib.metrics import Tracker, WindowMean
-from coolfrog.lib.plots import (
-    CHANNEL_LABELS,
-    TRAIN,
-    TRAIN_SCHEMA,
-    VALIDATION,
-    VALIDATION_MEDIANS,
-    VALIDATION_MEDIANS_SCHEMA,
-    VALIDATION_SCHEMA,
-    validation_medians,
-)
+from coolfrog.lib.metrics import Tracker
+from coolfrog.lib.plots import CHANNEL_LABELS, CHANNEL_SYMBOLS, METRICS, METRICS_SCHEMA, TRAIN, VALIDATION
 
 logger = logging.getLogger(__name__)
 
-SCHEMAS = {  # tracker schemas of the tables, see `Tracker`
-    TRAIN: TRAIN_SCHEMA,
-    VALIDATION: VALIDATION_SCHEMA,
-    VALIDATION_MEDIANS: VALIDATION_MEDIANS_SCHEMA,
-}
+SCHEMAS = {METRICS: METRICS_SCHEMA}  # tracker schemas, see `Tracker`
 TRAINING_PROGRESS, EPOCHS_PROGRESS, VALIDATION_PROGRESS = "Training", "Epochs", "Validation"  # progress bar labels
-EPOCH_STATE = "epoch"  # state key: updates per epoch and the measured duration of one epoch
+EPOCH_STATE = "epoch"  # state key: updates per epoch and the duration of one epoch at the training rate so far
+
+
+@dataclass
+class TrainSamples:
+    """Per-sample losses of one process in one update, collected pass by pass, a sample is one single-channel crop."""
+
+    design_ids: list[int] = field(default_factory=list)
+    channels: list[str] = field(default_factory=list)
+    losses: dict[str, list[float]] = field(default_factory=lambda: {MSE: [], SPECTRAL_LOSS: [], KL: []})
+
+    def add(self, design_id: torch.Tensor, channel_index: torch.Tensor, losses: Mapping[str, torch.Tensor]) -> None:
+        """Add one pass: (B,) design ids and channel indices, (B,) per-sample loss tensors keyed like `losses`."""
+        self.design_ids += design_id.tolist()
+        self.channels += [CHANNEL_SYMBOLS[index] for index in channel_index.tolist()]
+        for name, values in losses.items():
+            self.losses[name] += values.float().tolist()
+
+    def to_frame(self) -> pl.DataFrame:
+        return pl.DataFrame({"design_id": self.design_ids, "channel": self.channels, **self.losses})
 
 
 def validation_rows(update: int, per_design_tables: Mapping[str, pl.DataFrame]) -> pl.DataFrame:
-    """`evaluate` tables as `VALIDATION_SCHEMA` rows, one per design and channel, channels as symbols like `p`."""
+    """`evaluate` tables as `METRICS_SCHEMA` validation rows, one per design and channel, channels as symbols like `p`."""
     symbols = {label: symbol for symbol, label in CHANNEL_LABELS.items()}
     long_tables = [
         table.rename(symbols).unpivot(on=list(symbols.values()), index="design_id", variable_name="channel", value_name=metric)
         for metric, table in per_design_tables.items()
     ]  # same design and channel order in every table, `evaluate` sorts by design_id
-    metrics = pl.concat([long_tables[0], *(table.drop("design_id", "channel") for table in long_tables[1:])], how="horizontal")
-    metrics = metrics.with_columns(update=pl.lit(update))
-    return metrics.select(pl.col(name).cast(dtype) for name, dtype in VALIDATION_SCHEMA.items())
+    rows = pl.concat([long_tables[0], *(table.drop("design_id", "channel") for table in long_tables[1:])], how="horizontal")
+    rows = rows.with_columns(
+        update=pl.lit(update), split=pl.lit(VALIDATION), learning_rate=pl.lit(None), seconds_per_update=pl.lit(None)
+    )
+    return rows.select(pl.col(name).cast(dtype) for name, dtype in METRICS_SCHEMA.items())
 
 
 class TrainingMetrics:
-    """Logging of one `fine_tune_autoencoder` run into `tracker`, keyed by update.
+    """Logging of one `fine_tune_autoencoder` run into the `metrics` table (`METRICS_SCHEMA`) of `tracker`.
 
-    - `train` table (`TRAIN_SCHEMA`): training values averaged over `log_every` updates, plus the final one
-    - `validation` table (`VALIDATION_SCHEMA`): every metric per update, design and channel
-    - `validation_medians` table (`VALIDATION_MEDIANS_SCHEMA`): their medians over designs per update and channel
+    - Train rows: every sample of every update, a sample is one design and channel
+    - Validation rows: every design and channel of every validation
     - Progress bars: updates done, epochs done when `config.epochs` is set, designs done over all GPUs of the last validation
     - State `epoch`: updates per epoch and the duration of one epoch at the training rate so far, validation excluded
 
@@ -61,36 +70,42 @@ class TrainingMetrics:
     >>> metrics = TrainingMetrics(TrainConfig(epochs=3), batch_size=8, n_train_designs=5538, tracker=Tracker(schemas=SCHEMAS))
     >>> metrics.updates, metrics.updates_per_epoch
     (522, 174)
-    >>> metrics.log_update(1, mse=0.1, spectral=0.4, kl=3.0, learning_rate=5e-5)
     """
 
-    def __init__(self, config: TrainConfig, batch_size: int, n_train_designs: int, tracker: Tracker, log_every: int = 10) -> None:
+    def __init__(self, config: TrainConfig, batch_size: int, n_train_designs: int, tracker: Tracker) -> None:
         self.config = config
         self.batch_size = batch_size
         self.updates = config.total_updates(n_train_designs)
         self.updates_per_epoch = config.updates_per_epoch(n_train_designs)
-        self.log_every = log_every
         self.tracker = tracker
         if config.epochs is not None:  # bars show in creation order: epochs, training, validation
             self.tracker.set_progress(EPOCHS_PROGRESS, 0, config.epochs)
         self.tracker.set_progress(TRAINING_PROGRESS, 0, self.updates)
         self.tracker.update_state({EPOCH_STATE: {"updates": self.updates_per_epoch}})
-        self._window = WindowMean()
         self._tick = time.perf_counter()
 
-    def log_update(self, update: int, mse: float, spectral: float, kl: float, learning_rate: float) -> None:
-        """Record one optimizer update and advance the training bar, KeyboardInterrupt when the dashboard asked to stop."""
+    def log_update(self, update: int, samples: TrainSamples, learning_rate: float) -> None:
+        """Append the samples of every process for one optimizer update, KeyboardInterrupt when the dashboard asked to stop.
+
+        - Every process calls it, the samples are gathered over the processes
+        """
+        now = time.perf_counter()
+        rows = pl.concat(all_gather_objects(samples.to_frame()))
+        rows = rows.with_columns(
+            update=pl.lit(update),
+            split=pl.lit(TRAIN),
+            nrmse=pl.lit(None),
+            learning_rate=pl.lit(learning_rate),
+            seconds_per_update=pl.lit(now - self._tick),
+        )
+        self._tick = now
+        self.tracker.extend(METRICS, rows.select(METRICS_SCHEMA.names()))
         self.tracker.set_progress(TRAINING_PROGRESS, update, self.updates)
         if self.config.epochs is not None:
             self.tracker.set_progress(EPOCHS_PROGRESS, update // self.updates_per_epoch, self.config.epochs)
-        now = time.perf_counter()
-        self._window.add(
-            {"mse": mse, "spectral_loss": spectral, "kl": kl, "learning_rate": learning_rate, "seconds_per_update": now - self._tick}
-        )
-        self._tick = now
-        if update % self.log_every == 0 or update == self.updates:
-            self.tracker.append(TRAIN, {"update": update, **self._window.flush()})
-            self._log_epoch_duration(update)
+        self._log_epoch_duration(update)
+        if update % self.config.validate_every == 0 or update == self.updates:
+            logger.info("update %d train MSE %.3e, mean over samples", update, rows[MSE].mean())
 
     def _log_epoch_duration(self, update: int) -> None:
         """Set the epoch state's duration from the training bar's unpaused time per update."""
@@ -119,14 +134,13 @@ class TrainingMetrics:
             self.tracker.resume_progress(EPOCHS_PROGRESS)
 
     def log_validation(self, update: int, per_design_tables: Mapping[str, pl.DataFrame]) -> None:
-        """Append every design and channel of the `evaluate` tables and their medians over designs, log the channel mean of medians.
+        """Append every design and channel of the `evaluate` tables, log the channel mean of their medians over designs.
 
         - Resets the update timer, validation time does not count as update time
         """
         rows = validation_rows(update, per_design_tables)
-        medians = validation_medians(rows)
-        self.tracker.extend(VALIDATION, rows)
-        self.tracker.extend(VALIDATION_MEDIANS, medians)
+        self.tracker.extend(METRICS, rows)
+        medians = rows.group_by("channel").agg(pl.col(MSE, SPECTRAL_LOSS).median())
         channel_mean = medians.select(pl.col(MSE, SPECTRAL_LOSS).mean()).row(0)
         logger.info("update %d validation median MSE %.3e spectral loss %.3e, mean over channels", update, *channel_mean)
         self._tick = time.perf_counter()
