@@ -14,7 +14,7 @@ from coolfrog.lib.config import TrainConfig
 from coolfrog.lib.dashboard import duration
 from coolfrog.lib.datatypes import FlowField
 from coolfrog.lib.distributed import all_gather_objects, world_size
-from coolfrog.lib.metrics import Tracker
+from coolfrog.lib.metrics import Tracker, aggregate
 from coolfrog.lib.plots import (
     CHANNEL_LABELS,
     CHANNEL_SYMBOLS,
@@ -23,11 +23,13 @@ from coolfrog.lib.plots import (
     METRICS_VALIDATION,
     METRICS_VALIDATION_AGGREGATES,
     TRAINING_AGGREGATES_SCHEMA,
+    TRAINING_BY,
+    TRAINING_METRICS,
     TRAINING_SCHEMA,
     VALIDATION_AGGREGATES_SCHEMA,
+    VALIDATION_BY,
+    VALIDATION_METRICS,
     VALIDATION_SCHEMA,
-    training_aggregates,
-    validation_aggregates,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,7 +79,8 @@ class TrainingMetrics:
 
     - `metrics_training`: every sample of every update, a sample is one design and channel
     - `metrics_validation`: every design and channel of every validation
-    - `*_aggregates`: `training_aggregates` per update, `validation_aggregates` per validation and channel, written with the rows
+    - `*_aggregates`: `aggregate` of the rows per update, for validation also per channel, written with the rows,
+      training also holds `learning_rate` and `seconds_per_update` once per update
     - Progress bars: updates done, epochs done when `config.epochs` is set, designs done over all GPUs of the last validation
     - State `epoch`: updates per epoch and the duration of one epoch at the training rate so far, validation excluded
 
@@ -100,20 +103,28 @@ class TrainingMetrics:
         self.tracker.update_state({EPOCH_STATE: {"updates": self.updates_per_epoch}})
         self._tick = time.perf_counter()
 
+    def log_checkpointing(self, is_checkpointing: bool) -> None:
+        """Log whether activation checkpointing is on and keep it in the tracker state."""
+        logger.info("Activation checkpointing %s", "on, an update does not fit without it" if is_checkpointing else "off")
+        self.tracker.update_state({"activation_checkpointing": is_checkpointing})
+
     def log_update(self, update: int, samples: TrainSamples, learning_rate: float) -> None:
         """Append the samples of every process for one optimizer update and their aggregate, KeyboardInterrupt on a dashboard stop.
 
         - Every process calls it, the samples are gathered over the processes
         """
         now = time.perf_counter()
-        rows = pl.concat(all_gather_objects(samples.to_frame()))
-        rows = rows.with_columns(
-            update=pl.lit(update), learning_rate=pl.lit(learning_rate), seconds_per_update=pl.lit(now - self._tick)
-        )
+        rows = pl.concat(all_gather_objects(samples.to_frame())).with_columns(update=pl.lit(update))
         rows = rows.select(pl.col(name).cast(dtype) for name, dtype in TRAINING_SCHEMA.items())
+        aggregates = aggregate(rows, list(TRAINING_BY), TRAINING_METRICS).with_columns(
+            learning_rate=pl.lit(learning_rate), seconds_per_update=pl.lit(now - self._tick)
+        )
         self._tick = now
         self.tracker.extend(METRICS_TRAINING, rows)
-        self.tracker.extend(METRICS_TRAINING_AGGREGATES, training_aggregates(rows))
+        self.tracker.extend(
+            METRICS_TRAINING_AGGREGATES,
+            aggregates.select(pl.col(name).cast(dtype) for name, dtype in TRAINING_AGGREGATES_SCHEMA.items()),
+        )
         self.tracker.set_progress(TRAINING_PROGRESS, update, self.updates)
         if self.config.epochs is not None:
             self.tracker.set_progress(
@@ -155,7 +166,9 @@ class TrainingMetrics:
         - Resets the update timer, validation time does not count as update time
         """
         rows = validation_rows(update, per_design_tables)
-        aggregates = validation_aggregates(rows)
+        aggregates = aggregate(rows, list(VALIDATION_BY), VALIDATION_METRICS).select(
+            pl.col(name).cast(dtype) for name, dtype in VALIDATION_AGGREGATES_SCHEMA.items()
+        )
         self.tracker.extend(METRICS_VALIDATION, rows)
         self.tracker.extend(METRICS_VALIDATION_AGGREGATES, aggregates)
         channel_mean = aggregates.select(pl.col(f"{MSE}/median", f"{SPECTRAL_LOSS}/median").mean()).row(0)

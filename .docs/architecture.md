@@ -140,7 +140,7 @@ Distributed: rank 0 alone starts/resumes the run, writes files, logs, shows the 
 - `request_stop` (dashboard `q`, Ctrl+C) raises KeyboardInterrupt at the next `append` / `set_progress`
 - Dashboard crash never stops the work, it continues with plain logging. No TTY = no dashboard
 - `serve_monitor`: FastAPI on `127.0.0.1:8020` in a daemon thread, `GET /api/state` (snapshot + `nvidia-smi`), `GET /api/tables/{name}?start=&tail=`. Port taken = warning only, monitor off
-- Fine-tuning tables: raw `metrics_training` / `metrics_validation` (one row per sample, design and channel) and their `*_aggregates` (`aggregate` per update, for validation per channel), written together by `TrainingMetrics`. The monitor draws the aggregates (`training_curves`: per-update mean plus EMA, `validation_curves`: medians per channel), the raw tables have no figure
+- Fine-tuning tables: raw `metrics_training` / `metrics_validation` (one row per sample, design and channel, losses only) and their `*_aggregates` (`aggregate` per update, for validation per channel), written together by `TrainingMetrics`. `metrics_training_aggregates` also holds `learning_rate` and `seconds_per_update` once per update. The monitor draws the aggregates (`training_curves`: per-update mean plus EMA, `validation_curves`: medians per channel), the raw tables have no figure
 
 ## HTTP contracts
 
@@ -167,7 +167,7 @@ Errors: every exception becomes 500 `{"detail": "<Type>: <message>"}`, which the
 | `GET /api/hosts` | Hosts without passwords (`has_password` only) |
 | `POST /api/hosts`, `/api/hosts/remove` | Add/replace or remove by address, closes the host's tunnel |
 | `GET /api/hosts/monitor/{path}?address=` | Pass-through to the training's `/api/<path>`. Training HTTP errors pass through, unreachable → 502 |
-| `GET /api/hosts/monitor/figures/{table}.svg?address=&dark=` | `plots.figure_for_table` rendered by the hub under `plot_theme`, 404 when nothing to plot. The hub caches each table's rows and fetches only rows after the cached ones (`?start=`), refetching all when the last cached row changed |
+| `GET /api/hosts/monitor/figures/{table}.svg?address=&dark=` | `plots.figure_for_table` rendered by the hub under `plot_theme`, 404 when nothing to plot. Tables without a figure (`plots.has_figure`, the raw metric tables) answer 404 before any fetch. The hub caches each table's rows and fetches only rows after the cached ones (`?start=`), refetching all when the last cached row changed |
 
 Tunnels: `ssh -N -L <free port>:127.0.0.1:8020`, one per host, reconnected when ssh exited. 502 on SSH failure (`sshpass` exit 5 = wrong password), 504 after 15 s.
 

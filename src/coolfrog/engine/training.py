@@ -182,8 +182,7 @@ def _train(  # noqa: PLR0913, the arguments of fine_tune_autoencoder plus its me
     model.train()
     first_batch = next(batches)
     activate_checkpoint_if_needed(model, first_batch[0].to(device), config.kl_weight)
-    logger.info("Activation checkpointing %s", "on, an update does not fit without it" if model.is_checkpointing else "off")
-    metrics.tracker.update_state({"activation_checkpointing": model.is_checkpointing})
+    metrics.log_checkpointing(model.is_checkpointing)
     batches = itertools.chain([first_batch], batches)  # the probe batch still trains, the data order stays
     for update in range(1, metrics.updates + 1):
         samples = TrainSamples()

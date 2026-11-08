@@ -239,7 +239,9 @@ def cached_table(address: str, table: str) -> pl.DataFrame:
 
 @app.get("/api/hosts/monitor/figures/{table:path}.svg")
 def table_figure(table: str, address: str, dark: bool = False) -> Response:
-    """`plots.figure_for_table` of the training's `table` on `address` as SVG, 404 when the table has nothing to plot."""
+    """`plots.figure_for_table` of `table` on `address` as SVG, 404 when nothing to plot, raw metric tables 404 without fetching."""
+    if not plots.has_figure(table):
+        raise HTTPException(404, f"No figure for table {table}")
     frame = cached_table(address, table)
     with plots.plot_theme(dark):
         figure = plots.figure_for_table(table, frame)

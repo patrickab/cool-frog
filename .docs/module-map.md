@@ -112,7 +112,7 @@ Concepts: [system-overview.md](system-overview.md). Data flow and contracts: [ar
 | Normalization or exclusions | Rerun `src/coolfrog/experiments/value_distribution.py`. Consumers read `PATH_VALUE_DISTRIBUTION` in `src/coolfrog/experiments/autoencoding.py` |
 | Channels or parameters | `src/coolfrog/lib/datatypes.py` (`Channel`, `PARAM_COLUMNS`), then `CGNS_ARRAYS` in `src/coolfrog/engine/cooldata.py`, `CHANNEL_LABELS` users in `src/coolfrog/lib/plots.py`. Existing shards and normalization CSVs become invalid |
 | CoolData revision | `HF_REVISION` in `src/coolfrog/engine/cooldata.py`. `design_rows.csv` maps rows of that revision |
-| Metric | `src/coolfrog/engine/model_evaluation.py`, `evaluate` keys, `TRAINING_METRICS` / `UPDATE_VALUES` / `VALIDATION_METRICS` and `TRAIN_PANELS` / `VALIDATION_PANELS` in `src/coolfrog/lib/plots.py`, `TrainSamples` and `validation_rows` in `src/coolfrog/engine/training_metrics.py` |
+| Metric | `src/coolfrog/engine/model_evaluation.py`, `evaluate` keys, `TRAINING_METRICS` / `VALIDATION_METRICS` and `TRAIN_PANELS` / `VALIDATION_PANELS` in `src/coolfrog/lib/plots.py`, `TrainSamples` and `validation_rows` in `src/coolfrog/engine/training_metrics.py` |
 | Tracker table or plot | Schema and figure in `src/coolfrog/lib/plots.py`, `figure_for_table` for the monitor |
 | Explorer endpoint | `src/coolfrog/api/main.py` plus types/fetcher in `frontend/src/api.ts` |
 | Monitor endpoint | `src/coolfrog/lib/monitor.py` (training side), `src/coolfrog/api/monitor_hub.py` (proxy), `frontend/src/monitor/api.ts` |

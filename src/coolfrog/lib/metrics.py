@@ -1,6 +1,7 @@
 """Run tracking: named tables that grow row by row plus one free-form state dictionary, read by dashboards and the API.
 
-- Tables: one per logging rhythm or row layout, e.g. `metrics` with one row per training sample or validation design and channel
+- Tables: one per logging rhythm or row layout, e.g. `metrics_training` with one row per sample and
+  `metrics_training_aggregates` with one row per update
 - State: anything that is not a series over time, e.g. title, configs, progress, debug values
 """
 
@@ -321,14 +322,14 @@ STATISTICS: dict[str, Callable[[pl.Expr], pl.Expr]] = {  # name -> reduction of 
 
 
 def aggregate(frame: pl.DataFrame, by: str | Sequence[str], metrics: Sequence[str]) -> pl.DataFrame:
-    """`n` and `STATISTICS` of each metric per group of `by`: the `by` columns, group size `n`, `<metric>/<statistic>`, nulls skipped.
+    """`STATISTICS` of each metric per group of `by`: the `by` columns, then `<metric>/<statistic>`, nulls skipped.
 
     - Groups keep their order of first appearance
     - Ranges are groups of a derived column, e.g. `frame.with_columns(block=pl.col("update") // 1000)` and `by="block"`
 
     Examples
     --------
-    >>> aggregate(validation, by=["update", "channel"], metrics=["mse", "kl"])  # columns `n`, `mse/median`, `kl/p99`, ...
+    >>> aggregate(validation, by=["update", "channel"], metrics=["mse", "kl"])  # columns `mse/median`, `kl/p99`, ...
     >>> aggregate(validation.filter(pl.col("update") == 1000), by="design_id", metrics=["nrmse"])  # hardest designs
     """
     statistics = (
@@ -336,10 +337,10 @@ def aggregate(frame: pl.DataFrame, by: str | Sequence[str], metrics: Sequence[st
         for metric in metrics
         for name, statistic in STATISTICS.items()
     )
-    return frame.group_by(by, maintain_order=True).agg(pl.len().alias("n"), *statistics)
+    return frame.group_by(by, maintain_order=True).agg(*statistics)
 
 
 def aggregate_schema(schema: pl.Schema, by: Sequence[str], metrics: Sequence[str]) -> pl.Schema:
     """Schema of `aggregate(frame, by, metrics)` for a `frame` of `schema`, e.g. a `Tracker` schema of an aggregate table."""
     statistics = {f"{metric}/{name}": pl.Float64 for metric in metrics for name in STATISTICS}
-    return pl.Schema({**{name: schema[name] for name in by}, "n": pl.UInt32, **statistics})
+    return pl.Schema({**{name: schema[name] for name in by}, **statistics})

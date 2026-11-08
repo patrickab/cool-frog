@@ -452,6 +452,7 @@ def run_experiment(  # noqa: PLR0913, the public entry point of every experiment
     ...         stage.save({"adapter.pt": model.adapter()})
     ...     run.publish("nrmse", summarize(stage.load("validation.parquet")))
     """
+    hub = None if IS_TEST else hub  # test runs never push
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")  # read once, at CUDA initialization
     init_distributed()  # initializes CUDA, so after the allocator setting
     if not is_main_process():
@@ -491,7 +492,7 @@ def run_experiment(  # noqa: PLR0913, the public entry point of every experiment
     except BaseException:
         update_meta(run.folder, status=RunStatus.FAILED)
         raise
-    if hub is not None and not IS_TEST:
+    if hub is not None:
         push_experiment(hub, run.folder)
     update_meta(run.folder, status=RunStatus.COMPLETE)
 

@@ -6,7 +6,7 @@
 - Every panel has one y axis, a title and axis labels with a unit or `normalized`
 """
 
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 import io
 import math
@@ -26,7 +26,7 @@ import polars as pl
 
 from coolfrog.lib.config import Grid
 from coolfrog.lib.datatypes import CHANNELS, Channel, FlowField
-from coolfrog.lib.metrics import aggregate, aggregate_schema
+from coolfrog.lib.metrics import aggregate_schema
 
 # Raw tracker tables of a fine-tuning run, one row per sample, and their aggregates, one row per `*_BY` group
 METRICS_TRAINING, METRICS_VALIDATION = "metrics_training", "metrics_validation"
@@ -38,23 +38,18 @@ CHANNEL_ENUM = pl.Enum(CHANNEL_SYMBOLS)
 # Optional `run` (String) column on the metric frames below: one color per run, e.g. to compare latent scales
 SAMPLE_SCHEMA = pl.Schema({"update": pl.Int64, "design_id": pl.Int64, "channel": CHANNEL_ENUM})  # one design and channel
 TRAINING_METRICS = ("mse", "spectral_loss", "kl")  # per sample, aggregated over each update's samples
-UPDATE_VALUES = ("learning_rate", "seconds_per_update")  # one value per update, repeated on its sample rows, never aggregated
 VALIDATION_METRICS = ("nrmse", "mse", "spectral_loss", "kl")
-TRAINING_SCHEMA = pl.Schema(  # every sample of every update
-    {**SAMPLE_SCHEMA, **dict.fromkeys(TRAINING_METRICS, pl.Float64), **dict.fromkeys(UPDATE_VALUES, pl.Float64)}
-)
+TRAINING_SCHEMA = pl.Schema({**SAMPLE_SCHEMA, **dict.fromkeys(TRAINING_METRICS, pl.Float64)})  # every sample of every update
 VALIDATION_SCHEMA = pl.Schema({**SAMPLE_SCHEMA, **dict.fromkeys(VALIDATION_METRICS, pl.Float64)})  # every design per validation
 TRAINING_BY, VALIDATION_BY = ("update",), ("update", "channel")  # groups of the aggregates
-# Stored aggregates without the group size `n` of `aggregate`, a config value here: designs_per_update, n_validation_designs
 TRAINING_AGGREGATES_SCHEMA = pl.Schema(
     {
-        **{name: dtype for name, dtype in aggregate_schema(TRAINING_SCHEMA, TRAINING_BY, TRAINING_METRICS).items() if name != "n"},
-        **dict.fromkeys(UPDATE_VALUES, pl.Float64),
+        **aggregate_schema(TRAINING_SCHEMA, TRAINING_BY, TRAINING_METRICS),
+        "learning_rate": pl.Float64,  # one value per update, logged once, never aggregated
+        "seconds_per_update": pl.Float64,
     }
 )
-VALIDATION_AGGREGATES_SCHEMA = pl.Schema(
-    {name: dtype for name, dtype in aggregate_schema(VALIDATION_SCHEMA, VALIDATION_BY, VALIDATION_METRICS).items() if name != "n"}
-)
+VALIDATION_AGGREGATES_SCHEMA = aggregate_schema(VALIDATION_SCHEMA, VALIDATION_BY, VALIDATION_METRICS)
 CHANNEL_AXES_SCHEMA = pl.Schema(  # one row per channel, axis settings of the value-distribution plots
     {
         "channel": CHANNEL_ENUM,
@@ -123,9 +118,9 @@ THEME_LOCK = threading.RLock()  # rcParams are global, one theme at a time
 
 
 class Panel(NamedTuple):
-    """One curve panel: `metric` column, title, y label with unit, EMA over the raw curve, `log_y` None = `is_log_scale`."""
+    """One curve panel: aggregate `column`, title, y label with unit, EMA over the raw curve, `log_y` None = `is_log_scale`."""
 
-    metric: str
+    column: str
     title: str
     y_label: str
     is_smoothed: bool = False
@@ -133,16 +128,16 @@ class Panel(NamedTuple):
 
 
 TRAIN_PANELS = (
-    Panel("mse", "Train MSE", "MSE [normalized]", is_smoothed=True),
-    Panel("spectral_loss", "Train spectral loss", "spectral loss [normalized]", is_smoothed=True),
-    Panel("kl", "Train KL divergence", "KL [nats]", is_smoothed=True),
+    Panel("mse/mean", "Train MSE", "MSE [normalized]", is_smoothed=True),
+    Panel("spectral_loss/mean", "Train spectral loss", "spectral loss [normalized]", is_smoothed=True),
+    Panel("kl/mean", "Train KL divergence", "KL [nats]", is_smoothed=True),
     Panel("learning_rate", "Learning rate", "learning rate [unitless]", log_y=False),
 )
 VALIDATION_PANELS = (  # same order as TRAIN_PANELS, NRMSE in the slot of the learning rate
-    Panel("mse", "Validation MSE", "MSE [normalized]"),
-    Panel("spectral_loss", "Validation spectral loss", "spectral loss [normalized]"),
-    Panel("kl", "Validation KL divergence", "KL [nats]"),
-    Panel("nrmse", "Validation NRMSE", "NRMSE [%]"),
+    Panel("mse/median", "Validation MSE", "MSE [normalized]"),
+    Panel("spectral_loss/median", "Validation spectral loss", "spectral loss [normalized]"),
+    Panel("kl/median", "Validation KL divergence", "KL [nats]"),
+    Panel("nrmse/median", "Validation NRMSE", "NRMSE [%]"),
 )
 EMA_SMOOTHING = 0.95  # weight of the past per update, about the last 20 updates
 RAW_ALPHA, RAW_LINEWIDTH = 0.35, 0.7  # the per-update curve behind its EMA
@@ -160,45 +155,6 @@ def svg_bytes(figure: Figure) -> bytes:
     buffer = io.BytesIO()
     figure.savefig(buffer, format="svg")
     return buffer.getvalue()
-
-
-def figure_for_table(table: str, frame: pl.DataFrame) -> Figure | None:
-    """Monitor figure of a tracker table, None if empty or without a numeric x and series.
-
-    - Metric aggregates: `training_curves`, `validation_curves`
-    - Raw metric rows: none, they are drawn through their aggregates
-    - Other tables: `column_lines` of the numeric columns, the first column is x, other columns are skipped
-    """
-    if frame.height == 0 or table in (METRICS_TRAINING, METRICS_VALIDATION):
-        return None
-    if table == METRICS_TRAINING_AGGREGATES:
-        return training_curves(frame)
-    if table == METRICS_VALIDATION_AGGREGATES:
-        return validation_curves(frame)
-    numeric = frame.select(column for column, dtype in frame.schema.items() if dtype.is_numeric() or dtype == pl.Null)
-    if numeric.width < 2 or numeric.columns[0] != frame.columns[0]:  # noqa: PLR2004, x plus at least one series
-        return None
-    return column_lines(numeric)
-
-
-def training_aggregates(training: pl.DataFrame) -> pl.DataFrame:
-    """`TRAINING_SCHEMA` rows as `TRAINING_AGGREGATES_SCHEMA`: `aggregate` of the losses over each update's samples, keeps `run`.
-
-    - `UPDATE_VALUES` are one value per update, carried once instead of aggregated
-    """
-    training = typed(training, TRAINING_SCHEMA)
-    by = [*run_column(training), *TRAINING_BY]
-    statistics = aggregate(training, by, TRAINING_METRICS).drop("n")  # n = designs_per_update, in the config
-    update_values = training.group_by(by, maintain_order=True).agg(pl.col(UPDATE_VALUES).first())
-    return statistics.join(update_values, on=by, maintain_order="left").sort("update", maintain_order=True)
-
-
-def validation_aggregates(validation: pl.DataFrame) -> pl.DataFrame:
-    """`VALIDATION_SCHEMA` rows as `VALIDATION_AGGREGATES_SCHEMA`: `aggregate` over designs per update and channel, keeps `run`."""
-    validation = typed(validation, VALIDATION_SCHEMA)
-    by = [*run_column(validation), *VALIDATION_BY]
-    statistics = aggregate(validation, by, VALIDATION_METRICS).drop("n")  # n = n_validation_designs, in the config
-    return statistics.sort("update", "channel", maintain_order=True)
 
 
 def exponential_average(values: np.ndarray, smoothing: float = EMA_SMOOTHING) -> np.ndarray:
@@ -221,7 +177,7 @@ def training_curves(aggregates: pl.DataFrame) -> Figure:
     Parameters
     ----------
     aggregates : pl.DataFrame
-        `TRAINING_AGGREGATES_SCHEMA`, e.g. `training_aggregates` of the raw rows, optional `run` column -> one color per run.
+        `TRAINING_AGGREGATES_SCHEMA`, optional `run` column -> one color per run.
     """
     figure, axes = panels(len(TRAIN_PANELS), columns=2)
     _draw_training(axes, typed(aggregates, TRAINING_AGGREGATES_SCHEMA).sort("update", maintain_order=True))
@@ -238,9 +194,8 @@ def _draw_training(axes: Sequence[Axes], means: pl.DataFrame) -> None:
     is_comparison = runs[0][0] is not None
     raw_label, ema_label = "per update, mean over its samples", f"EMA, β = {EMA_SMOOTHING}"
     for axis, panel in zip(axes, TRAIN_PANELS, strict=False):
-        column = panel.metric if panel.metric in UPDATE_VALUES else f"{panel.metric}/mean"
         for index, (run, rows) in enumerate(runs):
-            updates, values = rows["update"].to_numpy(), float_values(rows, column)
+            updates, values = rows["update"].to_numpy(), float_values(rows, panel.column)
             color = cycle_color(index) if is_comparison else TUM_BLUE
             if not panel.is_smoothed:
                 axis.plot(updates, values, color=color, label=run)
@@ -250,7 +205,7 @@ def _draw_training(axes: Sequence[Axes], means: pl.DataFrame) -> None:
                 updates, values, color=raw_color, alpha=raw_alpha, linewidth=RAW_LINEWIDTH, label=None if is_comparison else raw_label
             )
             axis.plot(updates, exponential_average(values), color=color, label=run if is_comparison else ema_label)
-        label_axis(axis, panel.title, "update", panel.y_label, float_values(means, column), panel.log_y)
+        label_axis(axis, panel.title, "update", panel.y_label, float_values(means, panel.column), panel.log_y)
         if means.height:
             integer_x_ticks(axis)
     if not means.height:
@@ -272,7 +227,7 @@ def validation_curves(aggregates: pl.DataFrame) -> Figure:
     Parameters
     ----------
     aggregates : pl.DataFrame
-        `VALIDATION_AGGREGATES_SCHEMA`, e.g. `validation_aggregates` of the raw rows, optional `run` column -> one color per run.
+        `VALIDATION_AGGREGATES_SCHEMA`, optional `run` column -> one color per run.
     """
     medians = typed(aggregates, VALIDATION_AGGREGATES_SCHEMA).sort("update", "channel", maintain_order=True)
     if "run" not in medians.columns:
@@ -282,14 +237,13 @@ def validation_curves(aggregates: pl.DataFrame) -> Figure:
     channels, runs = present_channels(medians), by_run(medians)
     figure, axes = panels(len(VALIDATION_PANELS) * len(channels), columns=len(channels), panel_size=(3.4, 2.6))
     for row, panel in enumerate(VALIDATION_PANELS):
-        column = f"{panel.metric}/median"
         for position, channel in enumerate(channels):
             axis = axes[row * len(channels) + position]
             for index, (run, rows) in enumerate(runs):
                 channel_rows = rows.filter(pl.col("channel") == channel)
                 updates = channel_rows["update"].to_numpy()
-                axis.plot(updates, float_values(channel_rows, column), marker="o", color=cycle_color(index), label=run)
-            channel_values = float_values(medians.filter(pl.col("channel") == channel), column)
+                axis.plot(updates, float_values(channel_rows, panel.column), marker="o", color=cycle_color(index), label=run)
+            channel_values = float_values(medians.filter(pl.col("channel") == channel), panel.column)
             label_axis(axis, f"{panel.title} | {channel}", "update", f"median {panel.y_label}", channel_values, panel.log_y)
             integer_x_ticks(axis)
     figure.legend(*axes[0].get_legend_handles_labels(), loc="outside right upper", title="run, median over designs")
@@ -300,11 +254,10 @@ def _draw_validation(figure: Figure, axes: Sequence[Axes], medians: pl.DataFrame
     """One panel per `VALIDATION_PANELS` metric, one color and marker per channel, the channel legend right of the figure."""
     channels = present_channels(medians)
     for axis, panel in zip(axes, VALIDATION_PANELS, strict=False):
-        column = f"{panel.metric}/median"
         for channel in channels:
             rows = medians.filter(pl.col("channel") == channel)
-            axis.plot(rows["update"].to_numpy(), float_values(rows, column), label=channel, **channel_style(channel))
-        label_axis(axis, panel.title, "update", f"median {panel.y_label}", float_values(medians, column), panel.log_y)
+            axis.plot(rows["update"].to_numpy(), float_values(rows, panel.column), label=channel, **channel_style(channel))
+        label_axis(axis, panel.title, "update", f"median {panel.y_label}", float_values(medians, panel.column), panel.log_y)
         if channels:
             integer_x_ticks(axis)
     if channels:
@@ -321,11 +274,6 @@ def present_channels(frame: pl.DataFrame) -> list[str]:
     """Channel symbols in `frame`, in model order."""
     present = set(frame["channel"].cast(pl.String))
     return [symbol for symbol in CHANNEL_SYMBOLS if symbol in present]
-
-
-def run_column(frame: pl.DataFrame) -> list[str]:
-    """["run"] when `frame` compares runs, else []."""
-    return ["run"] if "run" in frame.columns else []
 
 
 def column_lines(frame: pl.DataFrame) -> Figure:
@@ -345,6 +293,37 @@ def column_lines(frame: pl.DataFrame) -> Figure:
         if len(columns) > 1:
             axis.legend()
     return figure
+
+
+# Monitor figure per tracker table, None = drawn through its aggregates, unlisted tables get `column_lines`
+TABLE_FIGURES: dict[str, Callable[[pl.DataFrame], Figure] | None] = {
+    METRICS_TRAINING: None,
+    METRICS_VALIDATION: None,
+    METRICS_TRAINING_AGGREGATES: training_curves,
+    METRICS_VALIDATION_AGGREGATES: validation_curves,
+}
+
+
+def has_figure(table: str) -> bool:
+    """Whether `figure_for_table` can draw `table`, False for tables drawn through their aggregates."""
+    return TABLE_FIGURES.get(table, column_lines) is not None
+
+
+def figure_for_table(table: str, frame: pl.DataFrame) -> Figure | None:
+    """Monitor figure of a tracker table, None if empty, without a figure or without a numeric x and series.
+
+    - Tables in `TABLE_FIGURES`: their figure function, None for raw metric rows
+    - Other tables: `column_lines` of the numeric columns, the first column is x, other columns are skipped
+    """
+    if frame.height == 0:
+        return None
+    if table in TABLE_FIGURES:
+        figure = TABLE_FIGURES[table]
+        return None if figure is None else figure(frame)
+    numeric = frame.select(column for column, dtype in frame.schema.items() if dtype.is_numeric() or dtype == pl.Null)
+    if numeric.width < 2 or numeric.columns[0] != frame.columns[0]:  # noqa: PLR2004, x plus at least one series
+        return None
+    return column_lines(numeric)
 
 
 def design_extremes(designs: pl.DataFrame, channel_axes: pl.DataFrame) -> Figure:
