@@ -45,10 +45,16 @@ TRAINING_SCHEMA = pl.Schema(  # every sample of every update
 )
 VALIDATION_SCHEMA = pl.Schema({**SAMPLE_SCHEMA, **dict.fromkeys(VALIDATION_METRICS, pl.Float64)})  # every design per validation
 TRAINING_BY, VALIDATION_BY = ("update",), ("update", "channel")  # groups of the aggregates
+# Stored aggregates without the group size `n` of `aggregate`, a config value here: designs_per_update, n_validation_designs
 TRAINING_AGGREGATES_SCHEMA = pl.Schema(
-    {**aggregate_schema(TRAINING_SCHEMA, TRAINING_BY, TRAINING_METRICS), **dict.fromkeys(UPDATE_VALUES, pl.Float64)}
+    {
+        **{name: dtype for name, dtype in aggregate_schema(TRAINING_SCHEMA, TRAINING_BY, TRAINING_METRICS).items() if name != "n"},
+        **dict.fromkeys(UPDATE_VALUES, pl.Float64),
+    }
 )
-VALIDATION_AGGREGATES_SCHEMA = aggregate_schema(VALIDATION_SCHEMA, VALIDATION_BY, VALIDATION_METRICS)
+VALIDATION_AGGREGATES_SCHEMA = pl.Schema(
+    {name: dtype for name, dtype in aggregate_schema(VALIDATION_SCHEMA, VALIDATION_BY, VALIDATION_METRICS).items() if name != "n"}
+)
 CHANNEL_AXES_SCHEMA = pl.Schema(  # one row per channel, axis settings of the value-distribution plots
     {
         "channel": CHANNEL_ENUM,
@@ -182,7 +188,7 @@ def training_aggregates(training: pl.DataFrame) -> pl.DataFrame:
     """
     training = typed(training, TRAINING_SCHEMA)
     by = [*run_column(training), *TRAINING_BY]
-    statistics = aggregate(training, by, TRAINING_METRICS)
+    statistics = aggregate(training, by, TRAINING_METRICS).drop("n")  # n = designs_per_update, in the config
     update_values = training.group_by(by, maintain_order=True).agg(pl.col(UPDATE_VALUES).first())
     return statistics.join(update_values, on=by, maintain_order="left").sort("update", maintain_order=True)
 
@@ -191,7 +197,8 @@ def validation_aggregates(validation: pl.DataFrame) -> pl.DataFrame:
     """`VALIDATION_SCHEMA` rows as `VALIDATION_AGGREGATES_SCHEMA`: `aggregate` over designs per update and channel, keeps `run`."""
     validation = typed(validation, VALIDATION_SCHEMA)
     by = [*run_column(validation), *VALIDATION_BY]
-    return aggregate(validation, by, VALIDATION_METRICS).sort("update", "channel", maintain_order=True)
+    statistics = aggregate(validation, by, VALIDATION_METRICS).drop("n")  # n = n_validation_designs, in the config
+    return statistics.sort("update", "channel", maintain_order=True)
 
 
 def exponential_average(values: np.ndarray, smoothing: float = EMA_SMOOTHING) -> np.ndarray:
@@ -229,8 +236,7 @@ def _draw_training(axes: Sequence[Axes], means: pl.DataFrame) -> None:
     """
     runs = by_run(means)
     is_comparison = runs[0][0] is not None
-    samples = int(means["n"].median()) if means.height else 0
-    raw_label, ema_label = f"per update, mean of {samples} samples", f"EMA, β = {EMA_SMOOTHING}"
+    raw_label, ema_label = "per update, mean over its samples", f"EMA, β = {EMA_SMOOTHING}"
     for axis, panel in zip(axes, TRAIN_PANELS, strict=False):
         column = panel.metric if panel.metric in UPDATE_VALUES else f"{panel.metric}/mean"
         for index, (run, rows) in enumerate(runs):
@@ -286,7 +292,7 @@ def validation_curves(aggregates: pl.DataFrame) -> Figure:
             channel_values = float_values(medians.filter(pl.col("channel") == channel), column)
             label_axis(axis, f"{panel.title} | {channel}", "update", f"median {panel.y_label}", channel_values, panel.log_y)
             integer_x_ticks(axis)
-    figure.legend(*axes[0].get_legend_handles_labels(), loc="outside right upper", title=f"run, median of {designs(medians)} designs")
+    figure.legend(*axes[0].get_legend_handles_labels(), loc="outside right upper", title="run, median over designs")
     return figure
 
 
@@ -302,13 +308,7 @@ def _draw_validation(figure: Figure, axes: Sequence[Axes], medians: pl.DataFrame
         if channels:
             integer_x_ticks(axis)
     if channels:
-        title = f"channel, median of {designs(medians)} designs"
-        figure.legend(*axes[0].get_legend_handles_labels(), loc="outside right lower", title=title)
-
-
-def designs(medians: pl.DataFrame) -> int:
-    """Designs per validation of `validation_medians` rows, the most common group size."""
-    return int(medians["n"].mode().max()) if medians.height else 0
+        figure.legend(*axes[0].get_legend_handles_labels(), loc="outside right lower", title="channel, median over designs")
 
 
 def channel_style(channel: str) -> dict[str, str]:
