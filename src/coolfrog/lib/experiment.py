@@ -22,7 +22,7 @@ import polars as pl
 import torch
 import yaml
 
-from coolfrog.lib.config import HOST_CONFIG, PATH_REPO, SEED, seed_everything
+from coolfrog.lib.config import HOST_CONFIG, IS_TEST, PATH_REPO, SEED, seed_everything
 from coolfrog.lib.distributed import barrier, init_distributed, is_main_process, rank, world_size
 from coolfrog.lib.huggingface import HubFile, HuggingFaceHub
 from coolfrog.lib.log import setup_logging
@@ -35,6 +35,7 @@ PATH_EXPERIMENTS = PATH_REPO / "experiments"
 PATH_LARGE_FILE_PATTERNS = PATH_EXPERIMENTS / ".gitignore"
 RUN_FILES = ("config.yaml", "meta.json", "results")  # what one run writes, moved into history/ by the next run
 PARTIAL_SUFFIX = "_partial"  # folder suffix of runs on part of the dataset, see `HostConfig.is_partial`
+TEST_SUFFIX = "_test"  # folder suffix of `--test` runs, gitignored, never pushed
 TABLE_SUFFIXES = (".parquet", ".csv")  # results the API serves as tables
 logger = logging.getLogger(__name__)
 
@@ -73,12 +74,14 @@ def is_experiment_folder(folder: Path) -> bool:
 
 
 def folder_suffix() -> str:
-    """`_partial` on hosts using part of the dataset, nothing on the full dataset, keeps both kinds of runs apart."""
+    """`_test` under `--test`, else `_partial` on hosts using part of the dataset, nothing on the full dataset."""
+    if IS_TEST:
+        return TEST_SUFFIX
     return PARTIAL_SUFFIX if HOST_CONFIG.is_partial else ""
 
 
 def find_folder(title: str) -> Path | None:
-    """Return the existing `experiments/<NN>_<kebab-title>[_partial]/` folder of this host's share, None if new."""
+    """Return the existing `experiments/<NN>_<kebab-title>[_partial|_test]/` folder of this run's kind, None if new."""
     return next(PATH_EXPERIMENTS.glob(f"[0-9][0-9]_{kebab_case_slug(title)}{folder_suffix()}"), None)
 
 
@@ -100,8 +103,8 @@ def result_tables(folder: Path) -> list[str]:
 
 
 def new_folder(title: str) -> Path:
-    """Folder of a new experiment, sharing the index of the same experiment on the other data share when it exists."""
-    pattern = re.compile(rf"(\d{{2}})_{re.escape(kebab_case_slug(title))}({PARTIAL_SUFFIX})?")
+    """Folder of a new experiment, sharing the index of the same experiment on the other data share or in test mode."""
+    pattern = re.compile(rf"(\d{{2}})_{re.escape(kebab_case_slug(title))}({PARTIAL_SUFFIX}|{TEST_SUFFIX})?")
     indices = [int(match[1]) for path in PATH_EXPERIMENTS.iterdir() if (match := pattern.fullmatch(path.name))]
     index = indices[0] if indices else next_index()
     return PATH_EXPERIMENTS / f"{index:02d}_{kebab_case_slug(title)}{folder_suffix()}"
@@ -129,9 +132,12 @@ def is_confirmed(prompt: str) -> bool:
 
 
 def confirm_uncommitted_changes() -> None:
-    """List uncommitted changes and ask whether to run anyway, SystemExit on anything but `y`, also without a terminal."""
+    """List uncommitted changes and ask whether to run anyway, SystemExit on anything but `y`, also without a terminal.
+
+    - `--test` runs skip the question, they exist to try uncommitted code
+    """
     changes = uncommitted_changes()
-    if not changes:
+    if not changes or IS_TEST:
         return
     print(f"Uncommitted changes, meta.json will only record HEAD:\n{changes}")
     if not is_confirmed("Start the experiment anyway? [y/N] "):
@@ -425,6 +431,8 @@ def run_experiment(  # noqa: PLR0913, the public entry point of every experiment
     - Enables `expandable_segments` in the CUDA allocator unless `PYTORCH_CUDA_ALLOC_CONF` is set, cuts reserved but unused VRAM
     - `resume=True` and an unfinished live run -> continues in its folder, see `resume_run`, else starts a new run
     - Success -> `push_experiment` when `hub` is given, status `complete`
+    - `--test` on the command line -> `TEST_OVERRIDES` configs (see `coolfrog.lib.config`), `<NN>_<name>_test/` folder,
+      no uncommitted-changes question, nothing pushed
     - Exception -> everything stays for debugging, logs included, nothing pushed, status `failed`, the error propagates
     - KeyboardInterrupt (Ctrl+C, also `agent-proc stop`) -> then the interrupt propagates
         - New run on a terminal -> asks: `y` deletes it via `undo_run`, else it stays with status `interrupted`, resumable
@@ -483,7 +491,7 @@ def run_experiment(  # noqa: PLR0913, the public entry point of every experiment
     except BaseException:
         update_meta(run.folder, status=RunStatus.FAILED)
         raise
-    if hub is not None:
+    if hub is not None and not IS_TEST:
         push_experiment(hub, run.folder)
     update_meta(run.folder, status=RunStatus.COMPLETE)
 

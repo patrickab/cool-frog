@@ -17,3 +17,6 @@ node_modules/
 
 # Training monitor SSH hosts, may hold passwords
 monitor-hosts.json
+
+# `--test` runs of experiment scripts, see coolfrog.lib.config.IS_TEST
+experiments/*_test/

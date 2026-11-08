@@ -66,7 +66,7 @@ def reconstruct(latent_scale: int, validation: CoolData) -> pl.DataFrame:
 with run_experiment(TITLE, GOAL, HYPOTHESIS, hub=HuggingFaceHub()) as run:
     log = logging.getLogger("coolfrog.experiment")
     stats = load_stats()
-    _, validation_metadata = split_metadata(curated_metadata())
+    _, validation_metadata = split_metadata(curated_metadata(), data_config(LATENT_SCALES[0]).n_validation_designs)
     # Voxelize every scale before the first model, the forked voxelizing workers hang once CUDA is initialized
     validations = {latent_scale: CoolData(validation_metadata, data_config(latent_scale)) for latent_scale in LATENT_SCALES}
 

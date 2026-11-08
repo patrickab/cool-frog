@@ -18,7 +18,6 @@ from coolfrog.lib.experiment import PATH_EXPERIMENTS
 LATENT_SCALES = (2, 4)  # 800x160x32 with 32³ tiles first, then 1600x320x64 with 64³ tiles
 # Normalization and exclusion list of experiment 01 on the full dataset, used on every host
 PATH_VALUE_DISTRIBUTION = PATH_EXPERIMENTS / "01_cooldata-value-distribution" / "results"
-N_VALIDATION_DESIGNS = 128
 MEDIAN = 0.5
 
 
@@ -50,9 +49,8 @@ def tadpole_config(latent_scale: int, finetune_state: FinetuneState) -> TadpoleC
     )
 
 
-def split_metadata(metadata: CoolMetadata) -> tuple[CoolMetadata, CoolMetadata]:
-    """Seeded train / validation split holding out `N_VALIDATION_DESIGNS`, the indices of `CoolData.split`."""
-    n_validation = N_VALIDATION_DESIGNS
+def split_metadata(metadata: CoolMetadata, n_validation: int) -> tuple[CoolMetadata, CoolMetadata]:
+    """Seeded train / validation split holding out `n_validation` designs, the indices of `CoolData.split`."""
     n_designs = metadata.designs.height
     generator = torch.Generator().manual_seed(SEED)
     subsets = random_split(range(n_designs), [n_designs - n_validation, n_validation], generator)
@@ -61,8 +59,8 @@ def split_metadata(metadata: CoolMetadata) -> tuple[CoolMetadata, CoolMetadata]:
 
 
 def train_validation_split(metadata: CoolMetadata, config: DataConfig) -> tuple[CoolData, CoolData]:
-    """`split_metadata` as datasets, identical at every latent scale."""
-    train, validation = split_metadata(metadata)
+    """`split_metadata` of `config.n_validation_designs` as datasets, identical at every latent scale."""
+    train, validation = split_metadata(metadata, config.n_validation_designs)
     return CoolData(train, config), CoolData(validation, config)
 
 

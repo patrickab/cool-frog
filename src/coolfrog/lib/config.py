@@ -5,6 +5,7 @@ import math
 from pathlib import Path
 import random
 import socket
+import sys
 from typing import ClassVar, Literal
 
 import numpy as np
@@ -17,8 +18,10 @@ PATH_REPO = Path(__file__).parents[3]
 # Voxels per Tadpole latent cell per axis, 2 conv + 2 transformer stride-2 layers, identical for every Tadpole size
 TADPOLE_DOWNSAMPLING_FACTOR = 16
 
-# Single seed of the application: python, numpy and torch RNGs, dataset splits and samples
 SEED = 42
+
+# Quick end-to-end run of an experiment script: `TEST_OVERRIDES` configs, `<NN>_<name>_test/` folder, nothing pushed
+IS_TEST = "--test" in sys.argv
 
 
 def seed_everything(seed: int = SEED) -> None:
@@ -122,6 +125,8 @@ class DataConfig:
         Designs per batch.
     num_workers : int
         Loader worker processes.
+    n_validation_designs : int
+        Designs held out for validation by experiments that split their designs, e.g. the autoencoding experiments.
 
     Examples
     --------
@@ -137,6 +142,10 @@ class DataConfig:
     cache: bool = True
     batch_size: int = 32
     num_workers: int = 0
+    n_validation_designs: int = 128
+
+    def __post_init__(self) -> None:
+        apply_test_overrides(self)
 
 
 @dataclass(frozen=True)
@@ -202,6 +211,7 @@ class TrainConfig:
     validate_every: int = 1000
 
     def __post_init__(self) -> None:
+        apply_test_overrides(self)
         if (self.updates is None) == (self.epochs is None):
             raise ValueError(f"Set exactly one of updates ({self.updates}) and epochs ({self.epochs})")
 
@@ -212,3 +222,19 @@ class TrainConfig:
     def total_updates(self, n_train_designs: int) -> int:
         """`updates`, or `epochs` x `updates_per_epoch` when epochs are set."""
         return self.updates if self.updates is not None else self.epochs * self.updates_per_epoch(n_train_designs)
+
+
+TEST_OVERRIDES: dict[type, dict[str, object]] = {  # config fields under `--test`: a whole experiment in minutes
+    DataConfig: {"batch_size": 2, "n_validation_designs": 4},  # 2 x 4 GPUs = 8 designs per update, also on cube1
+    TrainConfig: {"updates": 32, "epochs": None, "designs_per_update": 8, "warmup_updates": 4, "validate_every": 8},
+}
+
+
+def apply_test_overrides(config: object) -> None:
+    """Under `--test`, set the `TEST_OVERRIDES` fields of a config being constructed, they win over the given values.
+
+    - Called by the `__post_init__` of every overridden config class, so every script gets them without own code
+    """
+    if IS_TEST:
+        for name, value in TEST_OVERRIDES.get(type(config), {}).items():
+            object.__setattr__(config, name, value)  # frozen dataclass, still in construction
