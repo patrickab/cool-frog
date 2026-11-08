@@ -135,7 +135,7 @@ TRAIN_PANELS = (
     Panel("kl/mean", "KL divergence", "KL [nats]", is_smoothed=True),
 )
 OPTIMIZER_PANELS = (
-    Panel("learning_rate", "Learning rate", "learning rate [unitless]", log_y=False),
+    Panel("learning_rate", "Learning rate", "learning rate [unitless]", log_y=True),  # warmup spans decades
     Panel("gradient_norm", "Gradient norm", "‖g‖ [unitless]", is_smoothed=True),
     Panel("gradient_to_weight_norm", "Gradient to weight norm", "‖g‖ / ‖θ‖ [unitless]", is_smoothed=True),
 )
