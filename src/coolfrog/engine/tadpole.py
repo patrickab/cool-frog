@@ -45,8 +45,17 @@ class Tadpole(nn.Module):
         )
         self.encoder = autoencoder.encoder
         self.decoder = autoencoder.decoder
-        if config.activation_checkpointing:
+        self.is_checkpointing = False
+
+    def enable_checkpointing(self) -> None:
+        """Recompute conv blocks, norm-activations, attention blocks and the encoder stem in backward.
+
+        - Same gradients, bit for bit, at ~25% longer updates and a fraction of the activation memory
+        - Set by `activate_checkpoint_if_needed` in training, once, when an update does not fit without it
+        """
+        if not self.is_checkpointing:
             _checkpoint_blocks(self)
+            self.is_checkpointing = True
 
     def encode(self, flowfield: FlowField) -> LatentFlowField:
         """Encode a batched, normalized flow field per channel, solids filled first."""

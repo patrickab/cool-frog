@@ -67,6 +67,15 @@ def average_gradients(parameters: Iterable[nn.Parameter]) -> None:
         gradient.copy_(reduced.view_as(gradient))
 
 
+def any_process(flag: bool) -> bool:
+    """Whether `flag` is True on any process, every process gets the answer, `flag` itself in a single process."""
+    if not distributed.is_initialized():
+        return flag
+    value = torch.tensor([float(flag)], device=torch.cuda.current_device())
+    distributed.all_reduce(value, op=distributed.ReduceOp.MAX)
+    return bool(value.item())
+
+
 def all_gather_objects[T](local: T) -> list[T]:
     """Every process's `local`, in rank order, picklable objects such as polars tables."""
     if not distributed.is_initialized():

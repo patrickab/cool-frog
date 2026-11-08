@@ -165,8 +165,9 @@ class TadpoleConfig:
         None -> whole domain in one tile
     max_internal_batchsize : int | None
         Scalar fields per encoder/decoder call, None = all at once, 1 for whole-domain evaluation from latent scale 3 on.
-    activation_checkpointing : bool
-        Recompute conv blocks, norm-activations and attention blocks in backward, ~25% longer steps.
+
+    Activation checkpointing is no setting: training enables it when an update runs out of memory without it, see
+    `activate_checkpoint_if_needed`, gradients are identical either way.
     """
 
     size: Literal["S", "B", "L"] = "B"
@@ -175,7 +176,6 @@ class TadpoleConfig:
     decoder_state: FinetuneState = "frozen"
     encoder_crop_size: int | None = None
     max_internal_batchsize: int | None = None
-    activation_checkpointing: bool = False
 
 
 @dataclass(frozen=True)

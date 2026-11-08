@@ -82,7 +82,7 @@ flowchart LR
 
 Memory measures:
 
-- `activation_checkpointing` recomputes conv blocks, norm-activations and attention blocks, ~25 % slower
+- Activation checkpointing is decided in training, not configured: `activate_checkpoint_if_needed` probes one pass without it before the first update, any process out of memory -> `Tadpole.enable_checkpointing()` on all (blocks, norm-activations, attention, encoder stem recomputed in backward, ~25 % slower, bit-identical gradients). The choice lands in `run.log` and the tracker state `activation_checkpointing`
 - `train()` unmerges GIFt LoRA weights in float32 after an eval forward, avoiding bf16 rounding in frozen weights
 
 Weights: `hf_hub_download("thuerey-group/Tadpole", revision=TADPOLE_REVISION)` unless `path_weights`. Warns when newer weights exist. `TADPOLE_REVISION` must match the `tadpole` git rev in `pyproject.toml`, weight revisions change state dict keys.

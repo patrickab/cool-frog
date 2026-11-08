@@ -63,7 +63,6 @@ MODEL_CONFIG = TadpoleConfig(
     decoder_state=LORA_RANK,
     encoder_crop_size=None,  # whole domains in training and validation, no tiles
     max_internal_batchsize=1,  # one scalar field per encoder/decoder call
-    activation_checkpointing=False,  # latent scale 1 fits without it, saves the recompute in backward
 )
 TRAIN_CONFIG = TrainConfig(
     epochs=10,
