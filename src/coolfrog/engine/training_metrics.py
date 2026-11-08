@@ -41,6 +41,7 @@ SCHEMAS = {  # tracker schemas, see `Tracker`
     METRICS_VALIDATION_AGGREGATES: VALIDATION_AGGREGATES_SCHEMA,
 }
 TRAINING_PROGRESS, EPOCHS_PROGRESS, VALIDATION_PROGRESS = "Training", "Epochs", "Validation"  # progress bar labels
+CURRENT_EPOCH_PROGRESS = "Current epoch"  # replaces the training bar when `TrainConfig.epochs` is set
 EPOCH_STATE = "epoch"  # state key: updates per epoch and the duration of one epoch at the training rate so far
 
 
@@ -81,7 +82,8 @@ class TrainingMetrics:
     - `metrics_validation`: every design and channel of every validation
     - `*_aggregates`: `aggregate` of the rows per update, for validation also per channel, written with the rows,
       training also holds the `optimizer_values` and `seconds_per_update` once per update
-    - Progress bars: updates done, epochs done when `config.epochs` is set, designs done over all GPUs of the last validation
+    - Progress bars: updates done, with `config.epochs` instead epochs done (time left for all) and updates done in the
+      current epoch (time left in it), designs done over all GPUs of the last validation
     - State `epoch`: updates per epoch and the duration of one epoch at the training rate so far, validation excluded
 
     Examples
@@ -97,9 +99,11 @@ class TrainingMetrics:
         self.updates = config.total_updates(n_train_designs)
         self.updates_per_epoch = config.updates_per_epoch(n_train_designs)
         self.tracker = tracker
-        if config.epochs is not None:  # bars show in creation order: epochs, training, validation
+        if config.epochs is not None:  # bars show in creation order: epochs, current epoch, validation
             self.tracker.set_progress(EPOCHS_PROGRESS, 0, config.epochs)
-        self.tracker.set_progress(TRAINING_PROGRESS, 0, self.updates)
+            self.tracker.set_progress(CURRENT_EPOCH_PROGRESS, 0, self.updates_per_epoch)
+        else:
+            self.tracker.set_progress(TRAINING_PROGRESS, 0, self.updates)
         self.tracker.update_state({EPOCH_STATE: {"updates": self.updates_per_epoch}})
         self._tick = time.perf_counter()
 
@@ -126,18 +130,26 @@ class TrainingMetrics:
             METRICS_TRAINING_AGGREGATES,
             aggregates.select(pl.col(name).cast(dtype) for name, dtype in TRAINING_AGGREGATES_SCHEMA.items()),
         )
-        self.tracker.set_progress(TRAINING_PROGRESS, update, self.updates)
-        if self.config.epochs is not None:
-            self.tracker.set_progress(
-                EPOCHS_PROGRESS, update // self.updates_per_epoch, self.config.epochs, done=update / self.updates
-            )
+        if self.config.epochs is None:
+            self.tracker.set_progress(TRAINING_PROGRESS, update, self.updates)
+        else:
+            self._log_epoch_progress(update)
         self._log_epoch_duration(update)
         if update % self.config.validate_every == 0 or update == self.updates:
             logger.info("update %d train MSE %.3e, mean over samples", update, rows[MSE].mean())
 
+    def _log_epoch_progress(self, update: int) -> None:
+        """Advance the epochs and current epoch bars, a finished epoch restarts the current epoch bar and its clock."""
+        epochs_done, updates_in_epoch = divmod(update, self.updates_per_epoch)
+        self.tracker.set_progress(EPOCHS_PROGRESS, epochs_done, self.config.epochs, done=update / self.updates)
+        if updates_in_epoch == 0 and update < self.updates:  # the next epoch's clock starts now, not at its first update
+            self.tracker.set_progress(CURRENT_EPOCH_PROGRESS, 0, self.updates_per_epoch)
+        else:
+            self.tracker.set_progress(CURRENT_EPOCH_PROGRESS, updates_in_epoch or self.updates_per_epoch, self.updates_per_epoch)
+
     def _log_epoch_duration(self, update: int) -> None:
-        """Set the epoch state's duration from the training bar's unpaused time per update."""
-        training = self.tracker.progress()[TRAINING_PROGRESS]
+        """Set the epoch state's duration from the whole run's unpaused time per update."""
+        training = self.tracker.progress()[TRAINING_PROGRESS if self.config.epochs is None else EPOCHS_PROGRESS]
         seconds_per_epoch = training.elapsed(time.monotonic()) / update * self.updates_per_epoch
         self.tracker.update_state({EPOCH_STATE: {"updates": self.updates_per_epoch, "duration": duration(seconds_per_epoch)}})
 
@@ -147,8 +159,8 @@ class TrainingMetrics:
         - Bar counts designs over all GPUs: the total gathered once, done = this GPU's designs x GPUs, exact at the end
         """
         total = sum(all_gather_objects(len(loader.dataset)))  # every rank calls this, `evaluate` also gathers on all ranks
-        self.tracker.pause_progress(TRAINING_PROGRESS)
-        self.tracker.pause_progress(EPOCHS_PROGRESS)
+        for label in (TRAINING_PROGRESS, EPOCHS_PROGRESS, CURRENT_EPOCH_PROGRESS):  # absent bars are skipped
+            self.tracker.pause_progress(label)
         try:
             self.tracker.set_progress(VALIDATION_PROGRESS, 0, total)
             completed = 0
@@ -158,8 +170,8 @@ class TrainingMetrics:
                 self.tracker.set_progress(VALIDATION_PROGRESS, min(completed * world_size(), total), total)
             self.tracker.set_progress(VALIDATION_PROGRESS, total, total)
         finally:
-            self.tracker.resume_progress(TRAINING_PROGRESS)
-            self.tracker.resume_progress(EPOCHS_PROGRESS)
+            for label in (TRAINING_PROGRESS, EPOCHS_PROGRESS, CURRENT_EPOCH_PROGRESS):
+                self.tracker.resume_progress(label)
 
     def log_validation(self, update: int, per_design_tables: Mapping[str, pl.DataFrame]) -> None:
         """Append every design and channel of the `evaluate` tables and their aggregates, log the channel mean of the medians.
