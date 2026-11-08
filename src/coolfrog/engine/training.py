@@ -1,6 +1,6 @@
 """Fine-tuning of the Tadpole autoencoder on random single-channel crops."""
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
 import itertools
@@ -122,6 +122,15 @@ def training_loss(model: Tadpole, crops: FlowField, kl_weight: float) -> tuple[t
     return fluid_mse(prediction, crops) + kl_weight * latent.kl_divergence().mean(), prediction, latent
 
 
+@torch.no_grad()
+def gradient_norms(parameters: Sequence[torch.Tensor]) -> dict[str, float]:
+    """L2 norm of the gradient over all `parameters` and its ratio to their L2 norm, one GPU sync."""
+    gradient_norm = torch.linalg.vector_norm(torch.stack([torch.linalg.vector_norm(parameter.grad) for parameter in parameters]))
+    weight_norm = torch.linalg.vector_norm(torch.stack([torch.linalg.vector_norm(parameter) for parameter in parameters]))
+    gradient_norm, ratio = torch.stack([gradient_norm, gradient_norm / weight_norm]).tolist()
+    return {"gradient_norm": gradient_norm, "gradient_to_weight_norm": ratio}
+
+
 def activate_checkpoint_if_needed(model: Tadpole, crops: FlowField, kl_weight: float) -> None:
     """Probe one training pass over `crops` without checkpointing, enable it when any process ran out of memory.
 
@@ -195,10 +204,10 @@ def _train(  # noqa: PLR0913, the arguments of fine_tune_autoencoder plus its me
                 losses = {MSE: field_mse(prediction, crops), SPECTRAL_LOSS: spectral_distance(prediction, crops), KL: field_kl(latent)}
                 samples.add(crops.design_id, channel_index, {name: values[:, 0] for name, values in losses.items()})
         average_gradients(parameters)  # mean over all passes of all processes
-        learning_rate = optimizer.param_groups[0]["lr"]  # used by this update, the scheduler then sets the next
+        optimizer_values = {"learning_rate": optimizer.param_groups[0]["lr"], **gradient_norms(parameters)}  # before the step
         optimizer.step()
         scheduler.step()
         optimizer.zero_grad(set_to_none=True)
-        metrics.log_update(update, samples, learning_rate)
+        metrics.log_update(update, samples, optimizer_values)
         if update % config.validate_every == 0 or update == metrics.updates:
             validate(update)

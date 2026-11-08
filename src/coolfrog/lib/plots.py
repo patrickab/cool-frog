@@ -46,6 +46,8 @@ TRAINING_AGGREGATES_SCHEMA = pl.Schema(
     {
         **aggregate_schema(TRAINING_SCHEMA, TRAINING_BY, TRAINING_METRICS),
         "learning_rate": pl.Float64,  # one value per update, logged once, never aggregated
+        "gradient_norm": pl.Float64,  # L2 norm ||g|| over the trainable parameters, averaged over passes and GPUs
+        "gradient_to_weight_norm": pl.Float64,  # ||g|| / ||θ||, θ before the step
         "seconds_per_update": pl.Float64,
     }
 )
@@ -131,9 +133,13 @@ TRAIN_PANELS = (
     Panel("mse/mean", "MSE", "MSE [normalized]", is_smoothed=True),
     Panel("spectral_loss/mean", "Spectral loss", "spectral loss [normalized]", is_smoothed=True),
     Panel("kl/mean", "KL divergence", "KL [nats]", is_smoothed=True),
-    Panel("learning_rate", "Learning rate", "learning rate [unitless]", log_y=False),
 )
-VALIDATION_PANELS = (  # same order as TRAIN_PANELS, NRMSE in the slot of the learning rate
+OPTIMIZER_PANELS = (
+    Panel("learning_rate", "Learning rate", "learning rate [unitless]", log_y=False),
+    Panel("gradient_norm", "Gradient norm", "‖g‖ [unitless]", is_smoothed=True),
+    Panel("gradient_to_weight_norm", "Gradient to weight norm", "‖g‖ / ‖θ‖ [unitless]", is_smoothed=True),
+)
+VALIDATION_PANELS = (  # TRAIN_PANELS plus NRMSE
     Panel("mse/median", "MSE", "MSE [normalized]"),
     Panel("spectral_loss/median", "Spectral loss", "spectral loss [normalized]"),
     Panel("kl/median", "KL divergence", "KL [nats]"),
@@ -176,7 +182,7 @@ def exponential_average(values: np.ndarray, smoothing: float = EMA_SMOOTHING) ->
 
 
 def training_curves(aggregates: pl.DataFrame, samples_per_update: int | None = None) -> Figure:
-    """MSE, spectral loss, KL and learning rate per update: mean over the update's samples plus its EMA.
+    """MSE, spectral loss and KL per update: mean over the update's samples plus its EMA.
 
     Parameters
     ----------
@@ -185,23 +191,40 @@ def training_curves(aggregates: pl.DataFrame, samples_per_update: int | None = N
     samples_per_update : int | None
         `TrainConfig.designs_per_update`, named in the legend, None leaves the count out.
     """
-    figure, axes = row_panels([1] * len(TRAIN_PANELS))
-    _draw_training(axes, typed(aggregates, TRAINING_AGGREGATES_SCHEMA).sort("update", maintain_order=True), samples_per_update)
-    figure_title(figure, "Training metrics")
+    samples = f"n={samples_per_update}" if samples_per_update else "its samples"
+    return _update_curves(aggregates, TRAIN_PANELS, "Training metrics", f"per update, mean over {samples}")
+
+
+def optimizer_curves(aggregates: pl.DataFrame) -> Figure:
+    """Learning rate, gradient norm and gradient to weight norm per update, the gradient norms plus their EMA.
+
+    Parameters
+    ----------
+    aggregates : pl.DataFrame
+        `TRAINING_AGGREGATES_SCHEMA`, optional `run` column -> one color per run.
+    """
+    return _update_curves(aggregates, OPTIMIZER_PANELS, "Optimizer", "per update")
+
+
+def _update_curves(aggregates: pl.DataFrame, update_panels: Sequence[Panel], title: str, raw_label: str) -> Figure:
+    """One row of `update_panels` over the training aggregates, titled `title`, `raw_label` names the unsmoothed line."""
+    figure, axes = row_panels([1] * len(update_panels))
+    rows = typed(aggregates, TRAINING_AGGREGATES_SCHEMA).sort("update", maintain_order=True)
+    _draw_training(axes, rows, update_panels, raw_label)
+    figure_title(figure, title)
     return figure
 
 
-def _draw_training(axes: Sequence[Axes], means: pl.DataFrame, samples_per_update: int | None) -> None:
-    """One panel per `TRAIN_PANELS` entry, the line kinds and runs in one legend row below the panels.
+def _draw_training(axes: Sequence[Axes], means: pl.DataFrame, update_panels: Sequence[Panel], raw_label: str) -> None:
+    """One panel per `update_panels` entry, the line kinds and runs in one legend row below the panels.
 
     - One run: per-update mean in TUM light blue, its EMA and unsmoothed panels in TUM blue
     - Several runs: one color per run, the per-update mean faint, the EMA solid
     """
     runs = by_run(means)
     is_comparison = runs[0][0] is not None
-    samples = f"n={samples_per_update}" if samples_per_update else "its samples"
-    raw_label, ema_label = f"per update, mean over {samples}", f"EMA, n={EMA_WINDOW}, β={EMA_SMOOTHING}"
-    for axis, panel in zip(axes, TRAIN_PANELS, strict=False):
+    ema_label = f"EMA, n={EMA_WINDOW}, β={EMA_SMOOTHING}"
+    for axis, panel in zip(axes, update_panels, strict=False):
         for index, (run, rows) in enumerate(runs):
             updates, values = rows["update"].to_numpy(), float_values(rows, panel.column)
             color = cycle_color(index) if is_comparison else TUM_BLUE
@@ -218,7 +241,8 @@ def _draw_training(axes: Sequence[Axes], means: pl.DataFrame, samples_per_update
             integer_x_ticks(axis)
     if not means.height:
         return
-    handles, labels = axes[0].get_legend_handles_labels()
+    legend_axis = next((axis for axis, panel in zip(axes, update_panels, strict=False) if panel.is_smoothed), axes[0])
+    handles, labels = legend_axis.get_legend_handles_labels()  # an unsmoothed panel has no per-update and EMA lines
     if is_comparison:  # line kinds as neutral proxies after the runs: thin faint per update, solid EMA
         neutral = mpl.rcParams["text.color"]
         handles += [Line2D([], [], color=neutral, alpha=RAW_ALPHA, linewidth=RAW_LINEWIDTH), Line2D([], [], color=neutral)]
@@ -385,7 +409,10 @@ TableFigure = Callable[[pl.DataFrame, Mapping[str, Any]], Figure | None]  # (tab
 TABLE_FIGURES: dict[str, tuple[TableFigure, ...]] = {
     METRICS_TRAINING: (),
     METRICS_VALIDATION: (),
-    METRICS_TRAINING_AGGREGATES: (lambda rows, state: training_curves(rows, state["configs"]["TrainConfig"]["designs_per_update"]),),
+    METRICS_TRAINING_AGGREGATES: (
+        lambda rows, state: training_curves(rows, state["configs"]["TrainConfig"]["designs_per_update"]),
+        lambda rows, _: optimizer_curves(rows),
+    ),
     METRICS_VALIDATION_AGGREGATES: (
         lambda rows, _: validation_curves(rows),
         lambda rows, state: validation_error_comparison(rows, *run_model_and_grid(state)),
@@ -653,14 +680,14 @@ def label_axis(  # noqa: PLR0913, axis, texts, values and the scale override
     if is_log_scale(values.tolist()) if log_y is None else log_y:
         axis.set_yscale("log")
         plain_log_ticks(axis.yaxis)
-    else:  # plain tick values like 5e-05, no offset text above the axis colliding with the title
-        axis.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:.4g}"))
+    else:  # plain tick values like 5e-05 or 1500, no offset text above the axis colliding with the title
+        axis.yaxis.set_major_formatter(FuncFormatter(lambda value, _: _short_number(value)))
 
 
 def plain_log_ticks(axis: "mpl.axis.Axis") -> None:
-    """Log axis labelled at 1, 2 and 5 per decade as plain numbers (0.002, 50), unlabelled minor ticks."""
+    """Log axis labelled at 1, 2 and 5 per decade as plain numbers (0.002, 50, 10000), unlabelled minor ticks."""
     axis.set_major_locator(LogLocator(base=10, subs=(1.0, 2.0, 5.0)))
-    axis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:.4g}"))
+    axis.set_major_formatter(FuncFormatter(lambda value, _: _short_number(value)))
     axis.set_minor_formatter(NullFormatter())
 
 

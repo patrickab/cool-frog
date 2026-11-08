@@ -80,7 +80,7 @@ class TrainingMetrics:
     - `metrics_training`: every sample of every update, a sample is one design and channel
     - `metrics_validation`: every design and channel of every validation
     - `*_aggregates`: `aggregate` of the rows per update, for validation also per channel, written with the rows,
-      training also holds `learning_rate` and `seconds_per_update` once per update
+      training also holds the `optimizer_values` and `seconds_per_update` once per update
     - Progress bars: updates done, epochs done when `config.epochs` is set, designs done over all GPUs of the last validation
     - State `epoch`: updates per epoch and the duration of one epoch at the training rate so far, validation excluded
 
@@ -108,16 +108,17 @@ class TrainingMetrics:
         logger.info("Activation checkpointing %s", "on, an update does not fit without it" if is_checkpointing else "off")
         self.tracker.update_state({"activation_checkpointing": is_checkpointing})
 
-    def log_update(self, update: int, samples: TrainSamples, learning_rate: float) -> None:
+    def log_update(self, update: int, samples: TrainSamples, optimizer_values: Mapping[str, float]) -> None:
         """Append the samples of every process for one optimizer update and their aggregate, KeyboardInterrupt on a dashboard stop.
 
         - Every process calls it, the samples are gathered over the processes
+        - `optimizer_values`: one value per update, e.g. `learning_rate` and `gradient_norm`, the same on every process
         """
         now = time.perf_counter()
         rows = pl.concat(all_gather_objects(samples.to_frame())).with_columns(update=pl.lit(update))
         rows = rows.select(pl.col(name).cast(dtype) for name, dtype in TRAINING_SCHEMA.items())
         aggregates = aggregate(rows, list(TRAINING_BY), TRAINING_METRICS).with_columns(
-            learning_rate=pl.lit(learning_rate), seconds_per_update=pl.lit(now - self._tick)
+            **{name: pl.lit(value) for name, value in optimizer_values.items()}, seconds_per_update=pl.lit(now - self._tick)
         )
         self._tick = now
         self.tracker.extend(METRICS_TRAINING, rows)
