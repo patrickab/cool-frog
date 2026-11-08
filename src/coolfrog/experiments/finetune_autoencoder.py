@@ -69,7 +69,7 @@ LORA_RANK = 32
 MODEL = f"LoRA-{LORA_RANK}"
 DEVICE = "cuda"
 RESUME = "--resume" in sys.argv  # continue an unfinished run, complete latent scale stages are loaded, not rerun
-LATENT_SCALES = (1,)
+LATENT_SCALES = (2,)
 log = logging.getLogger("coolfrog.experiment")
 
 MODEL_CONFIG = TadpoleConfig(
