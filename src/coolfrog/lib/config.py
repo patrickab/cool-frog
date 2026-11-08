@@ -1,6 +1,6 @@
 """Frozen run configuration."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 from pathlib import Path
 import random
@@ -127,6 +127,8 @@ class DataConfig:
         Loader worker processes.
     n_validation_designs : int
         Designs held out for validation by experiments that split their designs, e.g. the autoencoding experiments.
+    voxel_resolution : str
+        Voxels along x, y, z of `grid`, e.g. "400x80x16", derived, not settable, shown with the configs.
 
     Examples
     --------
@@ -143,9 +145,11 @@ class DataConfig:
     batch_size: int = 32
     num_workers: int = 0
     n_validation_designs: int = 128
+    voxel_resolution: str = field(init=False)
 
     def __post_init__(self) -> None:
         apply_test_overrides(self)
+        object.__setattr__(self, "voxel_resolution", "x".join(map(str, self.grid.shape)))  # frozen, still in construction
 
 
 @dataclass(frozen=True)
