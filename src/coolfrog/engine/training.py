@@ -114,12 +114,15 @@ def fine_tune_autoencoder(  # noqa: PLR0913, model, data, stats, config, checkpo
         )
 
 
-def training_loss(model: Tadpole, crops: FlowField, kl_weight: float) -> tuple[torch.Tensor, FlowField, LatentFlowField]:
-    """Fluid MSE plus `kl_weight` x mean KL of one pass over `crops`, forward in `HOST_CONFIG.autocast_dtype`."""
+def training_loss(model: Tadpole, crops: FlowField, config: TrainConfig) -> tuple[torch.Tensor, FlowField, LatentFlowField]:
+    """Fluid MSE plus the weighted mean KL and spectral distance of one pass over `crops`, forward in `HOST_CONFIG.autocast_dtype`."""
     autocast_dtype = HOST_CONFIG.autocast_dtype
     with torch.autocast(crops.fields.device.type, dtype=autocast_dtype, enabled=autocast_dtype is not None):
         prediction, latent = model(crops)
-    return fluid_mse(prediction, crops) + kl_weight * latent.kl_divergence().mean(), prediction, latent
+    loss = fluid_mse(prediction, crops) + config.kl_weight * latent.kl_divergence().mean()
+    if config.spectral_weight:
+        loss = loss + config.spectral_weight * spectral_distance(prediction, crops).mean()
+    return loss, prediction, latent
 
 
 @torch.no_grad()
@@ -131,7 +134,7 @@ def gradient_norms(parameters: Sequence[torch.Tensor]) -> dict[str, float]:
     return {"gradient_norm": gradient_norm, "gradient_to_weight_norm": ratio}
 
 
-def activate_checkpoint_if_needed(model: Tadpole, crops: FlowField, kl_weight: float) -> None:
+def activate_checkpoint_if_needed(model: Tadpole, crops: FlowField, config: TrainConfig) -> None:
     """Probe one training pass over `crops` without checkpointing, enable it when any process ran out of memory.
 
     - Every process calls it and they decide together, so all train alike and none waits in a collective for one that failed
@@ -139,7 +142,7 @@ def activate_checkpoint_if_needed(model: Tadpole, crops: FlowField, kl_weight: f
     - The probe's gradients are dropped, an out-of-memory error later in training fails the run
     """
     try:
-        training_loss(model, crops, kl_weight)[0].backward()
+        training_loss(model, crops, config)[0].backward()
         out_of_memory = False
     except torch.OutOfMemoryError:
         out_of_memory = True  # leaving the except block frees the half-built graph
@@ -190,7 +193,7 @@ def _train(  # noqa: PLR0913, the arguments of fine_tune_autoencoder plus its me
     batches = endless(train_loader)
     model.train()
     first_batch = next(batches)
-    activate_checkpoint_if_needed(model, first_batch[0].to(device), config.kl_weight)
+    activate_checkpoint_if_needed(model, first_batch[0].to(device), config)
     metrics.log_checkpointing(model.is_checkpointing)
     batches = itertools.chain([first_batch], batches)  # the probe batch still trains, the data order stays
     for update in range(1, metrics.updates + 1):
@@ -198,9 +201,9 @@ def _train(  # noqa: PLR0913, the arguments of fine_tune_autoencoder plus its me
         for _ in range(passes):
             crops, channel_index = next(batches)
             crops = crops.to(device, non_blocking=True)
-            loss, prediction, latent = training_loss(model, crops, config.kl_weight)
+            loss, prediction, latent = training_loss(model, crops, config)
             (loss / passes).backward()  # gradient = mean over this process's passes
-            with torch.no_grad():  # logged per crop, the loss stays the fluid MSE pooled over the pass
+            with torch.no_grad():  # logged per crop, the loss stays pooled over the pass
                 losses = {MSE: field_mse(prediction, crops), SPECTRAL_LOSS: spectral_distance(prediction, crops), KL: field_kl(latent)}
                 samples.add(crops.design_id, channel_index, {name: values[:, 0] for name, values in losses.items()})
         average_gradients(parameters)  # mean over all passes of all processes

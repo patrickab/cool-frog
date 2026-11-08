@@ -201,6 +201,8 @@ class TrainConfig:
         AdamW, linear warmup over `warmup_updates`, constant afterwards.
     kl_weight : float
         Weight of the mean elementwise KL term next to the fluid-voxel MSE.
+    spectral_weight : float
+        Weight of the mean `spectral_distance` term next to the fluid-voxel MSE, 0 = MSE only and no FFT in the loss.
     validate_every : int
         Updates between validation runs, update 0 = zero-shot.
     """
@@ -212,6 +214,7 @@ class TrainConfig:
     warmup_updates: int = 1000
     weight_decay: float = 1e-15
     kl_weight: float = 1e-6
+    spectral_weight: float = 0.0
     validate_every: int = 1000
 
     def __post_init__(self) -> None:
