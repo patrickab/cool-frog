@@ -92,7 +92,7 @@ def training_row(aggregates: pl.DataFrame, latent_scale: int) -> dict[str, float
     return {
         "latent_scale": latent_scale,
         "updates": last["update"],  # resolved from `TRAIN_CONFIG.epochs` when set
-        "training time [h]": aggregates["seconds_per_update/mean"].sum() / 3600,  # optimizer time, validation excluded
+        "training time [h]": aggregates["seconds_per_update"].sum() / 3600,  # optimizer time, validation excluded
         "final train MSE": last[f"{MSE}/mean"],
         "final train spectral loss": last[f"{SPECTRAL_LOSS}/mean"],
         "final KL": last[f"{KL}/mean"],

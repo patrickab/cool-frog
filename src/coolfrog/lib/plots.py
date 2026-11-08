@@ -37,12 +37,17 @@ CHANNEL_ENUM = pl.Enum(CHANNEL_SYMBOLS)
 
 # Optional `run` (String) column on the metric frames below: one color per run, e.g. to compare latent scales
 SAMPLE_SCHEMA = pl.Schema({"update": pl.Int64, "design_id": pl.Int64, "channel": CHANNEL_ENUM})  # one design and channel
-TRAINING_METRICS = ("mse", "spectral_loss", "kl", "learning_rate", "seconds_per_update")
+TRAINING_METRICS = ("mse", "spectral_loss", "kl")  # per sample, aggregated over each update's samples
+UPDATE_VALUES = ("learning_rate", "seconds_per_update")  # one value per update, repeated on its sample rows, never aggregated
 VALIDATION_METRICS = ("nrmse", "mse", "spectral_loss", "kl")
-TRAINING_SCHEMA = pl.Schema({**SAMPLE_SCHEMA, **dict.fromkeys(TRAINING_METRICS, pl.Float64)})  # every sample of every update
+TRAINING_SCHEMA = pl.Schema(  # every sample of every update
+    {**SAMPLE_SCHEMA, **dict.fromkeys(TRAINING_METRICS, pl.Float64), **dict.fromkeys(UPDATE_VALUES, pl.Float64)}
+)
 VALIDATION_SCHEMA = pl.Schema({**SAMPLE_SCHEMA, **dict.fromkeys(VALIDATION_METRICS, pl.Float64)})  # every design per validation
 TRAINING_BY, VALIDATION_BY = ("update",), ("update", "channel")  # groups of the aggregates
-TRAINING_AGGREGATES_SCHEMA = aggregate_schema(TRAINING_SCHEMA, TRAINING_BY, TRAINING_METRICS)
+TRAINING_AGGREGATES_SCHEMA = pl.Schema(
+    {**aggregate_schema(TRAINING_SCHEMA, TRAINING_BY, TRAINING_METRICS), **dict.fromkeys(UPDATE_VALUES, pl.Float64)}
+)
 VALIDATION_AGGREGATES_SCHEMA = aggregate_schema(VALIDATION_SCHEMA, VALIDATION_BY, VALIDATION_METRICS)
 CHANNEL_AXES_SCHEMA = pl.Schema(  # one row per channel, axis settings of the value-distribution plots
     {
@@ -171,9 +176,15 @@ def figure_for_table(table: str, frame: pl.DataFrame) -> Figure | None:
 
 
 def training_aggregates(training: pl.DataFrame) -> pl.DataFrame:
-    """`TRAINING_SCHEMA` rows as `TRAINING_AGGREGATES_SCHEMA`: `aggregate` over each update's samples, keeps `run`."""
+    """`TRAINING_SCHEMA` rows as `TRAINING_AGGREGATES_SCHEMA`: `aggregate` of the losses over each update's samples, keeps `run`.
+
+    - `UPDATE_VALUES` are one value per update, carried once instead of aggregated
+    """
     training = typed(training, TRAINING_SCHEMA)
-    return aggregate(training, [*run_column(training), *TRAINING_BY], TRAINING_METRICS).sort("update", maintain_order=True)
+    by = [*run_column(training), *TRAINING_BY]
+    statistics = aggregate(training, by, TRAINING_METRICS)
+    update_values = training.group_by(by, maintain_order=True).agg(pl.col(UPDATE_VALUES).first())
+    return statistics.join(update_values, on=by, maintain_order="left").sort("update", maintain_order=True)
 
 
 def validation_aggregates(validation: pl.DataFrame) -> pl.DataFrame:
@@ -221,7 +232,7 @@ def _draw_training(axes: Sequence[Axes], means: pl.DataFrame) -> None:
     samples = int(means["n"].median()) if means.height else 0
     raw_label, ema_label = f"per update, mean of {samples} samples", f"EMA, β = {EMA_SMOOTHING}"
     for axis, panel in zip(axes, TRAIN_PANELS, strict=False):
-        column = f"{panel.metric}/mean"
+        column = panel.metric if panel.metric in UPDATE_VALUES else f"{panel.metric}/mean"
         for index, (run, rows) in enumerate(runs):
             updates, values = rows["update"].to_numpy(), float_values(rows, column)
             color = cycle_color(index) if is_comparison else TUM_BLUE
