@@ -39,7 +39,7 @@ Concepts: [system-overview.md](system-overview.md). Data flow and contracts: [ar
 │   ├── engine/
 │   │   ├── cooldata.py           # CoolMetadata, CoolDataShard, CoolData, build_voxel_cache, create_dataloader, SurfaceMesh
 │   │   ├── design_rows.csv       # design_id -> official metadata row, run, batch (large, do not read whole)
-│   │   ├── tadpole.py            # Tadpole module: tiles, solid filling, slabs, checkpointing, LoRA adapter I/O, weight pins
+│   │   ├── tadpole.py            # Tadpole module: tiles, solid filling, checkpointing, LoRA adapter I/O, weight pins
 │   │   ├── model_evaluation.py   # nrmse, mse, spectral_loss tables, per-field mse/kl, fluid_mse loss, evaluate (gathers ranks)
 │   │   ├── training.py           # RandomCrops, create_optimizer, endless, fine_tune_autoencoder, _train loop
 │   │   └── training_metrics.py   # TrainingMetrics, TrainSamples: the `metrics` tracker table, progress bars

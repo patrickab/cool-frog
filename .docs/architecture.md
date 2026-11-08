@@ -32,7 +32,7 @@ flowchart LR
 | Component | Role |
 |---|---|
 | `engine.cooldata` | Design catalogue (`CoolMetadata`), voxel dataset (`CoolData`), HDF5 shard cache (`CoolDataShard`), DataLoader factory, UI surface meshes (`SurfaceMesh`) |
-| `engine.tadpole` | `Tadpole` nn.Module around `tadpole.model.autoencoder.TadpoleAutoencoder`: per-channel encode/decode, tiling, solid filling, memory slabbing, LoRA adapters |
+| `engine.tadpole` | `Tadpole` nn.Module around `tadpole.model.autoencoder.TadpoleAutoencoder`: per-channel encode/decode, tiling, solid filling, LoRA adapters |
 | `engine.model_evaluation` | Metric tables and the differentiable training loss `fluid_mse` |
 | `engine.training` + `training_metrics` | LoRA fine-tuning loop, crops, optimizer, validation, tracker tables |
 | `experiments.*` | Experiment scripts and shared setup (`src/coolfrog/experiments/autoencoding.py`) |
@@ -82,8 +82,7 @@ flowchart LR
 
 Memory measures:
 
-- Full-resolution encoder stem and decoder head run in x-slabs of ~2²¹ voxels with a one-cell halo (exact, convs without GroupNorm)
-- `activation_checkpointing` recomputes conv blocks, norm-activations, attention blocks and slabs, ~25 % slower
+- `activation_checkpointing` recomputes conv blocks, norm-activations and attention blocks, ~25 % slower
 - `train()` unmerges GIFt LoRA weights in float32 after an eval forward, avoiding bf16 rounding in frozen weights
 
 Weights: `hf_hub_download("thuerey-group/Tadpole", revision=TADPOLE_REVISION)` unless `path_weights`. Warns when newer weights exist. `TADPOLE_REVISION` must match the `tadpole` git rev in `pyproject.toml`, weight revisions change state dict keys.

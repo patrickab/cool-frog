@@ -166,7 +166,7 @@ class TadpoleConfig:
     max_internal_batchsize : int | None
         Scalar fields per encoder/decoder call, None = all at once, 1 for whole-domain evaluation from latent scale 3 on.
     activation_checkpointing : bool
-        Recompute conv blocks, norm-activations, attention blocks and full-resolution slabs in backward, ~25% longer steps.
+        Recompute conv blocks, norm-activations and attention blocks in backward, ~25% longer steps.
     """
 
     size: Literal["S", "B", "L"] = "B"
