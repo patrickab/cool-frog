@@ -207,20 +207,15 @@ def optimizer_curves(aggregates: pl.DataFrame) -> Figure:
 
 
 def _update_curves(aggregates: pl.DataFrame, update_panels: Sequence[Panel], title: str, raw_label: str) -> Figure:
-    """One row of `update_panels` over the training aggregates, titled `title`, `raw_label` names the unsmoothed line."""
-    figure, axes = row_panels([1] * len(update_panels))
-    rows = typed(aggregates, TRAINING_AGGREGATES_SCHEMA).sort("update", maintain_order=True)
-    _draw_training(axes, rows, update_panels, raw_label)
-    figure_title(figure, title)
-    return figure
+    """One row of `update_panels` over the training aggregates, the line kinds and runs in one legend row below the panels.
 
-
-def _draw_training(axes: Sequence[Axes], means: pl.DataFrame, update_panels: Sequence[Panel], raw_label: str) -> None:
-    """One panel per `update_panels` entry, the line kinds and runs in one legend row below the panels.
-
+    - `raw_label` names the unsmoothed per-update line
     - One run: per-update mean in TUM light blue, its EMA and unsmoothed panels in TUM blue
     - Several runs: one color per run, the per-update mean faint, the EMA solid
     """
+    figure, axes = row_panels([1] * len(update_panels))
+    figure_title(figure, title)
+    means = typed(aggregates, TRAINING_AGGREGATES_SCHEMA).sort("update", maintain_order=True)
     runs = by_run(means)
     is_comparison = runs[0][0] is not None
     ema_label = f"EMA, n={EMA_WINDOW}, β={EMA_SMOOTHING}"
@@ -240,14 +235,15 @@ def _draw_training(axes: Sequence[Axes], means: pl.DataFrame, update_panels: Seq
         if means.height:
             integer_x_ticks(axis)
     if not means.height:
-        return
+        return figure
     legend_axis = next((axis for axis, panel in zip(axes, update_panels, strict=False) if panel.is_smoothed), axes[0])
     handles, labels = legend_axis.get_legend_handles_labels()  # an unsmoothed panel has no per-update and EMA lines
     if is_comparison:  # line kinds as neutral proxies after the runs: thin faint per update, solid EMA
         neutral = mpl.rcParams["text.color"]
         handles += [Line2D([], [], color=neutral, alpha=RAW_ALPHA, linewidth=RAW_LINEWIDTH), Line2D([], [], color=neutral)]
         labels += [raw_label, ema_label]
-    axes[0].figure.legend(handles, labels, loc="outside lower center", ncols=len(labels))
+    figure.legend(handles, labels, loc="outside lower center", ncols=len(labels))
+    return figure
 
 
 def validation_curves(aggregates: pl.DataFrame) -> Figure:
@@ -262,42 +258,36 @@ def validation_curves(aggregates: pl.DataFrame) -> Figure:
         `VALIDATION_AGGREGATES_SCHEMA`, optional `run` column -> one color per run.
     """
     medians = typed(aggregates, VALIDATION_AGGREGATES_SCHEMA).sort("update", "channel", maintain_order=True)
+    channels = present_channels(medians)
     if "run" not in medians.columns:
         figure, axes = row_panels([1] * len(VALIDATION_PANELS))
-        _draw_validation(figure, axes, medians)
-        figure_title(figure, "Validation metrics")
-        return figure
-    channels, runs = present_channels(medians), by_run(medians)
-    figure, axes = panels(len(VALIDATION_PANELS) * len(channels), columns=len(channels), panel_size=(3.4, 2.6))
-    for row, panel in enumerate(VALIDATION_PANELS):
-        for position, channel in enumerate(channels):
-            axis = axes[row * len(channels) + position]
-            for index, (run, rows) in enumerate(runs):
-                channel_rows = rows.filter(pl.col("channel") == channel)
-                updates = channel_rows["update"].to_numpy()
-                axis.plot(updates, float_values(channel_rows, panel.column), marker="o", color=cycle_color(index), label=run)
-            channel_values = float_values(medians.filter(pl.col("channel") == channel), panel.column)
-            label_axis(axis, f"{panel.title} | {channel}", "update", panel.y_label, channel_values, panel.log_y)
-            integer_x_ticks(axis)
-    figure.legend(*axes[0].get_legend_handles_labels(), loc="outside lower center", ncols=len(runs), title="run, median over designs")
+        for axis, panel in zip(axes, VALIDATION_PANELS, strict=False):
+            for channel in channels:
+                rows = medians.filter(pl.col("channel") == channel)
+                axis.plot(rows["update"].to_numpy(), float_values(rows, panel.column), label=channel, **channel_style(channel))
+            label_axis(axis, panel.title, "update", panel.y_label, float_values(medians, panel.column), panel.log_y)
+            if channels:
+                integer_x_ticks(axis)
+        if channels:
+            legend_title = "channel, median over designs"
+            figure.legend(*axes[0].get_legend_handles_labels(), loc="outside lower center", ncols=len(channels), title=legend_title)
+    else:
+        runs = by_run(medians)
+        figure, axes = panels(len(VALIDATION_PANELS) * len(channels), columns=len(channels), panel_size=(3.4, 2.6))
+        for row, panel in enumerate(VALIDATION_PANELS):
+            for position, channel in enumerate(channels):
+                axis = axes[row * len(channels) + position]
+                for index, (run, rows) in enumerate(runs):
+                    channel_rows = rows.filter(pl.col("channel") == channel)
+                    updates = channel_rows["update"].to_numpy()
+                    axis.plot(updates, float_values(channel_rows, panel.column), marker="o", color=cycle_color(index), label=run)
+                channel_values = float_values(medians.filter(pl.col("channel") == channel), panel.column)
+                label_axis(axis, f"{panel.title} | {channel}", "update", panel.y_label, channel_values, panel.log_y)
+                integer_x_ticks(axis)
+        legend_title = "run, median over designs"
+        figure.legend(*axes[0].get_legend_handles_labels(), loc="outside lower center", ncols=len(runs), title=legend_title)
     figure_title(figure, "Validation metrics")
     return figure
-
-
-def _draw_validation(figure: Figure, axes: Sequence[Axes], medians: pl.DataFrame) -> None:
-    """One panel per `VALIDATION_PANELS` metric, one color and marker per channel, the channel legend in one row below."""
-    channels = present_channels(medians)
-    for axis, panel in zip(axes, VALIDATION_PANELS, strict=False):
-        for channel in channels:
-            rows = medians.filter(pl.col("channel") == channel)
-            axis.plot(rows["update"].to_numpy(), float_values(rows, panel.column), label=channel, **channel_style(channel))
-        label_axis(axis, panel.title, "update", panel.y_label, float_values(medians, panel.column), panel.log_y)
-        if channels:
-            integer_x_ticks(axis)
-    if channels:
-        figure.legend(
-            *axes[0].get_legend_handles_labels(), loc="outside lower center", ncols=len(channels), title="channel, median over designs"
-        )
 
 
 def channel_style(channel: str) -> dict[str, str]:

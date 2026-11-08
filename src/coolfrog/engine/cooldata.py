@@ -1,6 +1,7 @@
 """CoolData design catalogue, voxel dataset and UI surface meshes, all cached in `CACHE_DIR`."""
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 import copy
 from dataclasses import dataclass
 import fcntl
@@ -30,6 +31,7 @@ from coolfrog.lib.config import HOST_CONFIG, SEED, DataConfig, Grid, Range
 from coolfrog.lib.datatypes import CHANNELS, PARAM_COLUMNS, SURFACE_CHANNELS, Channel, FlowField, SurfaceChannel
 from coolfrog.lib.distributed import rank, world_size
 from coolfrog.lib.log import progress_bar
+from coolfrog.lib.metrics import write_atomically
 
 CACHE_DIR = HOST_CONFIG.cache_dir
 SHARD_SIZE = 64
@@ -111,10 +113,22 @@ class CoolMetadata:
         metadata_path = CACHE_DIR / "official_metadata.parquet"
         if not metadata_path.exists():
             CACHE_DIR.mkdir(parents=True, exist_ok=True)
-            temp_path = metadata_path.with_suffix(".tmp")
-            HfFileSystem().get_file(f"{HF_DATASET}/metadata.parquet", temp_path)
-            temp_path.replace(metadata_path)
+            write_atomically(metadata_path, lambda path: HfFileSystem().get_file(f"{HF_DATASET}/metadata.parquet", path))
         return pl.read_parquet(metadata_path).drop("__index_level_0__")
+
+
+@contextmanager
+def extracted_from_batch(run: str, batch: str, filename: str, block_size: int | None = None) -> Iterator[Path]:
+    """Extract one file of a `(run, batch)` HF zip into a temporary directory, removed on exit.
+
+    - `block_size` None -> `HfFileSystem` default read size, small values suit small members
+    """
+    with (
+        tempfile.TemporaryDirectory() as temp_dir,
+        HfFileSystem().open(f"{HF_DATASET}/runs/{run}/{batch}.zip", "rb", block_size=block_size) as remote_zip,
+        zipfile.ZipFile(remote_zip) as archive,
+    ):
+        yield Path(archive.extract(filename, temp_dir))
 
 
 class CoolDataShard:
@@ -163,12 +177,8 @@ class CoolDataShard:
         if source is not None:
             fields, mask = cls.voxelize(cls.local_volume_path(source, design_id), grid)
         else:
-            with (
-                tempfile.TemporaryDirectory() as temp_dir,
-                HfFileSystem().open(f"{HF_DATASET}/runs/{run}/{batch}.zip", "rb") as remote_zip,
-                zipfile.ZipFile(remote_zip) as archive,
-            ):
-                fields, mask = cls.voxelize(Path(archive.extract(cls.local_volume_path(Path(), design_id).name, temp_dir)), grid)
+            with extracted_from_batch(run, batch, cls.local_volume_path(Path(), design_id).name) as volume_path:
+                fields, mask = cls.voxelize(volume_path, grid)
         return design_id, fields.numpy(), mask.numpy()
 
     @classmethod
@@ -448,13 +458,11 @@ class SurfaceMesh:
                 return cls(**cached)
         design = CoolMetadata.load().design(design_id)
         filename = f"surface_design_{design_id:07d}_p.cgns"
-        with tempfile.TemporaryDirectory() as temp_dir:
-            if source is not None and (source / "surface" / filename).is_file():
-                mesh = cls._read_cgns(source / "surface" / filename)
-            else:
-                batch_path = f"{HF_DATASET}/runs/{design['run']}/{design['batch']}.zip"
-                with HfFileSystem().open(batch_path, "rb", block_size=2**18) as remote_zip, zipfile.ZipFile(remote_zip) as archive:
-                    mesh = cls._read_cgns(Path(archive.extract(filename, temp_dir)))
+        if source is not None and (source / "surface" / filename).is_file():
+            mesh = cls._read_cgns(source / "surface" / filename)
+        else:
+            with extracted_from_batch(design["run"], design["batch"], filename, block_size=2**18) as surface_path:
+                mesh = cls._read_cgns(surface_path)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = cache_path.with_suffix(".tmp")
         with temp_path.open("wb") as temp_file:

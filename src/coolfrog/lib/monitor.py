@@ -14,7 +14,6 @@ import threading
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel
 import uvicorn
 
 from coolfrog.lib.metrics import Tracker, frame_payload
@@ -23,21 +22,20 @@ logger = logging.getLogger(__name__)
 
 MONITOR_PORT = 8020  # the SSH tunnels of `coolfrog.api.monitor_hub` forward to it
 NVIDIA_SMI_FIELDS = "index,name,utilization.gpu,memory.used,memory.total,temperature.gpu"
+GPU_KEYS = {  # `state["gpus"]` key -> type, one per `NVIDIA_SMI_FIELDS` entry in order
+    "index": int,
+    "name": str,
+    "utilization_percent": float,
+    "memory_used_mib": float,
+    "memory_total_mib": float,
+    "temperature_celsius": float,
+}
 NVIDIA_SMI_TIMEOUT_SECONDS = 5
 SHUTDOWN_TIMEOUT_SECONDS = 5
 
 
-class Gpu(BaseModel):
-    index: int
-    name: str
-    utilization_percent: float
-    memory_used_mib: float
-    memory_total_mib: float
-    temperature_celsius: float
-
-
-def query_gpus() -> list[Gpu]:
-    """Current `nvidia-smi` readings, empty without `nvidia-smi`."""
+def query_gpus() -> list[dict[str, Any]]:
+    """Current `nvidia-smi` readings keyed by `GPU_KEYS`, empty without `nvidia-smi`."""
     try:
         result = subprocess.run(
             ["nvidia-smi", f"--query-gpu={NVIDIA_SMI_FIELDS}", "--format=csv,noheader,nounits"],
@@ -48,20 +46,10 @@ def query_gpus() -> list[Gpu]:
         )
     except FileNotFoundError:
         return []
-    gpus = []
-    for line in result.stdout.strip().splitlines():
-        index, name, utilization, memory_used, memory_total, temperature = (field.strip() for field in line.split(","))
-        gpus.append(
-            Gpu(
-                index=int(index),
-                name=name,
-                utilization_percent=float(utilization),
-                memory_used_mib=float(memory_used),
-                memory_total_mib=float(memory_total),
-                temperature_celsius=float(temperature),
-            )
-        )
-    return gpus
+    return [
+        {key: convert(value.strip()) for (key, convert), value in zip(GPU_KEYS.items(), line.split(","), strict=True)}
+        for line in result.stdout.strip().splitlines()
+    ]
 
 
 def create_monitor_app(tracker: Tracker) -> FastAPI:
@@ -69,7 +57,7 @@ def create_monitor_app(tracker: Tracker) -> FastAPI:
 
     @app.get("/api/state")
     def state() -> dict[str, Any]:
-        return tracker.snapshot() | {"gpus": [gpu.model_dump() for gpu in query_gpus()]}
+        return tracker.snapshot() | {"gpus": query_gpus()}
 
     @app.get("/api/tables/{name:path}")
     def table(name: str, tail: int | None = Query(default=None, ge=1), start: int = Query(default=0, ge=0)) -> dict[str, list[Any]]:

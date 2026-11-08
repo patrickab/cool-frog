@@ -30,6 +30,7 @@ from coolfrog.lib.plots import (
     VALIDATION_BY,
     VALIDATION_METRICS,
     VALIDATION_SCHEMA,
+    typed,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,7 @@ SCHEMAS = {  # tracker schemas, see `Tracker`
 }
 TRAINING_PROGRESS, EPOCHS_PROGRESS, VALIDATION_PROGRESS = "Training", "Epochs", "Validation"  # progress bar labels
 CURRENT_EPOCH_PROGRESS = "Current epoch"  # replaces the training bar when `TrainConfig.epochs` is set
+TRAINING_CLOCKS = (TRAINING_PROGRESS, EPOCHS_PROGRESS, CURRENT_EPOCH_PROGRESS)  # paused during validation, absent bars skipped
 EPOCH_STATE = "epoch"  # state key: updates per epoch and the duration of one epoch at the training rate so far
 
 
@@ -72,7 +74,7 @@ def validation_rows(update: int, per_design_tables: Mapping[str, pl.DataFrame]) 
         for metric, table in per_design_tables.items()
     ]  # same design and channel order in every table, `evaluate` sorts by design_id
     rows = pl.concat([long_tables[0], *(table.drop("design_id", "channel") for table in long_tables[1:])], how="horizontal")
-    return rows.with_columns(update=pl.lit(update)).select(pl.col(name).cast(dtype) for name, dtype in VALIDATION_SCHEMA.items())
+    return typed(rows.with_columns(update=pl.lit(update)), VALIDATION_SCHEMA)
 
 
 class TrainingMetrics:
@@ -119,17 +121,13 @@ class TrainingMetrics:
         - `optimizer_values`: one value per update, e.g. `learning_rate` and `gradient_norm`, the same on every process
         """
         now = time.perf_counter()
-        rows = pl.concat(all_gather_objects(samples.to_frame())).with_columns(update=pl.lit(update))
-        rows = rows.select(pl.col(name).cast(dtype) for name, dtype in TRAINING_SCHEMA.items())
-        aggregates = aggregate(rows, list(TRAINING_BY), TRAINING_METRICS).with_columns(
+        rows = typed(pl.concat(all_gather_objects(samples.to_frame())).with_columns(update=pl.lit(update)), TRAINING_SCHEMA)
+        aggregates = aggregate(rows, TRAINING_BY, TRAINING_METRICS).with_columns(
             **{name: pl.lit(value) for name, value in optimizer_values.items()}, seconds_per_update=pl.lit(now - self._tick)
         )
         self._tick = now
         self.tracker.extend(METRICS_TRAINING, rows)
-        self.tracker.extend(
-            METRICS_TRAINING_AGGREGATES,
-            aggregates.select(pl.col(name).cast(dtype) for name, dtype in TRAINING_AGGREGATES_SCHEMA.items()),
-        )
+        self.tracker.extend(METRICS_TRAINING_AGGREGATES, typed(aggregates, TRAINING_AGGREGATES_SCHEMA))
         if self.config.epochs is None:
             self.tracker.set_progress(TRAINING_PROGRESS, update, self.updates)
         else:
@@ -159,7 +157,7 @@ class TrainingMetrics:
         - Bar counts designs over all GPUs: the total gathered once, done = this GPU's designs x GPUs, exact at the end
         """
         total = sum(all_gather_objects(len(loader.dataset)))  # every rank calls this, `evaluate` also gathers on all ranks
-        for label in (TRAINING_PROGRESS, EPOCHS_PROGRESS, CURRENT_EPOCH_PROGRESS):  # absent bars are skipped
+        for label in TRAINING_CLOCKS:
             self.tracker.pause_progress(label)
         try:
             self.tracker.set_progress(VALIDATION_PROGRESS, 0, total)
@@ -170,7 +168,7 @@ class TrainingMetrics:
                 self.tracker.set_progress(VALIDATION_PROGRESS, min(completed * world_size(), total), total)
             self.tracker.set_progress(VALIDATION_PROGRESS, total, total)
         finally:
-            for label in (TRAINING_PROGRESS, EPOCHS_PROGRESS, CURRENT_EPOCH_PROGRESS):
+            for label in TRAINING_CLOCKS:
                 self.tracker.resume_progress(label)
 
     def log_validation(self, update: int, per_design_tables: Mapping[str, pl.DataFrame]) -> None:
@@ -179,9 +177,7 @@ class TrainingMetrics:
         - Resets the update timer, validation time does not count as update time
         """
         rows = validation_rows(update, per_design_tables)
-        aggregates = aggregate(rows, list(VALIDATION_BY), VALIDATION_METRICS).select(
-            pl.col(name).cast(dtype) for name, dtype in VALIDATION_AGGREGATES_SCHEMA.items()
-        )
+        aggregates = typed(aggregate(rows, VALIDATION_BY, VALIDATION_METRICS), VALIDATION_AGGREGATES_SCHEMA)
         self.tracker.extend(METRICS_VALIDATION, rows)
         self.tracker.extend(METRICS_VALIDATION_AGGREGATES, aggregates)
         channel_mean = aggregates.select(pl.col(f"{MSE}/median", f"{SPECTRAL_LOSS}/median").mean()).row(0)

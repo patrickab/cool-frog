@@ -32,6 +32,7 @@ from textual.widgets import DataTable, Footer, Header, RichLog, Static
 
 from coolfrog.lib.log import CONSOLE, NUMBER_HIGHLIGHTER, PACKAGE_LOGGER_NAME
 from coolfrog.lib.metrics import Progress, Tracker
+from coolfrog.lib.plots import column_groups, is_log_scale, series_label
 
 MIN_CHART_SIZE = Size(20, 6)
 REFRESH_SECONDS = 0.5
@@ -40,7 +41,6 @@ MIN_TICKS = 2
 MAX_TICKS = 6
 MAX_LINEAR_TICKS = 5
 MIN_LOG_DECADES = 1.0  # smallest span of a log axis
-LOG_SCALE_RATIO = 10.0  # positive values spanning more than this factor get a log axis
 PLOTEXT_LOCK = threading.Lock()  # plotext keeps one global figure
 # Background and 256-color foreground codes of the plotext theme: stripped, so axes inherit the terminal colors,
 # series keep their 24-bit colors
@@ -51,28 +51,10 @@ HIDDEN_STATE_KEYS = ("title", "progress", "tables")  # shown elsewhere, not as s
 
 
 def chart_groups(columns: dict[str, str]) -> list[tuple[str, list[str]]]:
-    """Charts of one table: (group, its columns), x is the first column, none when a column holds strings or bools.
-
-    - `mse` -> its own chart, `nrmse/median/Vx` and `nrmse/median/Vy` -> one chart `nrmse/median`
-    """
-    names = list(columns)[1:]  # the first column is x
+    """`column_groups` of one table by its column types, none when a column holds strings or bools."""
     if {"str", "bool"} & set(columns.values()):
         return []
-    groups: dict[str, list[str]] = {}
-    for name in names:
-        groups.setdefault(name.rpartition("/")[0] or name, []).append(name)
-    return list(groups.items())
-
-
-def series_label(group: str, column: str) -> str:
-    """`nrmse/median/Vx` in group `nrmse/median` -> `Vx`, a single-column group keeps its name."""
-    return column.removeprefix(f"{group}/")
-
-
-def is_log_scale(values: list[float]) -> bool:
-    """Whether `values` are all positive and span more than `LOG_SCALE_RATIO`."""
-    finite = [value for value in values if value is not None and math.isfinite(value)]
-    return bool(finite) and min(finite) > 0 and max(finite) / min(finite) > LOG_SCALE_RATIO
+    return column_groups(list(columns))
 
 
 def charted_tables(infos: dict[str, dict[str, Any]]) -> list[str]:
@@ -87,7 +69,8 @@ def last_step(tracker: Tracker) -> dict[str, int]:
     for name, info in tracker.table_infos().items():
         if chart_groups(info["columns"]):
             x_name = next(iter(info["columns"]))
-            xs = [x for x in tracker.column(name, x_name) if x is not None and math.isfinite(x)]
+            (xs,) = tracker.columns(name, [x_name])
+            xs = [x for x in xs if x is not None and math.isfinite(x)]
             maxima[x_name] = max([maxima.get(x_name, 0), *xs])
     return maxima
 
@@ -138,8 +121,6 @@ def _draw(figure: "plotext.figure", xs: list[Any], lines: list[tuple[str, list[A
             for i, value in enumerate(values)
             if value is not None and xs[i] is not None and math.isfinite(value) and (value > 0 or not log_y)
         ]
-        if not keep:
-            continue
         for run in _consecutive_runs(keep):
             kept_xs, kept_values = [xs[i] for i in run], [values[i] for i in run]
             plotted = [math.log10(value) for value in kept_values] if log_y else kept_values
@@ -183,8 +164,6 @@ def render_progress(progress: dict[str, Progress]) -> Table:
     """One line per bar: label, count, bar, elapsed and remaining time."""
     now = time.monotonic()
     grid = Table.grid(padding=(0, 2))
-    for _ in range(4):
-        grid.add_column()
     for label, bar in progress.items():
         grid.add_row(
             label,
@@ -391,13 +370,15 @@ class DashboardApp(App[None]):
     def wait_for_work(self) -> None:
         """Block until `work` ends, Ctrl+C asks it to stop at its next `append` or `set_progress` and waits for that."""
         try:
-            while self.is_working:
-                self._work_thread.join(timeout=1.0)
+            self._join_work()
         except KeyboardInterrupt:
             self.tracker.request_stop()
-            while self.is_working:
-                self._work_thread.join(timeout=1.0)
+            self._join_work()
             raise
+
+    def _join_work(self) -> None:
+        while self.is_working:
+            self._work_thread.join(timeout=1.0)  # short joins, so Ctrl+C reaches the main thread
 
     def _refresh(self) -> None:
         """Redraw what changed, mount panes for tables and chart groups that appeared."""

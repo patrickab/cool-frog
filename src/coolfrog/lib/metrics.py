@@ -183,15 +183,11 @@ class Tracker:
         with self._lock:
             return {name: {"rows": table.rows, "columns": table.columns} for name, table in self._tables.items()}
 
-    def column(self, table: str, name: str) -> list[Any]:
-        """Copy of one column, empty when the table or column does not exist yet."""
-        with self._lock:
-            return self._tables[table].column(name) if table in self._tables else []
-
     def columns(self, table: str, names: Sequence[str]) -> list[list[Any]]:
-        """Copies of several columns read together, so they have equal lengths, empty lists for a missing table."""
+        """Copies of several columns read together, so they have equal lengths, empty lists for a missing table or column."""
         with self._lock:
-            return [self._tables[table].column(name) if table in self._tables else [] for name in names]
+            table_columns = self._tables.get(table, Table())
+            return [table_columns.column(name) for name in names]
 
     def frame(self, table: str, tail: int | None = None, start: int = 0) -> pl.DataFrame:
         """`table` as a DataFrame from row `start` on, at most its last `tail` rows, KeyError for an unknown table."""

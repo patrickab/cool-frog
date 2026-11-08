@@ -22,7 +22,7 @@ from coolfrog.lib.config import Grid, TadpoleConfig
 from coolfrog.lib.datatypes import CHANNELS, PARAM_COLUMNS, PARAM_UNITS, SURFACE_CHANNELS, FlowField, NormalizationStats
 from coolfrog.lib.experiment import TABLE_SUFFIXES, experiment_folders, read_meta, result_tables
 from coolfrog.lib.log import setup_logging
-from coolfrog.lib.metrics import frame_payload
+from coolfrog.lib.metrics import frame_payload, write_atomically
 
 app = FastAPI(title="Coolfrog")
 GRID = Grid(latent_scale=1)
@@ -287,16 +287,14 @@ async def fields(request: Request, design_id: int, channel: Annotated[int, Query
 @app.get("/api/reconstruction/{design_id}", response_class=Response)
 async def reconstruction(request: Request, design_id: int, channel: Annotated[int, Query(ge=0, lt=len(CHANNELS))] = 0) -> Response:
     """Zero-shot Tadpole-B reconstruction of one channel, laid out like `/api/fields` with the simulation's fluid mask."""
-    cached = is_reconstruction_cached(design_id)
-    flow, reconstructed = await _load(request, cached, load_reconstruction, design_id)
+    flow, reconstructed = await _load_reconstruction(request, design_id)
     return _field_response(reconstructed[channel], flow, channel)
 
 
 @app.get("/api/reconstruction/{design_id}/metrics")
 async def reconstruction_metrics(request: Request, design_id: int) -> ReconstructionMetrics:
     """NRMSE and spectral loss of the zero-shot reconstruction, `coolfrog.engine.model_evaluation` definitions."""
-    cached = is_reconstruction_cached(design_id)
-    flow, reconstructed = await _load(request, cached, load_reconstruction, design_id)
+    flow, reconstructed = await _load_reconstruction(request, design_id)
     reference = flow.unsqueeze(0)
     stats = NormalizationStats.from_flowfields([reference])
     prediction = reference.replace(fields=reconstructed.unsqueeze(0)).normalize(stats)
@@ -381,9 +379,13 @@ def load_reconstruction(design_id: int) -> tuple[FlowField, torch.Tensor]:
         decoded, _ = tadpole()(batch.normalize(NormalizationStats.from_flowfields([batch])), sample=False)
     reconstructed = decoded.denormalize().fields[0].clone()
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(reconstructed, path.with_suffix(".tmp"))
-    path.with_suffix(".tmp").replace(path)
+    write_atomically(path, lambda path_temporary: torch.save(reconstructed, path_temporary))
     return flow, reconstructed
+
+
+async def _load_reconstruction(request: Request, design_id: int) -> tuple[FlowField, torch.Tensor]:
+    """`load_reconstruction` through `_load`, uncached unless both it and its simulation are on disk."""
+    return await _load(request, is_reconstruction_cached(design_id), load_reconstruction, design_id)
 
 
 @app.get("/api/surface/{design_id}", response_class=Response)

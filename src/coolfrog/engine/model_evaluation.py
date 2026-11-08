@@ -17,10 +17,9 @@ def nrmse(prediction: FlowField, reference: FlowField) -> pl.DataFrame:
     """Fluid-voxel RMSE divided by the reference fluid std, in percent."""
     fluid = reference.mask.unsqueeze(-4)
     fluid_count = fluid.sum(dim=SPATIAL_DIMS, keepdim=True)
-    mean_squared_error = _fluid_sum((prediction.fields - reference.fields).square(), fluid) / fluid_count
     reference_mean = _fluid_sum(reference.fields, fluid) / fluid_count
-    reference_variance = _fluid_sum((reference.fields - reference_mean).square(), fluid) / (fluid_count - 1)
-    return _per_channel_table(100 * (mean_squared_error / reference_variance).sqrt().squeeze(SPATIAL_DIMS), reference)
+    reference_variance = (_fluid_sum((reference.fields - reference_mean).square(), fluid) / (fluid_count - 1)).squeeze(SPATIAL_DIMS)
+    return _per_channel_table(100 * (field_mse(prediction, reference) / reference_variance).sqrt(), reference)
 
 
 def mse(prediction: FlowField, reference: FlowField) -> pl.DataFrame:
@@ -69,18 +68,17 @@ def evaluate(model: Tadpole, flowfields: Iterable[FlowField], stats: Normalizati
     device = next(model.parameters()).device
     was_training = model.training
     model.eval()
-    nrmse_tables, mse_tables, spectral_tables, kl_tables = [], [], [], []
+    local_tables: dict[str, list[pl.DataFrame]] = {NRMSE: [], MSE: [], SPECTRAL_LOSS: [], KL: []}
     with torch.no_grad():
         for flowfield in flowfields:
             reference = flowfield.to(device).normalize(stats)
             latent = model.encode(reference)
             prediction = model.decode(latent)
-            nrmse_tables.append(nrmse(prediction, reference))  # scale-invariant: physical units, log10 space for log channels
-            mse_tables.append(mse(prediction, reference))  # in normalized units, like the training loss
-            spectral_tables.append(spectral_loss(prediction, reference))  # in normalized units
-            kl_tables.append(_per_channel_table(field_kl(latent), reference))
+            local_tables[NRMSE].append(nrmse(prediction, reference))  # scale-invariant: physical units, log10 space for log channels
+            local_tables[MSE].append(mse(prediction, reference))  # in normalized units, like the training loss
+            local_tables[SPECTRAL_LOSS].append(spectral_loss(prediction, reference))  # in normalized units
+            local_tables[KL].append(_per_channel_table(field_kl(latent), reference))
     model.train(was_training)
-    local_tables = {NRMSE: nrmse_tables, MSE: mse_tables, SPECTRAL_LOSS: spectral_tables, KL: kl_tables}
     gathered = all_gather_objects({metric: pl.concat(tables) for metric, tables in local_tables.items()})
     return {metric: pl.concat(tables[metric] for tables in gathered).sort("design_id") for metric in local_tables}
 

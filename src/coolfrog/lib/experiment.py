@@ -175,6 +175,13 @@ def current_commit() -> str:
     return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=PATH_REPO, text=True).strip()
 
 
+def move_run_files(source: Path, destination: Path) -> None:
+    """Move the `RUN_FILES` present in `source` into `destination`."""
+    for name in RUN_FILES:
+        if (source / name).exists():
+            shutil.move(source / name, destination / name)
+
+
 def archive_previous_run(folder: Path) -> Path | None:
     """Move `RUN_FILES` into `history/<date>_<commit>/`, copy `README.md`, return that folder, None without a previous run."""
     if not (folder / "meta.json").exists():
@@ -182,9 +189,7 @@ def archive_previous_run(folder: Path) -> Path | None:
     meta = read_meta(folder)
     path_run = folder / "history" / f"{meta['date'][:16].replace(':', '-')}_{meta['commit_hash_git'][:7]}"
     path_run.mkdir(parents=True)
-    for name in RUN_FILES:
-        if (folder / name).exists():
-            shutil.move(folder / name, path_run / name)
+    move_run_files(folder, path_run)
     if (folder / "README.md").exists():
         shutil.copy(folder / "README.md", path_run / "README.md")
     return path_run
@@ -390,7 +395,7 @@ def start_run(title: str, goal: str | None, hypothesis: str | None, configs: Seq
     is_new_folder = folder is None
     if folder is None:
         folder = new_folder(title)
-    path_archived_run = None if is_new_folder else archive_previous_run(folder)
+    path_archived_run = archive_previous_run(folder)  # None for a new folder, it has no meta.json yet
     if path_archived_run is not None:
         print(f"Archived previous run to {path_archived_run}, update Result and Conclusion in {folder / 'README.md'}")
     run = ExperimentRun(folder, path_archived_run, is_new_folder)
@@ -545,9 +550,7 @@ def undo_run(run: ExperimentRun) -> None:
         path.unlink(missing_ok=True)
     if run.path_archived_run is None:
         return
-    for name in RUN_FILES:
-        if (run.path_archived_run / name).exists():
-            shutil.move(run.path_archived_run / name, run.folder / name)
+    move_run_files(run.path_archived_run, run.folder)
     shutil.rmtree(run.path_archived_run)
     if not any(run.path_archived_run.parent.iterdir()):
         run.path_archived_run.parent.rmdir()
