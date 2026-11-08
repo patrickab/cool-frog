@@ -12,6 +12,7 @@ const FOLD_KEY_PREFIX = 'coolfrog-monitor-open/'; // + group or panel key, e.g. 
 const MIB_PER_GIB = 1024;
 const TABLE_TAIL = 500; // rows a table panel shows, the per-design validation table grows by ~900 per validation
 const SHOWN_ELSEWHERE = new Set(['title', 'progress', 'tables', 'gpus']); // state keys with their own sidebar block
+const NOISE = new Set(['epoch']); // state keys never shown, the Epochs bar already tells the time per epoch
 
 type Monitored = { state?: MonitorState; error?: string };
 
@@ -222,14 +223,12 @@ function StateGroup({ label, path, value }: { label: string; path: string; value
   </SidebarSection>;
 }
 
-/** Free-form state keys of the run: nested dicts as groups, top-level plain values together in one `state` group. */
+/** Free-form state dicts of the run as groups, e.g. `configs`, top-level plain values are not shown. */
 function StateSection({ state }: { state: MonitorState }) {
-  const entries = Object.entries(state).filter(([key]) => !SHOWN_ELSEWHERE.has(key));
-  const leaves = Object.fromEntries(entries.filter(([, value]) => !isRecord(value)));
-  if (!entries.length) return null;
+  const groups = Object.entries(state).filter(([key, value]) => !SHOWN_ELSEWHERE.has(key) && !NOISE.has(key) && isRecord(value));
+  if (!groups.length) return null;
   return <section aria-label="Run state" className="mx-2 border-t border-divider-soft py-2">
-    {entries.filter(([, value]) => isRecord(value)).map(([key, value]) => <StateGroup key={key} label={key} path={key} value={value as Record<string, unknown>} />)}
-    {Object.keys(leaves).length > 0 && <StateGroup label="state" path="state" value={leaves} />}
+    {groups.map(([key, value]) => <StateGroup key={key} label={key} path={key} value={value as Record<string, unknown>} />)}
   </section>;
 }
 
