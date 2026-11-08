@@ -47,7 +47,8 @@ Concepts: [system-overview.md](system-overview.md). Data flow and contracts: [ar
 │   │   ├── autoencoding.py       # shared setup: curated metadata, stats, validation split (128 designs), quantile tables
 │   │   ├── value_distribution.py # experiment 01: histograms, outlier rule, normalization stats
 │   │   ├── zero_shot_autoencoding.py  # zero-shot Tadpole-B at latent scales 2 and 4 with tiles
-│   │   └── finetune_autoencoder.py    # LoRA-32 fine-tuning, one stage per latent scale, --resume, torchrun-ready
+│   │   ├── finetune_autoencoder.py    # LoRA-32 fine-tuning, one stage per latent scale, --resume, torchrun-ready, fine_tune reused by 04
+│   │   └── spectral_loss.py           # experiment 04: fine-tuning on MSE vs. MSE + SPECTRAL_WEIGHT x spectral distance, latent scale 1
 │   └── lib/
 │       ├── config.py             # SEED, Grid, HostConfig/HOST_CONFIG, DataConfig, TadpoleConfig, TrainConfig
 │       ├── datatypes.py          # Channel, SurfaceChannel, PARAM_COLUMNS, NormalizationStats, FlowField, LatentFlowField
@@ -122,6 +123,6 @@ Concepts: [system-overview.md](system-overview.md). Data flow and contracts: [ar
 
 - `src/coolfrog/experiments/autoencoding.py` docstring calls the zero-shot and LoRA experiments 03 and 04. The LoRA folder is `03_...`, the zero-shot script has no folder yet and would get index 04
 - `src/coolfrog/experiments/finetune_autoencoder.py` config (latent scale 1, whole domains, 10000 updates) no longer matches its recorded `03_..._partial` run (scales 2 and 4, crops, 14000 updates)
-- `src/coolfrog/experiments/finetune_autoencoder.py` and `src/coolfrog/experiments/zero_shot_autoencoding.py` run `with run_experiment(...)` at module level without an `if __name__ == "__main__":` guard, while `build_voxel_cache` documents that its forkserver imports entry scripts. [INFERENCE] A run that has to voxelize uncached designs may re-execute the script body in the forkserver
+- `src/coolfrog/experiments/zero_shot_autoencoding.py` runs `with run_experiment(...)` at module level without an `if __name__ == "__main__":` guard, while `build_voxel_cache` documents that its forkserver imports entry scripts. [INFERENCE] A run that has to voxelize uncached designs may re-execute the script body in the forkserver
 - `src/coolfrog/lib/huggingface.py` examples reference `experiments/03_autoencoder-fine-tuning-with-lora/` (full-data folder), which does not exist yet
 - `tests/test_smoke.py` targets a removed API (`coolfrog.engine.data`, `Grid(resolution=...)`, `coolfrog.lib.metrics.nrmse`, `channel_max`)

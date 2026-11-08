@@ -124,7 +124,7 @@ def zero_shot_medians(aggregates: pl.DataFrame, latent_scale: int) -> pl.DataFra
     )
 
 
-def final_per_design(validation: pl.DataFrame, latent_scale: int) -> pl.DataFrame:
+def final_per_design(validation: pl.DataFrame, latent_scale: int, model: str = MODEL) -> pl.DataFrame:
     """The last validation of the raw validation rows, after the final update, in the layout of `per_design_frame`."""
     final = validation.filter(pl.col("update") == validation["update"].max())
     final = final.with_columns(pl.col("channel").cast(pl.String).replace_strict(CHANNEL_LABELS))
@@ -132,14 +132,24 @@ def final_per_design(validation: pl.DataFrame, latent_scale: int) -> pl.DataFram
         metric: final.pivot(on="channel", index="design_id", values=metric).select("design_id", *CHANNEL_LABELS.values())
         for metric in (NRMSE, MSE, SPECTRAL_LOSS)
     }
-    return per_design_frame(tables, latent_scale, MODEL)
+    return per_design_frame(tables, latent_scale, model)
 
 
-def fine_tune(latent_scale: int, stage: Stage, metadata: CoolMetadata, stats: NormalizationStats) -> dict[str, object]:
-    """Fine-tune and evaluate one resolution into `stage`, return the outputs of the stage besides its tracker tables."""
+def fine_tune(  # noqa: PLR0913, resolution, stage, data, stats and the training variant
+    latent_scale: int,
+    stage: Stage,
+    metadata: CoolMetadata,
+    stats: NormalizationStats,
+    train_config: TrainConfig = TRAIN_CONFIG,
+    model_label: str = MODEL,
+) -> dict[str, object]:
+    """Fine-tune and evaluate one resolution into `stage`, return the outputs of the stage besides its tracker tables.
+
+    - `model_label` names the trained model in titles and `per_design.parquet`, e.g. "LoRA-32 + spectral"
+    """
     config = replace(data_config(latent_scale), batch_size=BATCH_SIZES[latent_scale])
     stage.folder.mkdir(parents=True, exist_ok=True)
-    write_configs([config, MODEL_CONFIG], stage.folder / "config.yaml")
+    write_configs([config, MODEL_CONFIG, train_config], stage.folder / "config.yaml")
 
     train, validation = train_validation_split(metadata, config)
     log.info("%d train and %d validation designs on grid %s", len(train), len(validation), config.grid.shape)
@@ -148,20 +158,20 @@ def fine_tune(latent_scale: int, stage: Stage, metadata: CoolMetadata, stats: No
     loader = validation_loader(validation, config)
 
     model = Tadpole(MODEL_CONFIG).to(DEVICE)
-    title = f"{MODEL} · latent scale {latent_scale} · {'x'.join(map(str, config.grid.shape))}"
-    tracker = stage.track({"title": title, "configs": configs_state([config, MODEL_CONFIG, TRAIN_CONFIG])}, SCHEMAS)
-    fine_tune_autoencoder(model, train_loader, loader, stats, TRAIN_CONFIG, stage.folder / "checkpoints", tracker)
+    title = f"{model_label} · latent scale {latent_scale} · {'x'.join(map(str, config.grid.shape))}"
+    tracker = stage.track({"title": title, "configs": configs_state([config, MODEL_CONFIG, train_config])}, SCHEMAS)
+    fine_tune_autoencoder(model, train_loader, loader, stats, train_config, stage.folder / "checkpoints", tracker)
     model.eval()
     with torch.no_grad():
         reference = next(iter(loader)).to(DEVICE).normalize(stats)
         prediction = model.decode(model.encode(reference))
     with mpl.rc_context(STYLE):
         curves = {
-            "training_curves.png": training_curves(tracker.frame(METRICS_TRAINING_AGGREGATES), TRAIN_CONFIG.designs_per_update),
+            "training_curves.png": training_curves(tracker.frame(METRICS_TRAINING_AGGREGATES), train_config.designs_per_update),
             "optimizer_curves.png": optimizer_curves(tracker.frame(METRICS_TRAINING_AGGREGATES)),
             "validation_curves.png": validation_curves(tracker.frame(METRICS_VALIDATION_AGGREGATES)),
             "validation_error.png": validation_error_comparison(
-                tracker.frame(METRICS_VALIDATION_AGGREGATES), MODEL, config.grid.shape
+                tracker.frame(METRICS_VALIDATION_AGGREGATES), model_label, config.grid.shape
             ),
         }
         titles = {
@@ -170,40 +180,41 @@ def fine_tune(latent_scale: int, stage: Stage, metadata: CoolMetadata, stats: No
             "validation_curves.png": "Validation metrics",
         }
         for name, title in titles.items():
-            figure_title(curves[name], f"{title} · {MODEL} on {config.voxel_resolution}")
+            figure_title(curves[name], f"{title} · {model_label} on {config.voxel_resolution}")
         slices = plot_slices(reference, prediction, config.grid)
     return {
-        "per_design.parquet": final_per_design(tracker.frame(METRICS_VALIDATION), latent_scale),
+        "per_design.parquet": final_per_design(tracker.frame(METRICS_VALIDATION), latent_scale, model_label),
         "adapter.pt": model.adapter(),
         **curves,
         "slices_first_validation_design.png": slices,
     }
 
 
-with run_experiment(TITLE, GOAL, HYPOTHESIS, [MODEL_CONFIG, TRAIN_CONFIG], hub=HuggingFaceHub(), resume=RESUME) as run:
-    stats = load_stats()
-    metadata = curated_metadata()
+if __name__ == "__main__":
+    with run_experiment(TITLE, GOAL, HYPOTHESIS, [MODEL_CONFIG, TRAIN_CONFIG], hub=HuggingFaceHub(), resume=RESUME) as run:
+        stats = load_stats()
+        metadata = curated_metadata()
 
-    per_design_tables, zero_shot_tables, training_rows = [], [], []
-    for latent_scale in LATENT_SCALES:
-        stage = run.stage(f"latent_scale_{latent_scale}")
-        if stage.is_complete():
-            log.info("Latent scale %d: stage complete, loading its results from %s", latent_scale, stage.folder)
-        else:
-            log.info("Latent scale %d: training", latent_scale)
-            stage.save(fine_tune(latent_scale, stage, metadata, stats))
-            torch.cuda.empty_cache()
-        per_design_tables.append(stage.load("per_design.parquet"))
-        zero_shot_tables.append(zero_shot_medians(stage.load(f"{METRICS_VALIDATION_AGGREGATES}.parquet"), latent_scale))
-        training_rows.append(training_row(stage.load(f"{METRICS_TRAINING_AGGREGATES}.parquet"), latent_scale))
+        per_design_tables, zero_shot_tables, training_rows = [], [], []
+        for latent_scale in LATENT_SCALES:
+            stage = run.stage(f"latent_scale_{latent_scale}")
+            if stage.is_complete():
+                log.info("Latent scale %d: stage complete, loading its results from %s", latent_scale, stage.folder)
+            else:
+                log.info("Latent scale %d: training", latent_scale)
+                stage.save(fine_tune(latent_scale, stage, metadata, stats))
+                torch.cuda.empty_cache()
+            per_design_tables.append(stage.load("per_design.parquet"))
+            zero_shot_tables.append(zero_shot_medians(stage.load(f"{METRICS_VALIDATION_AGGREGATES}.parquet"), latent_scale))
+            training_rows.append(training_row(stage.load(f"{METRICS_TRAINING_AGGREGATES}.parquet"), latent_scale))
 
-    per_design = pl.concat(per_design_tables)
-    zero_shot = pl.concat(zero_shot_tables)
-    for metric, name in ((NRMSE, "nrmse"), (MSE, "mse"), (SPECTRAL_LOSS, "spectral-loss")):
-        fine_tuned = quantile_table(per_design, metric, (0.5,))
-        table = pl.concat([zero_shot.filter(pl.col("metric") == metric).drop("metric"), fine_tuned], how="vertical_relaxed").sort(
-            "latent_scale", maintain_order=True
-        )
-        log.info("%s\n%s", name, table)
-        run.publish(name, table.drop("statistic"))
-    run.publish("training", pl.DataFrame(training_rows).sort("latent_scale"))
+        per_design = pl.concat(per_design_tables)
+        zero_shot = pl.concat(zero_shot_tables)
+        for metric, name in ((NRMSE, "nrmse"), (MSE, "mse"), (SPECTRAL_LOSS, "spectral-loss")):
+            fine_tuned = quantile_table(per_design, metric, (0.5,))
+            table = pl.concat([zero_shot.filter(pl.col("metric") == metric).drop("metric"), fine_tuned], how="vertical_relaxed").sort(
+                "latent_scale", maintain_order=True
+            )
+            log.info("%s\n%s", name, table)
+            run.publish(name, table.drop("statistic"))
+        run.publish("training", pl.DataFrame(training_rows).sort("latent_scale"))
