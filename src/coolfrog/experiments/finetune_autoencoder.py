@@ -18,6 +18,7 @@ One `Stage` per latent scale, `results/latent_scale_<n>/`:
 README tables: `results/nrmse.csv`, `results/mse.csv`, `results/spectral-loss.csv`, `results/training.csv`.
 """
 
+from dataclasses import replace
 import logging
 import sys
 
@@ -70,6 +71,7 @@ MODEL = f"LoRA-{LORA_RANK}"
 DEVICE = "cuda"
 RESUME = "--resume" in sys.argv  # continue an unfinished run, complete latent scale stages are loaded, not rerun
 LATENT_SCALES = (2,)
+BATCH_SIZES = {1: 4, 2: 2}  # designs per pass and GPU that fit 11 GB (1080 Ti), at scale 2 only with activation checkpointing
 log = logging.getLogger("coolfrog.experiment")
 
 MODEL_CONFIG = TadpoleConfig(
@@ -135,7 +137,7 @@ def final_per_design(validation: pl.DataFrame, latent_scale: int) -> pl.DataFram
 
 def fine_tune(latent_scale: int, stage: Stage, metadata: CoolMetadata, stats: NormalizationStats) -> dict[str, object]:
     """Fine-tune and evaluate one resolution into `stage`, return the outputs of the stage besides its tracker tables."""
-    config = data_config(latent_scale)
+    config = replace(data_config(latent_scale), batch_size=BATCH_SIZES[latent_scale])
     stage.folder.mkdir(parents=True, exist_ok=True)
     write_configs([config, MODEL_CONFIG], stage.folder / "config.yaml")
 
