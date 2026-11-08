@@ -238,13 +238,14 @@ def cached_table(address: str, table: str) -> pl.DataFrame:
 
 
 @app.get("/api/hosts/monitor/figures/{table:path}.svg")
-def table_figure(table: str, address: str, dark: bool = False) -> Response:
-    """`plots.figure_for_table` of `table` on `address` as SVG, 404 when nothing to plot, raw metric tables 404 without fetching."""
-    if not plots.has_figure(table):
-        raise HTTPException(404, f"No figure for table {table}")
+def table_figure(table: str, address: str, index: int = 0, dark: bool = False) -> Response:
+    """Figure `index` of `table` on `address` as SVG (`plots.figure_for_table`), 404 when nothing to plot, unfetched if none exists."""
+    if not 0 <= index < plots.figure_count(table):
+        raise HTTPException(404, f"No figure {index} for table {table}")
     frame = cached_table(address, table)
+    state = json.loads(forward(address, "state").body)
     with plots.plot_theme(dark):
-        figure = plots.figure_for_table(table, frame)
+        figure = plots.figure_for_table(table, frame, state, index)
         if figure is None:
             raise HTTPException(404, f"Nothing to plot in table {table}")
         return Response(plots.svg_bytes(figure), media_type="image/svg+xml")
@@ -252,9 +253,16 @@ def table_figure(table: str, address: str, dark: bool = False) -> Response:
 
 @app.get("/api/hosts/monitor/{path:path}")
 def monitor(request: Request, path: str, address: str) -> Response:
-    """`coolfrog.lib.monitor` endpoint `/api/<path>` of the training on `address`, passed through unchanged.
+    """`coolfrog.lib.monitor` endpoint `/api/<path>` of the training on `address`, passed through.
 
-    e.g. `/api/hosts/monitor/state?address=...`, `/api/hosts/monitor/tables/train?address=...&tail=200`
+    - `state` gains `figures` per table, the count of `/api/hosts/monitor/figures/<table>.svg?index=` figures
+    - e.g. `/api/hosts/monitor/state?address=...`, `/api/hosts/monitor/tables/train?address=...&tail=200`
     """
     query = urllib.parse.urlencode([(key, value) for key, value in request.query_params.multi_items() if key != "address"])
-    return forward(address, path, query)
+    forwarded = forward(address, path, query)
+    if path != "state" or forwarded.status_code != http.HTTPStatus.OK:
+        return forwarded
+    state = json.loads(forwarded.body)
+    for name, info in state["tables"].items():
+        info["figures"] = plots.figure_count(name)
+    return JSONResponse(state)

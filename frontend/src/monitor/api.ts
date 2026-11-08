@@ -2,8 +2,8 @@ import { fetchJson } from '../lib/http';
 
 /** One progress bar of `Tracker.snapshot()["progress"]`, times in seconds, `remaining_seconds` null once done or before the first item. */
 export type ProgressState = { completed: number; total: number; elapsed_seconds: number; remaining_seconds: number | null; paused: boolean };
-/** Row count and column types (`int`, `float`, `str`, ...) of one tracker table. */
-export type TableInfo = { rows: number; columns: Record<string, string> };
+/** Row count, column types (`int`, `float`, `str`, ...) and hub figure count of one tracker table. */
+export type TableInfo = { rows: number; columns: Record<string, string>; figures: number };
 export type Gpu = {
   index: number; name: string; utilization_percent: number;
   memory_used_mib: number; memory_total_mib: number; temperature_celsius: number;
@@ -30,6 +30,6 @@ export const fetchState = (address: string, signal: AbortSignal) => fetchJson<Mo
 /** One table of the training on `address`, its last `tail` rows when given. */
 export const fetchTable = (address: string, name: string, signal: AbortSignal, tail?: number) =>
   fetchJson<TableData>(monitorUrl(address, `tables/${encodeURIComponent(name)}`, tail ? `&tail=${tail}` : ''), { signal });
-/** SVG of the hub's matplotlib figure of one table, `rows` only busts the browser cache once the table grew. */
-export const figureUrl = (address: string, name: string, dark: boolean, rows: number) =>
-  monitorUrl(address, `figures/${encodeURIComponent(name)}.svg`, `&dark=${Number(dark)}&rows=${rows}`);
+/** SVG of the hub's matplotlib figure `index` of one table, `rows` only busts the browser cache once the table grew. */
+export const figureUrl = (address: string, name: string, index: number, dark: boolean, rows: number) =>
+  monitorUrl(address, `figures/${encodeURIComponent(name)}.svg`, `&index=${index}&dark=${Number(dark)}&rows=${rows}`);

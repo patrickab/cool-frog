@@ -11,7 +11,8 @@ One `Stage` per latent scale, `results/latent_scale_<n>/`:
 - `per_design.parquet` (Hugging Face): the final validation of `metrics_validation.parquet` in the layout of `per_design_frame`
 - `adapter.pt` (Hugging Face): LoRA weights
 - `checkpoints/adapter_update_<update>.pt` (Hugging Face): LoRA weights after every validation
-- `training_curves.png`, `validation_curves.png`, `slices_first_validation_design.png`, `config.yaml`, `stage.json`
+- `training_curves.png`, `validation_curves.png`, `validation_error.png` (zero-shot vs. final mean and median NRMSE per channel),
+  `slices_first_validation_design.png`, `config.yaml`, `stage.json`
 
 README tables: `results/nrmse.csv`, `results/mse.csv`, `results/spectral-loss.csv`, `results/training.csv`.
 """
@@ -48,9 +49,11 @@ from coolfrog.lib.plots import (
     METRICS_VALIDATION,
     METRICS_VALIDATION_AGGREGATES,
     STYLE,
+    figure_title,
     plot_slices,
     training_curves,
     validation_curves,
+    validation_error_comparison,
 )
 
 TITLE = "Autoencoder fine-tuning with LoRA"
@@ -150,11 +153,14 @@ def fine_tune(latent_scale: int, stage: Stage, metadata: CoolMetadata, stats: No
         prediction = model.decode(model.encode(reference))
     with mpl.rc_context(STYLE):
         curves = {
-            "training_curves.png": training_curves(tracker.frame(METRICS_TRAINING_AGGREGATES)),
+            "training_curves.png": training_curves(tracker.frame(METRICS_TRAINING_AGGREGATES), TRAIN_CONFIG.designs_per_update),
             "validation_curves.png": validation_curves(tracker.frame(METRICS_VALIDATION_AGGREGATES)),
+            "validation_error.png": validation_error_comparison(
+                tracker.frame(METRICS_VALIDATION_AGGREGATES), MODEL, config.grid.shape
+            ),
         }
-        for figure in curves.values():
-            figure.suptitle(f"{MODEL} at latent scale {latent_scale}")
+        for name, title in (("training_curves.png", "Training metrics"), ("validation_curves.png", "Validation metrics")):
+            figure_title(curves[name], f"{title} · {MODEL} on {config.voxel_resolution}")
         slices = plot_slices(reference, prediction, config.grid)
     return {
         "per_design.parquet": final_per_design(tracker.frame(METRICS_VALIDATION), latent_scale),

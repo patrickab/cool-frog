@@ -166,8 +166,8 @@ Errors: every exception becomes 500 `{"detail": "<Type>: <message>"}`, which the
 |---|---|
 | `GET /api/hosts` | Hosts without passwords (`has_password` only) |
 | `POST /api/hosts`, `/api/hosts/remove` | Add/replace or remove by address, closes the host's tunnel |
-| `GET /api/hosts/monitor/{path}?address=` | Pass-through to the training's `/api/<path>`. Training HTTP errors pass through, unreachable → 502 |
-| `GET /api/hosts/monitor/figures/{table}.svg?address=&dark=` | `plots.figure_for_table` rendered by the hub under `plot_theme`, 404 when nothing to plot. Tables without a figure (`plots.has_figure`, the raw metric tables) answer 404 before any fetch. The hub caches each table's rows and fetches only rows after the cached ones (`?start=`), refetching all when the last cached row changed |
+| `GET /api/hosts/monitor/{path}?address=` | Pass-through to the training's `/api/<path>`. Training HTTP errors pass through, unreachable → 502. `state` gains `figures` per table, the count of its figures |
+| `GET /api/hosts/monitor/figures/{table}.svg?address=&index=&dark=` | Figure `index` of `plots.TABLE_FIGURES[table]` (unlisted tables: one generic `column_lines` figure), rendered under `plot_theme` from the table and the run's state, whose configs name model and grid. 404 when nothing to plot. Tables without figures (the raw metric tables) answer 404 before any fetch. The hub caches each table's rows and fetches only rows after the cached ones (`?start=`), refetching all when the last cached row changed |
 
 Tunnels: `ssh -N -L <free port>:127.0.0.1:8020`, one per host, reconnected when ssh exited. 502 on SSH failure (`sshpass` exit 5 = wrong password), 504 after 15 s.
 

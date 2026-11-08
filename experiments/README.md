@@ -56,7 +56,7 @@ tracker.update_state({"debug": {"cuda_allocated_gib": 6.2}})      # anything not
 ```
 
 - Schemas: `schemas` (table name -> `pl.Schema`) fix the columns and types of those tables, `append` and `extend` raise `ValueError` for a row with other columns or a value the schema cannot hold, `frame` returns exactly the schema. Tables without one take any columns
-- Plots: `src/coolfrog/lib/plots.py` holds every non-image plot with its input schema, e.g. `TRAINING_AGGREGATES_SCHEMA` with `training_curves`, used by scripts, notebooks and the web monitor alike
+- Plots: `src/coolfrog/lib/plots.py` holds every non-image plot with its input schema, monitor figures are one `row_panels` row of `ROW_COLUMNS` (4) columns, a plot spans one or more, e.g. `TRAINING_AGGREGATES_SCHEMA` with `training_curves`, used by scripts, notebooks and the web monitor alike
 - Other tables: the first column is x and must be numeric, every other numeric column becomes a series, non-numeric columns are skipped. Columns sharing a name up to the last `/` share a panel (`nrmse/median/Vx`, `nrmse/median/Vy` -> `nrmse/median`)
 - Aggregates: `aggregate(frame, by, metrics)` (`src/coolfrog/lib/metrics.py`) gives min, p01, p25, median, p75, p99, max and mean of each metric per group as `<metric>/<statistic>` columns, e.g. per update and channel, per design or per range of updates
 - Saved as `<table>.parquet` plus `state.json` in the stage folder, atomically, at most every 30 s while logging and on every exit of the `with` block except SIGKILL

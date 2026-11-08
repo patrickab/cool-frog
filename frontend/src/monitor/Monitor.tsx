@@ -55,13 +55,13 @@ function useMonitor(host: string | undefined): Monitored {
   return result;
 }
 
-/** The hub's matplotlib figure of one table, reloaded when rows were added, hidden when the table has nothing to plot. */
-function TableFigure({ host, name, rows }: { host: string; name: string; rows: number }) {
+/** The hub's matplotlib figure `index` of one table, reloaded when rows were added, hidden when it has nothing to plot. */
+function TableFigure({ host, name, index, rows }: { host: string; name: string; index: number; rows: number }) {
   const { theme } = useTheme();
-  const url = figureUrl(host, name, theme === 'dark', rows);
+  const url = figureUrl(host, name, index, theme === 'dark', rows);
   const [failedUrl, setFailedUrl] = useState<string>();
   if (failedUrl === url) return null;
-  return <img src={url} alt={`${name} curves`} onError={() => setFailedUrl(url)} className="h-auto w-full px-4 pt-3" />;
+  return <img src={url} alt={`${name} figure ${index + 1}`} onError={() => setFailedUrl(url)} className="h-auto w-full px-4 pt-3" />;
 }
 
 /** Hairline meter under a GPU or progress row, as gigachad-bot's usage meters. */
@@ -176,7 +176,8 @@ function tableFamilies(tables: [string, TableInfo][]): [string, [string, TableIn
 function TableFamily({ host, name, tables }: { host: string; name: string; tables: [string, TableInfo][] }) {
   return <Panel>
     <h2 className={`${HEADING} px-4 pt-4`}>{name}</h2>
-    {tables.map(([table, info]) => <TableFigure key={table} host={host} name={table} rows={info.rows} />)}
+    {tables.flatMap(([table, info]) => Array.from({ length: info.figures }, (_, index) =>
+      <TableFigure key={`${table}/${index}`} host={host} name={table} index={index} rows={info.rows} />))}
     <div className="mt-2">{tables.map(([table, info]) => <TableRows key={table} host={host} name={table} info={info} />)}</div>
   </Panel>;
 }

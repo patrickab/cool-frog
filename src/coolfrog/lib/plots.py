@@ -6,7 +6,7 @@
 - Every panel has one y axis, a title and axis labels with a unit or `normalized`
 """
 
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 import io
 import math
@@ -20,7 +20,7 @@ from matplotlib.axes import Axes
 from matplotlib.colors import to_hex
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
-from matplotlib.ticker import FuncFormatter, MaxNLocator
+from matplotlib.ticker import FuncFormatter, LogLocator, MaxNLocator, NullFormatter
 import numpy as np
 import polars as pl
 
@@ -128,20 +128,24 @@ class Panel(NamedTuple):
 
 
 TRAIN_PANELS = (
-    Panel("mse/mean", "Train MSE", "MSE [normalized]", is_smoothed=True),
-    Panel("spectral_loss/mean", "Train spectral loss", "spectral loss [normalized]", is_smoothed=True),
-    Panel("kl/mean", "Train KL divergence", "KL [nats]", is_smoothed=True),
+    Panel("mse/mean", "MSE", "MSE [normalized]", is_smoothed=True),
+    Panel("spectral_loss/mean", "Spectral loss", "spectral loss [normalized]", is_smoothed=True),
+    Panel("kl/mean", "KL divergence", "KL [nats]", is_smoothed=True),
     Panel("learning_rate", "Learning rate", "learning rate [unitless]", log_y=False),
 )
 VALIDATION_PANELS = (  # same order as TRAIN_PANELS, NRMSE in the slot of the learning rate
-    Panel("mse/median", "Validation MSE", "MSE [normalized]"),
-    Panel("spectral_loss/median", "Validation spectral loss", "spectral loss [normalized]"),
-    Panel("kl/median", "Validation KL divergence", "KL [nats]"),
-    Panel("nrmse/median", "Validation NRMSE", "NRMSE [%]"),
+    Panel("mse/median", "MSE", "MSE [normalized]"),
+    Panel("spectral_loss/median", "Spectral loss", "spectral loss [normalized]"),
+    Panel("kl/median", "KL divergence", "KL [nats]"),
+    Panel("nrmse/median", "NRMSE", "NRMSE [%]"),
 )
-EMA_SMOOTHING = 0.95  # weight of the past per update, about the last 20 updates
+EMA_SMOOTHING = 0.95  # β, weight of the past per update
+EMA_WINDOW = round(1 / (1 - EMA_SMOOTHING))  # effective number of updates the EMA averages, 1 / (1 - β) = 20
 RAW_ALPHA, RAW_LINEWIDTH = 0.35, 0.7  # the per-update curve behind its EMA
 CHANNEL_MARKERS = ("o", "s", "^", "D", "v", "P", "X")  # one per channel, readable in grayscale print
+ROW_PANEL_SIZE = (3.3, 2.7)  # inches per column of a `row_panels` figure, e.g. one training or validation panel
+ROW_COLUMNS = 4  # columns of every monitor figure, plots fill them from the left
+X_TICKS = 4  # x ticks per panel at most, keeps narrow panels readable
 
 
 @contextmanager
@@ -171,28 +175,32 @@ def exponential_average(values: np.ndarray, smoothing: float = EMA_SMOOTHING) ->
     return np.exp(averages) if is_positive else averages
 
 
-def training_curves(aggregates: pl.DataFrame) -> Figure:
+def training_curves(aggregates: pl.DataFrame, samples_per_update: int | None = None) -> Figure:
     """MSE, spectral loss, KL and learning rate per update: mean over the update's samples plus its EMA.
 
     Parameters
     ----------
     aggregates : pl.DataFrame
         `TRAINING_AGGREGATES_SCHEMA`, optional `run` column -> one color per run.
+    samples_per_update : int | None
+        `TrainConfig.designs_per_update`, named in the legend, None leaves the count out.
     """
-    figure, axes = panels(len(TRAIN_PANELS), columns=2)
-    _draw_training(axes, typed(aggregates, TRAINING_AGGREGATES_SCHEMA).sort("update", maintain_order=True))
+    figure, axes = row_panels([1] * len(TRAIN_PANELS))
+    _draw_training(axes, typed(aggregates, TRAINING_AGGREGATES_SCHEMA).sort("update", maintain_order=True), samples_per_update)
+    figure_title(figure, "Training metrics")
     return figure
 
 
-def _draw_training(axes: Sequence[Axes], means: pl.DataFrame) -> None:
-    """One panel per `TRAIN_PANELS` entry, the legend of the first panel names the line kinds and runs.
+def _draw_training(axes: Sequence[Axes], means: pl.DataFrame, samples_per_update: int | None) -> None:
+    """One panel per `TRAIN_PANELS` entry, the line kinds and runs in one legend row below the panels.
 
     - One run: per-update mean in TUM light blue, its EMA and unsmoothed panels in TUM blue
     - Several runs: one color per run, the per-update mean faint, the EMA solid
     """
     runs = by_run(means)
     is_comparison = runs[0][0] is not None
-    raw_label, ema_label = "per update, mean over its samples", f"EMA, β = {EMA_SMOOTHING}"
+    samples = f"n={samples_per_update}" if samples_per_update else "its samples"
+    raw_label, ema_label = f"per update, mean over {samples}", f"EMA, n={EMA_WINDOW}, β={EMA_SMOOTHING}"
     for axis, panel in zip(axes, TRAIN_PANELS, strict=False):
         for index, (run, rows) in enumerate(runs):
             updates, values = rows["update"].to_numpy(), float_values(rows, panel.column)
@@ -215,13 +223,13 @@ def _draw_training(axes: Sequence[Axes], means: pl.DataFrame) -> None:
         neutral = mpl.rcParams["text.color"]
         handles += [Line2D([], [], color=neutral, alpha=RAW_ALPHA, linewidth=RAW_LINEWIDTH), Line2D([], [], color=neutral)]
         labels += [raw_label, ema_label]
-    axes[0].legend(handles, labels)
+    axes[0].figure.legend(handles, labels, loc="outside lower center", ncols=len(labels))
 
 
 def validation_curves(aggregates: pl.DataFrame) -> Figure:
     """NRMSE, MSE, spectral loss and KL medians over designs per update and channel.
 
-    - Without `run`: one panel per metric, one color and marker per channel, channel legend right of the panels
+    - Without `run`: one row with a panel per metric, one color and marker per channel, channel legend in one row below
     - With `run`: one panel per metric and channel, one color per run
 
     Parameters
@@ -231,8 +239,9 @@ def validation_curves(aggregates: pl.DataFrame) -> Figure:
     """
     medians = typed(aggregates, VALIDATION_AGGREGATES_SCHEMA).sort("update", "channel", maintain_order=True)
     if "run" not in medians.columns:
-        figure, axes = panels(len(VALIDATION_PANELS), columns=2)
+        figure, axes = row_panels([1] * len(VALIDATION_PANELS))
         _draw_validation(figure, axes, medians)
+        figure_title(figure, "Validation metrics")
         return figure
     channels, runs = present_channels(medians), by_run(medians)
     figure, axes = panels(len(VALIDATION_PANELS) * len(channels), columns=len(channels), panel_size=(3.4, 2.6))
@@ -244,24 +253,27 @@ def validation_curves(aggregates: pl.DataFrame) -> Figure:
                 updates = channel_rows["update"].to_numpy()
                 axis.plot(updates, float_values(channel_rows, panel.column), marker="o", color=cycle_color(index), label=run)
             channel_values = float_values(medians.filter(pl.col("channel") == channel), panel.column)
-            label_axis(axis, f"{panel.title} | {channel}", "update", f"median {panel.y_label}", channel_values, panel.log_y)
+            label_axis(axis, f"{panel.title} | {channel}", "update", panel.y_label, channel_values, panel.log_y)
             integer_x_ticks(axis)
-    figure.legend(*axes[0].get_legend_handles_labels(), loc="outside right upper", title="run, median over designs")
+    figure.legend(*axes[0].get_legend_handles_labels(), loc="outside lower center", ncols=len(runs), title="run, median over designs")
+    figure_title(figure, "Validation metrics")
     return figure
 
 
 def _draw_validation(figure: Figure, axes: Sequence[Axes], medians: pl.DataFrame) -> None:
-    """One panel per `VALIDATION_PANELS` metric, one color and marker per channel, the channel legend right of the figure."""
+    """One panel per `VALIDATION_PANELS` metric, one color and marker per channel, the channel legend in one row below."""
     channels = present_channels(medians)
     for axis, panel in zip(axes, VALIDATION_PANELS, strict=False):
         for channel in channels:
             rows = medians.filter(pl.col("channel") == channel)
             axis.plot(rows["update"].to_numpy(), float_values(rows, panel.column), label=channel, **channel_style(channel))
-        label_axis(axis, panel.title, "update", f"median {panel.y_label}", float_values(medians, panel.column), panel.log_y)
+        label_axis(axis, panel.title, "update", panel.y_label, float_values(medians, panel.column), panel.log_y)
         if channels:
             integer_x_ticks(axis)
     if channels:
-        figure.legend(*axes[0].get_legend_handles_labels(), loc="outside right lower", title="channel, median over designs")
+        figure.legend(
+            *axes[0].get_legend_handles_labels(), loc="outside lower center", ncols=len(channels), title="channel, median over designs"
+        )
 
 
 def channel_style(channel: str) -> dict[str, str]:
@@ -295,31 +307,109 @@ def column_lines(frame: pl.DataFrame) -> Figure:
     return figure
 
 
-# Monitor figure per tracker table, None = drawn through its aggregates, unlisted tables get `column_lines`
-TABLE_FIGURES: dict[str, Callable[[pl.DataFrame], Figure] | None] = {
-    METRICS_TRAINING: None,
-    METRICS_VALIDATION: None,
-    METRICS_TRAINING_AGGREGATES: training_curves,
-    METRICS_VALIDATION_AGGREGATES: validation_curves,
+def validation_error_comparison(aggregates: pl.DataFrame, model: str, grid_shape: Sequence[int]) -> Figure | None:
+    """Mean and median NRMSE over designs per channel, zero-shot (update 0) vs `model` at its latest validation, two columns each.
+
+    - Dumbbell charts: one row per channel, both errors as dots joined by a line, both values beside the chart
+    - None before a validation after update 0
+
+    Parameters
+    ----------
+    aggregates : pl.DataFrame
+        `VALIDATION_AGGREGATES_SCHEMA` rows of one run.
+    grid_shape : Sequence[int]
+        Voxels along x, y, z, named in the title, e.g. `Grid.shape`.
+    """
+    aggregates = typed(aggregates, VALIDATION_AGGREGATES_SCHEMA)
+    last_update = aggregates["update"].max() if aggregates.height else 0
+    if not last_update:
+        return None
+    channels = present_channels(aggregates)
+    figure, axes = row_panels([2, 2])
+    for axis, statistic in zip(axes, ("mean", "median"), strict=True):
+        zero_shot, tuned = (_channel_values(aggregates, update, channels, f"nrmse/{statistic}") for update in (0, last_update))
+        _draw_dumbbell(axis, channels, zero_shot, tuned)
+        axis.set(title=f"{statistic.capitalize()} over designs", xlabel="NRMSE [%]")
+    figure_title(figure, f"Validation error · zero-shot vs. {model} on {'x'.join(map(str, grid_shape))}")
+    handles = [Line2D([], [], color=color, marker="o", linestyle="", markersize=6) for color in (TUM_BLUE, REFERENCE_GRAY)]
+    figure.legend(handles, [f"{model}, update {last_update}", "zero-shot"], loc="outside lower center", ncols=2)
+    return figure
+
+
+def _draw_dumbbell(axis: Axes, channels: Sequence[str], zero_shot: np.ndarray, tuned: np.ndarray) -> None:
+    """One row per channel, top to bottom: both errors as dots on a line, the values right of the axis, model first.
+
+    - Log x axis when the errors span decades (`is_log_scale`), e.g. a zero-shot mean far above the rest
+    """
+    rows = np.arange(len(channels))
+    axis.hlines(rows, np.minimum(zero_shot, tuned), np.maximum(zero_shot, tuned), color=mpl.rcParams["grid.color"], linewidth=2.5)
+    axis.scatter(zero_shot, rows, color=REFERENCE_GRAY, s=36, zorder=2)
+    axis.scatter(tuned, rows, color=TUM_BLUE, s=36, zorder=3)
+    for row, (before, after) in enumerate(zip(zero_shot, tuned, strict=True)):
+        axis.annotate(_short_number(after), (1.01, row), xycoords=("axes fraction", "data"), va="center", color=TUM_BLUE, fontsize=8)
+        axis.annotate(
+            _short_number(before), (1.08, row), xycoords=("axes fraction", "data"), va="center", color=REFERENCE_GRAY, fontsize=8
+        )
+    axis.set_yticks(rows, channels)
+    axis.invert_yaxis()  # first channel on top
+    if is_log_scale([*zero_shot, *tuned]):
+        axis.set_xscale("log")
+        plain_log_ticks(axis.xaxis)
+    else:
+        axis.set_xlim(left=0)
+    axis.grid(axis="y", visible=False)
+
+
+def _short_number(value: float) -> str:
+    """Three significant digits, whole numbers from 1000 on instead of exponent notation."""
+    return f"{value:.0f}" if abs(value) >= 1000 else f"{value:.3g}"  # noqa: PLR2004
+
+
+def _channel_values(aggregates: pl.DataFrame, update: int, channels: Sequence[str], column: str) -> np.ndarray:
+    """`column` of each of `channels` at `update`, in their order."""
+    rows = aggregates.filter(pl.col("update") == update)
+    return np.array([rows.filter(pl.col("channel") == channel)[column].item() for channel in channels])
+
+
+def run_model_and_grid(state: Mapping[str, Any]) -> tuple[str, tuple[int, int, int]]:
+    """Model label and voxel grid of a fine-tuning run from its tracker state `configs`, e.g. ("LoRA-32", (400, 80, 16))."""
+    configs = state["configs"]
+    finetune_state = configs["TadpoleConfig"]["encoder_state"]
+    model = f"LoRA-{finetune_state}" if isinstance(finetune_state, int) else str(finetune_state)
+    return model, Grid(latent_scale=configs["DataConfig"]["grid"]["latent_scale"]).shape
+
+
+TableFigure = Callable[[pl.DataFrame, Mapping[str, Any]], Figure | None]  # (table rows, tracker state) -> figure, None = nothing yet
+
+# Monitor figures per tracker table in order, () = drawn through its aggregates, unlisted tables get one `column_lines` figure
+TABLE_FIGURES: dict[str, tuple[TableFigure, ...]] = {
+    METRICS_TRAINING: (),
+    METRICS_VALIDATION: (),
+    METRICS_TRAINING_AGGREGATES: (lambda rows, state: training_curves(rows, state["configs"]["TrainConfig"]["designs_per_update"]),),
+    METRICS_VALIDATION_AGGREGATES: (
+        lambda rows, _: validation_curves(rows),
+        lambda rows, state: validation_error_comparison(rows, *run_model_and_grid(state)),
+    ),
 }
 
 
-def has_figure(table: str) -> bool:
-    """Whether `figure_for_table` can draw `table`, False for tables drawn through their aggregates."""
-    return TABLE_FIGURES.get(table, column_lines) is not None
+def figure_count(table: str) -> int:
+    """Monitor figures of `table`, 0 for tables drawn through their aggregates."""
+    return len(TABLE_FIGURES.get(table, (_numeric_column_lines,)))
 
 
-def figure_for_table(table: str, frame: pl.DataFrame) -> Figure | None:
-    """Monitor figure of a tracker table, None if empty, without a figure or without a numeric x and series.
+def figure_for_table(table: str, frame: pl.DataFrame, state: Mapping[str, Any], index: int = 0) -> Figure | None:
+    """Monitor figure `index` of a tracker table, None if empty or nothing to draw yet, see `TABLE_FIGURES`.
 
-    - Tables in `TABLE_FIGURES`: their figure function, None for raw metric rows
-    - Other tables: `column_lines` of the numeric columns, the first column is x, other columns are skipped
+    - `state`: the run's tracker snapshot, e.g. its configs name the model and grid
     """
     if frame.height == 0:
         return None
-    if table in TABLE_FIGURES:
-        figure = TABLE_FIGURES[table]
-        return None if figure is None else figure(frame)
+    return TABLE_FIGURES.get(table, (_numeric_column_lines,))[index](frame, state)
+
+
+def _numeric_column_lines(frame: pl.DataFrame, _state: Mapping[str, Any]) -> Figure | None:
+    """`column_lines` of the numeric columns, the first column is x, other columns are skipped."""
     numeric = frame.select(column for column, dtype in frame.schema.items() if dtype.is_numeric() or dtype == pl.Null)
     if numeric.width < 2 or numeric.columns[0] != frame.columns[0]:  # noqa: PLR2004, x plus at least one series
         return None
@@ -512,6 +602,24 @@ def float_values(frame: pl.DataFrame, column: str) -> np.ndarray:
     return frame[column].cast(pl.Float64).to_numpy()
 
 
+def row_panels(spans: Sequence[int], columns: int | None = None) -> tuple[Figure, list[Axes]]:
+    """Figure of one row of `columns` equal columns of `ROW_PANEL_SIZE`, one axis per span from the left, the rest empty.
+
+    - `columns=ROW_COLUMNS` gives every monitor figure the same width, so the page shows all columns at one scale
+    - `columns=None` fits the row to the spans, e.g. for a standalone PNG
+
+    Examples
+    --------
+    >>> figure, axes = row_panels([1, 1, 1, 1])  # four metric panels
+    >>> figure, (comparison,) = row_panels([2], columns=ROW_COLUMNS)  # half a monitor row, room for two more panels
+    """
+    columns = sum(spans) if columns is None else columns
+    figure = Figure(figsize=(columns * ROW_PANEL_SIZE[0], ROW_PANEL_SIZE[1]), layout="constrained")
+    grid = figure.add_gridspec(1, columns)
+    starts = np.cumsum([0, *spans[:-1]])
+    return figure, [figure.add_subplot(grid[0, start : start + span]) for start, span in zip(starts, spans, strict=True)]
+
+
 def panels(count: int, columns: int, panel_size: tuple[float, float] = (5.0, 3.0)) -> tuple[Figure, list[Axes]]:
     """Figure with `count` panels in rows of `columns`, axes beyond `count` hidden, e.g. for a shared legend."""
     rows = math.ceil(count / columns)
@@ -532,6 +640,11 @@ def cycle_color(index: int) -> str:
     return to_hex(f"C{index}")
 
 
+def figure_title(figure: Figure, title: str) -> None:
+    """Left-aligned figure title above the panel titles, one size up and bold, e.g. "Training metrics"."""
+    figure.suptitle(title, x=0.0, ha="left", fontsize=mpl.rcParams["axes.titlesize"] + 1, fontweight="bold")
+
+
 def label_axis(  # noqa: PLR0913, axis, texts, values and the scale override
     axis: Axes, title: str, x_label: str, y_label: str, values: np.ndarray, log_y: bool | None = None
 ) -> None:
@@ -539,14 +652,24 @@ def label_axis(  # noqa: PLR0913, axis, texts, values and the scale override
     axis.set(title=title, xlabel=x_label, ylabel=y_label)
     if is_log_scale(values.tolist()) if log_y is None else log_y:
         axis.set_yscale("log")
+        plain_log_ticks(axis.yaxis)
+    else:  # plain tick values like 5e-05, no offset text above the axis colliding with the title
+        axis.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:.4g}"))
+
+
+def plain_log_ticks(axis: "mpl.axis.Axis") -> None:
+    """Log axis labelled at 1, 2 and 5 per decade as plain numbers (0.002, 50), unlabelled minor ticks."""
+    axis.set_major_locator(LogLocator(base=10, subs=(1.0, 2.0, 5.0)))
+    axis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:.4g}"))
+    axis.set_minor_formatter(NullFormatter())
 
 
 def integer_x_ticks(axis: Axes) -> None:
-    """Whole-number x ticks for counts like updates, call after plotting, a single update gets one tick instead of ±0.05 decimals."""
+    """At most `X_TICKS` whole-number x ticks for counts like updates, call after plotting, a single update gets one tick."""
     if axis.dataLim.width == 0:
         axis.set_xticks([axis.dataLim.x0])
     else:
-        axis.xaxis.set_major_locator(MaxNLocator(integer=True, steps=[1, 2, 5, 10]))
+        axis.xaxis.set_major_locator(MaxNLocator(X_TICKS, integer=True, steps=[1, 2, 5, 10]))
 
 
 def _sample_volumes(reference: FlowField, prediction: FlowField, sample_index: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
