@@ -102,7 +102,9 @@ class TrainingMetrics:
         self.tracker.extend(METRICS, rows.select(METRICS_SCHEMA.names()))
         self.tracker.set_progress(TRAINING_PROGRESS, update, self.updates)
         if self.config.epochs is not None:
-            self.tracker.set_progress(EPOCHS_PROGRESS, update // self.updates_per_epoch, self.config.epochs)
+            self.tracker.set_progress(
+                EPOCHS_PROGRESS, update // self.updates_per_epoch, self.config.epochs, done=update / self.updates
+            )
         self._log_epoch_duration(update)
         if update % self.config.validate_every == 0 or update == self.updates:
             logger.info("update %d train MSE %.3e, mean over samples", update, rows[MSE].mean())

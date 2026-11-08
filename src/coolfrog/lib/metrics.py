@@ -38,6 +38,8 @@ class Progress:
         Paused time of finished pauses, e.g. validation passes inside training.
     paused_at : float | None
         Start of the running pause, None while not paused.
+    done : float | None
+        Share of the pass done, finer than `completed`, e.g. epochs from updates. None = `completed / total`.
     """
 
     completed: int
@@ -46,16 +48,18 @@ class Progress:
     finished: float | None = None
     paused_seconds: float = 0.0
     paused_at: float | None = None
+    done: float | None = None
 
     def elapsed(self, now: float) -> float:
         """Unpaused seconds since the pass started, frozen once it finished or while paused."""
         return (self.finished or self.paused_at or now) - self.started - self.paused_seconds
 
     def remaining(self, now: float) -> float | None:
-        """Unpaused seconds left at the average rate so far, None before the first completed item."""
-        if self.completed == 0:
+        """Unpaused seconds left at the average rate so far, None before any progress."""
+        share = self.completed / self.total if self.done is None else self.done
+        if share <= 0:
             return None
-        return self.elapsed(now) * (self.total - self.completed) / self.completed
+        return self.elapsed(now) * (1 - share) / share
 
     def to_state(self, now: float) -> dict[str, Any]:
         """JSON form in `Tracker.snapshot()["progress"]`."""
@@ -201,20 +205,22 @@ class Tracker:
             progress = {label: bar.to_state(now) for label, bar in self._progress.items()}
         return state | {"progress": progress, "tables": self.table_infos()}
 
-    def set_progress(self, label: str, completed: int, total: int) -> None:
+    def set_progress(self, label: str, completed: int, total: int, done: float | None = None) -> None:
         """Report `completed` of `total` for the bar `label`, KeyboardInterrupt after `request_stop`.
 
         - A first report or `completed` going back starts a new pass, e.g. the next validation, its clock restarts
+        - `done`: finer share of the pass for the time estimate, e.g. updates done / all updates for an epochs bar
         """
         self.raise_if_stopped()
         now = time.monotonic()
         with self._lock:
             previous = self._progress.get(label)
             if previous is None or completed < previous.completed:
-                self._progress[label] = Progress(completed, total, started=now, finished=now if completed >= total else None)
+                finished = now if completed >= total else None
+                self._progress[label] = Progress(completed, total, started=now, finished=finished, done=done)
             else:
                 finished = None if completed < total else previous.finished or now
-                self._progress[label] = replace(previous, completed=completed, total=total, finished=finished)
+                self._progress[label] = replace(previous, completed=completed, total=total, finished=finished, done=done)
             self.version += 1
 
     def pause_progress(self, label: str) -> None:

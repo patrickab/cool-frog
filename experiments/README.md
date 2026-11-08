@@ -84,7 +84,7 @@ Live API of a training (`coolfrog.lib.monitor`, through the hub as `/api/hosts/m
 
 - Rank 0 alone starts or resumes the run, logs, shows the dashboard and writes files: `Stage.save`, `Stage.track`, `write_configs` and `run.publish` write on rank 0 only, `Stage.save` returns on every rank once the stage is complete. Other script writes need `is_main_process()`, then `barrier()` before other ranks read them
 - `TrainConfig.designs_per_update` counts crops per update over all GPUs, each GPU runs `designs_per_update / (batch_size * n_gpus)` passes, so an update is the same on any GPU count, it must divide evenly
-- Training length: `TrainConfig` takes exactly one of `updates` and `epochs` (ValueError otherwise). With `epochs`, updates = `epochs` x ceil(training designs / `designs_per_update`). The dashboard and web monitor then also show an `Epochs` bar, the `epoch` state holds updates per epoch and the measured duration of one epoch in both modes
+- Training length: `TrainConfig` takes exactly one of `updates` and `epochs` (ValueError otherwise). With `epochs`, updates = `epochs` x ceil(training designs / `designs_per_update`). The dashboard and web monitor then also show an `Epochs` bar, its time left is for all epochs, estimated from updates done like the `Training` bar. The `epoch` state holds updates per epoch and the measured duration of one epoch in both modes
 - `create_dataloader` gives each rank its share: `DistributedSampler` when shuffled, every n-th design when not, `evaluate` gathers all rows on every rank
 
 ## Tables in the README
