@@ -328,8 +328,8 @@ def aggregate(frame: pl.DataFrame, by: str | Sequence[str], metrics: Sequence[st
 
     Examples
     --------
-    >>> aggregate(metrics, by=["split", "update", "channel"], metrics=["mse", "kl"])  # columns `mse/median`, `kl/p99`, ...
-    >>> aggregate(metrics.filter(pl.col("split") == "validation"), by="design_id", metrics=["nrmse"])  # hardest designs
+    >>> aggregate(validation, by=["update", "channel"], metrics=["mse", "kl"])  # columns `n`, `mse/median`, `kl/p99`, ...
+    >>> aggregate(validation.filter(pl.col("update") == 1000), by="design_id", metrics=["nrmse"])  # hardest designs
     """
     statistics = (
         statistic(pl.col(metric).cast(pl.Float64)).alias(f"{metric}/{name}")
@@ -337,3 +337,9 @@ def aggregate(frame: pl.DataFrame, by: str | Sequence[str], metrics: Sequence[st
         for name, statistic in STATISTICS.items()
     )
     return frame.group_by(by, maintain_order=True).agg(pl.len().alias("n"), *statistics)
+
+
+def aggregate_schema(schema: pl.Schema, by: Sequence[str], metrics: Sequence[str]) -> pl.Schema:
+    """Schema of `aggregate(frame, by, metrics)` for a `frame` of `schema`, e.g. a `Tracker` schema of an aggregate table."""
+    statistics = {f"{metric}/{name}": pl.Float64 for metric in metrics for name in STATISTICS}
+    return pl.Schema({**{name: schema[name] for name in by}, "n": pl.UInt32, **statistics})

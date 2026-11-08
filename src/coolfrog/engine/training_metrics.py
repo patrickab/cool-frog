@@ -1,4 +1,4 @@
-"""The `metrics` table of one fine-tuning run: every train sample and every validation design, per channel."""
+"""Metric tables of one fine-tuning run: every train sample and every validation design per channel, plus their aggregates."""
 
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
@@ -15,11 +15,29 @@ from coolfrog.lib.dashboard import duration
 from coolfrog.lib.datatypes import FlowField
 from coolfrog.lib.distributed import all_gather_objects, world_size
 from coolfrog.lib.metrics import Tracker
-from coolfrog.lib.plots import CHANNEL_LABELS, CHANNEL_SYMBOLS, METRICS, METRICS_SCHEMA, TRAIN, VALIDATION
+from coolfrog.lib.plots import (
+    CHANNEL_LABELS,
+    CHANNEL_SYMBOLS,
+    METRICS_TRAINING,
+    METRICS_TRAINING_AGGREGATES,
+    METRICS_VALIDATION,
+    METRICS_VALIDATION_AGGREGATES,
+    TRAINING_AGGREGATES_SCHEMA,
+    TRAINING_SCHEMA,
+    VALIDATION_AGGREGATES_SCHEMA,
+    VALIDATION_SCHEMA,
+    training_aggregates,
+    validation_aggregates,
+)
 
 logger = logging.getLogger(__name__)
 
-SCHEMAS = {METRICS: METRICS_SCHEMA}  # tracker schemas, see `Tracker`
+SCHEMAS = {  # tracker schemas, see `Tracker`
+    METRICS_TRAINING: TRAINING_SCHEMA,
+    METRICS_TRAINING_AGGREGATES: TRAINING_AGGREGATES_SCHEMA,
+    METRICS_VALIDATION: VALIDATION_SCHEMA,
+    METRICS_VALIDATION_AGGREGATES: VALIDATION_AGGREGATES_SCHEMA,
+}
 TRAINING_PROGRESS, EPOCHS_PROGRESS, VALIDATION_PROGRESS = "Training", "Epochs", "Validation"  # progress bar labels
 EPOCH_STATE = "epoch"  # state key: updates per epoch and the duration of one epoch at the training rate so far
 
@@ -44,24 +62,22 @@ class TrainSamples:
 
 
 def validation_rows(update: int, per_design_tables: Mapping[str, pl.DataFrame]) -> pl.DataFrame:
-    """`evaluate` tables as `METRICS_SCHEMA` validation rows, one per design and channel, channels as symbols like `p`."""
+    """`evaluate` tables as `VALIDATION_SCHEMA` rows, one per design and channel, channels as symbols like `p`."""
     symbols = {label: symbol for symbol, label in CHANNEL_LABELS.items()}
     long_tables = [
         table.rename(symbols).unpivot(on=list(symbols.values()), index="design_id", variable_name="channel", value_name=metric)
         for metric, table in per_design_tables.items()
     ]  # same design and channel order in every table, `evaluate` sorts by design_id
     rows = pl.concat([long_tables[0], *(table.drop("design_id", "channel") for table in long_tables[1:])], how="horizontal")
-    rows = rows.with_columns(
-        update=pl.lit(update), split=pl.lit(VALIDATION), learning_rate=pl.lit(None), seconds_per_update=pl.lit(None)
-    )
-    return rows.select(pl.col(name).cast(dtype) for name, dtype in METRICS_SCHEMA.items())
+    return rows.with_columns(update=pl.lit(update)).select(pl.col(name).cast(dtype) for name, dtype in VALIDATION_SCHEMA.items())
 
 
 class TrainingMetrics:
-    """Logging of one `fine_tune_autoencoder` run into the `metrics` table (`METRICS_SCHEMA`) of `tracker`.
+    """Logging of one `fine_tune_autoencoder` run into the metric tables of `tracker`, see `SCHEMAS`.
 
-    - Train rows: every sample of every update, a sample is one design and channel
-    - Validation rows: every design and channel of every validation
+    - `metrics_training`: every sample of every update, a sample is one design and channel
+    - `metrics_validation`: every design and channel of every validation
+    - `*_aggregates`: `training_aggregates` per update, `validation_aggregates` per validation and channel, written with the rows
     - Progress bars: updates done, epochs done when `config.epochs` is set, designs done over all GPUs of the last validation
     - State `epoch`: updates per epoch and the duration of one epoch at the training rate so far, validation excluded
 
@@ -85,21 +101,19 @@ class TrainingMetrics:
         self._tick = time.perf_counter()
 
     def log_update(self, update: int, samples: TrainSamples, learning_rate: float) -> None:
-        """Append the samples of every process for one optimizer update, KeyboardInterrupt when the dashboard asked to stop.
+        """Append the samples of every process for one optimizer update and their aggregate, KeyboardInterrupt on a dashboard stop.
 
         - Every process calls it, the samples are gathered over the processes
         """
         now = time.perf_counter()
         rows = pl.concat(all_gather_objects(samples.to_frame()))
         rows = rows.with_columns(
-            update=pl.lit(update),
-            split=pl.lit(TRAIN),
-            nrmse=pl.lit(None),
-            learning_rate=pl.lit(learning_rate),
-            seconds_per_update=pl.lit(now - self._tick),
+            update=pl.lit(update), learning_rate=pl.lit(learning_rate), seconds_per_update=pl.lit(now - self._tick)
         )
+        rows = rows.select(pl.col(name).cast(dtype) for name, dtype in TRAINING_SCHEMA.items())
         self._tick = now
-        self.tracker.extend(METRICS, rows.select(METRICS_SCHEMA.names()))
+        self.tracker.extend(METRICS_TRAINING, rows)
+        self.tracker.extend(METRICS_TRAINING_AGGREGATES, training_aggregates(rows))
         self.tracker.set_progress(TRAINING_PROGRESS, update, self.updates)
         if self.config.epochs is not None:
             self.tracker.set_progress(
@@ -136,13 +150,14 @@ class TrainingMetrics:
             self.tracker.resume_progress(EPOCHS_PROGRESS)
 
     def log_validation(self, update: int, per_design_tables: Mapping[str, pl.DataFrame]) -> None:
-        """Append every design and channel of the `evaluate` tables, log the channel mean of their medians over designs.
+        """Append every design and channel of the `evaluate` tables and their aggregates, log the channel mean of the medians.
 
         - Resets the update timer, validation time does not count as update time
         """
         rows = validation_rows(update, per_design_tables)
-        self.tracker.extend(METRICS, rows)
-        medians = rows.group_by("channel").agg(pl.col(MSE, SPECTRAL_LOSS).median())
-        channel_mean = medians.select(pl.col(MSE, SPECTRAL_LOSS).mean()).row(0)
+        aggregates = validation_aggregates(rows)
+        self.tracker.extend(METRICS_VALIDATION, rows)
+        self.tracker.extend(METRICS_VALIDATION_AGGREGATES, aggregates)
+        channel_mean = aggregates.select(pl.col(f"{MSE}/median", f"{SPECTRAL_LOSS}/median").mean()).row(0)
         logger.info("update %d validation median MSE %.3e spectral loss %.3e, mean over channels", update, *channel_mean)
         self._tick = time.perf_counter()

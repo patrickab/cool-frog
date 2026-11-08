@@ -61,10 +61,7 @@ function TableFigure({ host, name, rows }: { host: string; name: string; rows: n
   const url = figureUrl(host, name, theme === 'dark', rows);
   const [failedUrl, setFailedUrl] = useState<string>();
   if (failedUrl === url) return null;
-  return <Panel className="space-y-2 p-4">
-    <h2 className={HEADING}>{name}</h2>
-    <img src={url} alt={`${name} curves`} onError={() => setFailedUrl(url)} className="h-auto w-full" />
-  </Panel>;
+  return <img src={url} alt={`${name} curves`} onError={() => setFailedUrl(url)} className="h-auto w-full px-4 pt-3" />;
 }
 
 /** Hairline meter under a GPU or progress row, as gigachad-bot's usage meters. */
@@ -129,8 +126,8 @@ function formatValue(value: unknown): string {
   return typeof value === 'string' ? value : JSON.stringify(value);
 }
 
-/** Collapsed table, its newest `TABLE_TAIL` rows first, fetched while open and again when rows were added. */
-function TablePanel({ host, name, info }: { host: string; name: string; info: TableInfo }) {
+/** Collapsed table row of a family, its newest `TABLE_TAIL` rows first, fetched while open and again when rows were added. */
+function TableRows({ host, name, info }: { host: string; name: string; info: TableInfo }) {
   const [open, setOpen] = useFold(`table/${name}`, false);
   const [data, setData] = useState<TableData>();
   const [error, setError] = useState<string>();
@@ -144,7 +141,7 @@ function TablePanel({ host, name, info }: { host: string; name: string; info: Ta
     return () => controller.abort();
   }, [open, host, name, info.rows]);
   const shown = info.rows > TABLE_TAIL ? ` · newest ${formatCount(TABLE_TAIL)} shown` : '';
-  return <Panel>
+  return <div className="border-t border-divider-soft">
     <button onClick={() => setOpen(!open)} aria-expanded={open}
       className="flex w-full items-center justify-between px-4 py-3 text-xs text-ink-muted transition hover:text-ink">
       <span><span aria-hidden className={`mr-1.5 inline-block transition ${open ? 'rotate-90' : ''}`}>›</span>{name}</span>
@@ -162,6 +159,25 @@ function TablePanel({ host, name, info }: { host: string; name: string; info: Ta
         </tr>)}</tbody>
       </table>
     </div>}
+  </div>;
+}
+
+/** Tables grouped into families, a table `<name>_aggregates` joins `<name>`, families and their tables in alphabetical order. */
+function tableFamilies(tables: [string, TableInfo][]): [string, [string, TableInfo][]][] {
+  const families = new Map<string, [string, TableInfo][]>();
+  for (const entry of [...tables].sort(([a], [b]) => a.localeCompare(b))) {
+    const family = entry[0].replace(/_aggregates$/, '');
+    families.set(family, [...(families.get(family) ?? []), entry]);
+  }
+  return [...families].sort(([a], [b]) => a.localeCompare(b));
+}
+
+/** One container per table family: its name, the figures of its tables, then each table's rows, collapsed. */
+function TableFamily({ host, name, tables }: { host: string; name: string; tables: [string, TableInfo][] }) {
+  return <Panel>
+    <h2 className={`${HEADING} px-4 pt-4`}>{name}</h2>
+    {tables.map(([table, info]) => <TableFigure key={table} host={host} name={table} rows={info.rows} />)}
+    <div className="mt-2">{tables.map(([table, info]) => <TableRows key={table} host={host} name={table} info={info} />)}</div>
   </Panel>;
 }
 
@@ -286,7 +302,7 @@ export default function Monitor() {
   const { state, error } = useMonitor(host);
   useEffect(() => { document.title = state?.title ? `Coolfrog · ${state.title}` : 'Coolfrog · Training monitor'; }, [state?.title]);
   const progress = Object.entries(state?.progress ?? {});
-  const tables = Object.entries(state?.tables ?? {}); // order of first append, `train` before `validation`
+  const tables = Object.entries(state?.tables ?? {});
 
   const sidebar = <Panel className="py-2">
     {progress.length > 0 && <section aria-label="Progress" className="mx-2 border-b border-divider-soft pb-2 pt-1">
@@ -300,10 +316,7 @@ export default function Monitor() {
   return <Layout nav={null} sidebar={sidebar}>
     {error && <ErrorPanel message={error} />}
     {state && host
-      ? <>
-        {tables.map(([name, info]) => <TableFigure key={name} host={host} name={name} rows={info.rows} />)}
-        {tables.map(([name, info]) => <TablePanel key={name} host={host} name={name} info={info} />)}
-      </>
+      ? tableFamilies(tables).map(([family, members]) => <TableFamily key={family} host={host} name={family} tables={members} />)
       : !error && <Panel className={`grid h-40 place-items-center text-xs text-ink-muted ${host ? 'animate-pulse' : ''}`}>
         <span>{host ? `Connecting to ${host}…` : 'Open Hosts in the sidebar and add an SSH host to watch its training'}</span>
       </Panel>}

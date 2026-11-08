@@ -26,29 +26,24 @@ import polars as pl
 
 from coolfrog.lib.config import Grid
 from coolfrog.lib.datatypes import CHANNELS, Channel, FlowField
-from coolfrog.lib.metrics import aggregate
+from coolfrog.lib.metrics import aggregate, aggregate_schema
 
-METRICS, TRAIN, VALIDATION = "metrics", "train", "validation"  # tracker table of a fine-tuning run and its `split` values
-SPLIT_ENUM = pl.Enum([TRAIN, VALIDATION])
+# Raw tracker tables of a fine-tuning run, one row per sample, and their aggregates, one row per `*_BY` group
+METRICS_TRAINING, METRICS_VALIDATION = "metrics_training", "metrics_validation"
+METRICS_TRAINING_AGGREGATES, METRICS_VALIDATION_AGGREGATES = f"{METRICS_TRAINING}_aggregates", f"{METRICS_VALIDATION}_aggregates"
 CHANNEL_SYMBOLS = tuple(channel.value.partition(" [")[0] for channel in CHANNELS)  # `p [Pa]` -> `p`, model order
 CHANNEL_LABELS = dict(zip(CHANNEL_SYMBOLS, (channel.value for channel in CHANNELS), strict=True))  # `p` -> `p [Pa]`
 CHANNEL_ENUM = pl.Enum(CHANNEL_SYMBOLS)
 
-# Optional `run` (String) column on METRICS_SCHEMA frames: one color per run, e.g. to compare latent scales
-METRICS_SCHEMA = pl.Schema(  # one row per training sample or validation design, each a single channel, null where not measured
-    {
-        "update": pl.Int64,
-        "split": SPLIT_ENUM,
-        "design_id": pl.Int64,
-        "channel": CHANNEL_ENUM,
-        "nrmse": pl.Float64,  # validation only
-        "mse": pl.Float64,
-        "spectral_loss": pl.Float64,
-        "kl": pl.Float64,
-        "learning_rate": pl.Float64,  # train only
-        "seconds_per_update": pl.Float64,  # train only
-    }
-)
+# Optional `run` (String) column on the metric frames below: one color per run, e.g. to compare latent scales
+SAMPLE_SCHEMA = pl.Schema({"update": pl.Int64, "design_id": pl.Int64, "channel": CHANNEL_ENUM})  # one design and channel
+TRAINING_METRICS = ("mse", "spectral_loss", "kl", "learning_rate", "seconds_per_update")
+VALIDATION_METRICS = ("nrmse", "mse", "spectral_loss", "kl")
+TRAINING_SCHEMA = pl.Schema({**SAMPLE_SCHEMA, **dict.fromkeys(TRAINING_METRICS, pl.Float64)})  # every sample of every update
+VALIDATION_SCHEMA = pl.Schema({**SAMPLE_SCHEMA, **dict.fromkeys(VALIDATION_METRICS, pl.Float64)})  # every design per validation
+TRAINING_BY, VALIDATION_BY = ("update",), ("update", "channel")  # groups of the aggregates
+TRAINING_AGGREGATES_SCHEMA = aggregate_schema(TRAINING_SCHEMA, TRAINING_BY, TRAINING_METRICS)
+VALIDATION_AGGREGATES_SCHEMA = aggregate_schema(VALIDATION_SCHEMA, VALIDATION_BY, VALIDATION_METRICS)
 CHANNEL_AXES_SCHEMA = pl.Schema(  # one row per channel, axis settings of the value-distribution plots
     {
         "channel": CHANNEL_ENUM,
@@ -159,30 +154,33 @@ def svg_bytes(figure: Figure) -> bytes:
 def figure_for_table(table: str, frame: pl.DataFrame) -> Figure | None:
     """Monitor figure of a tracker table, None if empty or without a numeric x and series.
 
-    - "metrics": `metrics_curves`
+    - Metric aggregates: `training_curves`, `validation_curves`
+    - Raw metric rows: none, they are drawn through their aggregates
     - Other tables: `column_lines` of the numeric columns, the first column is x, other columns are skipped
     """
-    if frame.height == 0:
+    if frame.height == 0 or table in (METRICS_TRAINING, METRICS_VALIDATION):
         return None
-    if table == METRICS:
-        return metrics_curves(frame)
+    if table == METRICS_TRAINING_AGGREGATES:
+        return training_curves(frame)
+    if table == METRICS_VALIDATION_AGGREGATES:
+        return validation_curves(frame)
     numeric = frame.select(column for column, dtype in frame.schema.items() if dtype.is_numeric() or dtype == pl.Null)
     if numeric.width < 2 or numeric.columns[0] != frame.columns[0]:  # noqa: PLR2004, x plus at least one series
         return None
     return column_lines(numeric)
 
 
-def train_means(metrics: pl.DataFrame) -> pl.DataFrame:
-    """Train rows of `METRICS_SCHEMA` as one row per update: `aggregate` over its samples, `<metric>/mean` etc., keeps `run`."""
-    metrics = typed(metrics, METRICS_SCHEMA).filter(pl.col("split") == TRAIN)
-    return aggregate(metrics, [*run_column(metrics), "update"], [panel.metric for panel in TRAIN_PANELS]).sort("update")
+def training_aggregates(training: pl.DataFrame) -> pl.DataFrame:
+    """`TRAINING_SCHEMA` rows as `TRAINING_AGGREGATES_SCHEMA`: `aggregate` over each update's samples, keeps `run`."""
+    training = typed(training, TRAINING_SCHEMA)
+    return aggregate(training, [*run_column(training), *TRAINING_BY], TRAINING_METRICS).sort("update", maintain_order=True)
 
 
-def validation_medians(metrics: pl.DataFrame) -> pl.DataFrame:
-    """Validation rows of `METRICS_SCHEMA` as one row per update and channel: `aggregate` over designs, keeps `run`."""
-    metrics = typed(metrics, METRICS_SCHEMA).filter(pl.col("split") == VALIDATION)
-    by = [*run_column(metrics), "update", "channel"]
-    return aggregate(metrics, by, [panel.metric for panel in VALIDATION_PANELS]).sort("update", "channel")
+def validation_aggregates(validation: pl.DataFrame) -> pl.DataFrame:
+    """`VALIDATION_SCHEMA` rows as `VALIDATION_AGGREGATES_SCHEMA`: `aggregate` over designs per update and channel, keeps `run`."""
+    validation = typed(validation, VALIDATION_SCHEMA)
+    by = [*run_column(validation), *VALIDATION_BY]
+    return aggregate(validation, by, VALIDATION_METRICS).sort("update", "channel", maintain_order=True)
 
 
 def exponential_average(values: np.ndarray, smoothing: float = EMA_SMOOTHING) -> np.ndarray:
@@ -199,25 +197,16 @@ def exponential_average(values: np.ndarray, smoothing: float = EMA_SMOOTHING) ->
     return np.exp(averages) if is_positive else averages
 
 
-def metrics_curves(metrics: pl.DataFrame) -> Figure:
-    """`training_curves` and `validation_curves` panels in one figure, the monitor figure of the `metrics` table."""
-    n_training = len(TRAIN_PANELS)
-    figure, axes = panels(n_training + len(VALIDATION_PANELS), columns=2)
-    _draw_training(axes[:n_training], train_means(metrics))
-    _draw_validation(figure, axes[n_training:], validation_medians(metrics))
-    return figure
-
-
-def training_curves(metrics: pl.DataFrame) -> Figure:
+def training_curves(aggregates: pl.DataFrame) -> Figure:
     """MSE, spectral loss, KL and learning rate per update: mean over the update's samples plus its EMA.
 
     Parameters
     ----------
-    metrics : pl.DataFrame
-        `METRICS_SCHEMA`, validation rows ignored, optional `run` column -> one color per run.
+    aggregates : pl.DataFrame
+        `TRAINING_AGGREGATES_SCHEMA`, e.g. `training_aggregates` of the raw rows, optional `run` column -> one color per run.
     """
     figure, axes = panels(len(TRAIN_PANELS), columns=2)
-    _draw_training(axes, train_means(metrics))
+    _draw_training(axes, typed(aggregates, TRAINING_AGGREGATES_SCHEMA).sort("update", maintain_order=True))
     return figure
 
 
@@ -257,7 +246,7 @@ def _draw_training(axes: Sequence[Axes], means: pl.DataFrame) -> None:
     axes[0].legend(handles, labels)
 
 
-def validation_curves(metrics: pl.DataFrame) -> Figure:
+def validation_curves(aggregates: pl.DataFrame) -> Figure:
     """NRMSE, MSE, spectral loss and KL medians over designs per update and channel.
 
     - Without `run`: one panel per metric, one color and marker per channel, channel legend right of the panels
@@ -265,10 +254,10 @@ def validation_curves(metrics: pl.DataFrame) -> Figure:
 
     Parameters
     ----------
-    metrics : pl.DataFrame
-        `METRICS_SCHEMA`, train rows ignored, optional `run` column -> one color per run.
+    aggregates : pl.DataFrame
+        `VALIDATION_AGGREGATES_SCHEMA`, e.g. `validation_aggregates` of the raw rows, optional `run` column -> one color per run.
     """
-    medians = validation_medians(metrics)
+    medians = typed(aggregates, VALIDATION_AGGREGATES_SCHEMA).sort("update", "channel", maintain_order=True)
     if "run" not in medians.columns:
         figure, axes = panels(len(VALIDATION_PANELS), columns=2)
         _draw_validation(figure, axes, medians)

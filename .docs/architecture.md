@@ -140,7 +140,7 @@ Distributed: rank 0 alone starts/resumes the run, writes files, logs, shows the 
 - `request_stop` (dashboard `q`, Ctrl+C) raises KeyboardInterrupt at the next `append` / `set_progress`
 - Dashboard crash never stops the work, it continues with plain logging. No TTY = no dashboard
 - `serve_monitor`: FastAPI on `127.0.0.1:8020` in a daemon thread, `GET /api/state` (snapshot + `nvidia-smi`), `GET /api/tables/{name}?start=&tail=`. Port taken = warning only, monitor off
-- Fine-tuning table: `metrics` (`METRICS_SCHEMA`), one row per train sample of every update and per validation design, each a single channel, `split` = `train` | `validation`, unmeasured columns null. The monitor draws it with `plots.metrics_curves`: train means per update plus EMA, validation medians over designs per channel
+- Fine-tuning tables: raw `metrics_training` / `metrics_validation` (one row per sample, design and channel) and their `*_aggregates` (`aggregate` per update, for validation per channel), written together by `TrainingMetrics`. The monitor draws the aggregates (`training_curves`: per-update mean plus EMA, `validation_curves`: medians per channel), the raw tables have no figure
 
 ## HTTP contracts
 
