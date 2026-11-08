@@ -1,0 +1,16 @@
+{
+  "status": "complete",
+  "date": "2026-11-08T16:21:05+00:00",
+  "commit_hash_git": "f8f68d71f0f3fa2f71015250c0ee8fef37901d27",
+  "files": [
+    "adapter.pt",
+    "per_design.parquet",
+    "slices_first_validation_design.png",
+    "state.json",
+    "train.parquet",
+    "training_curves.png",
+    "validation.parquet",
+    "validation_curves.png",
+    "validation_medians.parquet"
+  ]
+}

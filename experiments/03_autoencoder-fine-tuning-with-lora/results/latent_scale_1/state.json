@@ -1,0 +1,94 @@
+{
+  "title": "LoRA-32 \u00b7 latent scale 1 \u00b7 400x80x16",
+  "configs": {
+    "DataConfig": {
+      "grid": {
+        "latent_scale": 1
+      },
+      "source": null,
+      "cache": true,
+      "batch_size": 4,
+      "num_workers": 6
+    },
+    "TadpoleConfig": {
+      "size": "B",
+      "path_weights": null,
+      "encoder_state": 32,
+      "decoder_state": 32,
+      "encoder_crop_size": null,
+      "max_internal_batchsize": 1,
+      "activation_checkpointing": false
+    },
+    "TrainConfig": {
+      "updates": null,
+      "epochs": 10,
+      "designs_per_update": 32,
+      "learning_rate": 5e-05,
+      "warmup_updates": 1000,
+      "weight_decay": 1e-15,
+      "kl_weight": 1e-06,
+      "validate_every": 200
+    }
+  },
+  "epoch": {
+    "updates": 1765,
+    "duration": "1:45:09"
+  },
+  "progress": {
+    "Epochs": {
+      "completed": 10,
+      "total": 10,
+      "elapsed_seconds": 63060.8,
+      "remaining_seconds": null,
+      "paused": false
+    },
+    "Training": {
+      "completed": 17650,
+      "total": 17650,
+      "elapsed_seconds": 63060.8,
+      "remaining_seconds": null,
+      "paused": false
+    },
+    "Validation": {
+      "completed": 128,
+      "total": 128,
+      "elapsed_seconds": 29.9,
+      "remaining_seconds": null,
+      "paused": false
+    }
+  },
+  "tables": {
+    "validation": {
+      "rows": 80640,
+      "columns": {
+        "update": "int",
+        "design_id": "int",
+        "channel": "str",
+        "nrmse": "float",
+        "mse": "float",
+        "spectral_loss": "float"
+      }
+    },
+    "validation_medians": {
+      "rows": 630,
+      "columns": {
+        "update": "int",
+        "channel": "str",
+        "nrmse": "float",
+        "mse": "float",
+        "spectral_loss": "float"
+      }
+    },
+    "train": {
+      "rows": 1765,
+      "columns": {
+        "update": "int",
+        "mse": "float",
+        "spectral_loss": "float",
+        "kl": "float",
+        "learning_rate": "float",
+        "seconds_per_update": "float"
+      }
+    }
+  }
+}

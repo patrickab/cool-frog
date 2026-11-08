@@ -1,0 +1,17 @@
+TadpoleConfig:
+  activation_checkpointing: false
+  decoder_state: 32
+  encoder_crop_size: null
+  encoder_state: 32
+  max_internal_batchsize: 1
+  path_weights: null
+  size: B
+TrainConfig:
+  designs_per_update: 32
+  epochs: 10
+  kl_weight: 1.0e-06
+  learning_rate: 5.0e-05
+  updates: null
+  validate_every: 200
+  warmup_updates: 1000
+  weight_decay: 1.0e-15

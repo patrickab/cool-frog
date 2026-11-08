@@ -1,0 +1,2 @@
+latent_scale,updates,training time [h],final train MSE,final train spectral loss,final KL
+1,17650,17.509817087262636,0.0002898879611166194,0.3516316175460815,10.544248867034913
